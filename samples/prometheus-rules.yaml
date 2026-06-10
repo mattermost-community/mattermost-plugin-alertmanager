@@ -1,0 +1,315 @@
+# Sample Prometheus alert rules covering all 20 canonical runbooks
+# shipped by the mattermost-plugin-alertmanager plugin.
+#
+# How this file maps to the plugin
+# --------------------------------
+# Each rule below emits a `runbook: <slug>` label. The plugin's
+# /alertmanager add command creates Alertmanager receivers named
+# `<slug>--<channel>` and a matching routes block that matches on
+# the `runbook` label. So an alert with `runbook: high-cpu-usage`
+# fires into receivers like `high-cpu-usage--alerts` and gets
+# delivered to the bound Mattermost channel.
+#
+# What you need to adjust before this is production-ready
+# -------------------------------------------------------
+# 1. Thresholds and `for:` durations — every value below is a
+#    placeholder calibrated for a small demo cluster. Real
+#    environments need thresholds tuned to traffic shape and SLOs.
+# 2. PromQL series names — labels like `kube_pod_status_phase`
+#    assume kube-state-metrics is installed and exporting under
+#    its default names. Adjust if your scrape config renames them.
+# 3. Severity labels — the plugin doesn't enforce severity routing
+#    out of the box. Add severity-based routes to alertmanager.yml
+#    if you want sev1 to page and sev2 to chat-only.
+# 4. The `runbook_url` annotation uses the plugin's built-in
+#    runbook-host helper. If your Mattermost SiteURL differs, the
+#    plugin renders the correct URL automatically — these sample
+#    rules just declare the slug, not the full URL.
+#
+# Format is the standard Prometheus rule_files: format.
+# See https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/
+# for the schema. Drop this file into a `rule_files` glob in your
+# prometheus.yml.
+
+groups:
+  # =========================================================
+  # COMPUTE — the workhorse runbooks. CPU, memory, pod, node.
+  # =========================================================
+  - name: compute
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          category: compute
+          runbook: high-cpu-usage
+        annotations:
+          summary: "Node {{ $labels.instance }} CPU > 85% for 10m"
+          description: "Sustained high CPU may indicate runaway processes, undersized nodes, or a noisy-neighbor pod."
+
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+          category: compute
+          runbook: high-memory-usage
+        annotations:
+          summary: "Node {{ $labels.instance }} memory > 90% for 10m"
+          description: "High memory pressure can trigger OOM kills and degrade scheduler behavior."
+
+      - alert: PodCrashLoopBackOff
+        expr: |
+          rate(kube_pod_container_status_restarts_total[5m]) * 60 * 5 > 3
+        for: 5m
+        labels:
+          severity: critical
+          category: compute
+          runbook: pod-crashloopbackoff
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} restarting > 3x in 5m"
+          description: "Crashlooping pods indicate a bad image, missing config, or failing liveness probe."
+
+      - alert: PodNotReady
+        expr: |
+          sum by (namespace, pod) (kube_pod_status_ready{condition="false"}) > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: compute
+          runbook: pod-not-ready
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not Ready for 10m"
+          description: "Pod has been in NotReady state long enough to suggest a real problem, not a transient blip."
+
+      - alert: DeploymentReplicasUnavailable
+        expr: |
+          kube_deployment_status_replicas_unavailable > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: compute
+          runbook: deployment-replicas-unavailable
+        annotations:
+          summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has unavailable replicas"
+          description: "Desired replica count not met. Check pod events and scheduler / resource constraints."
+
+      - alert: NodeNotReady
+        expr: |
+          kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: compute
+          runbook: node-not-ready
+        annotations:
+          summary: "Node {{ $labels.node }} not Ready for 5m"
+          description: "A NotReady node is a candidate for cordon + drain. Investigate kubelet, networking, and disk pressure."
+
+  # =========================================================
+  # APPLICATION — request-path SLO indicators.
+  # =========================================================
+  - name: application
+    interval: 30s
+    rules:
+      - alert: HighHTTPErrorRate
+        expr: |
+          sum by (service) (rate(http_requests_total{code=~"5.."}[5m]))
+            / sum by (service) (rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          category: application
+          runbook: high-http-error-rate
+        annotations:
+          summary: "Service {{ $labels.service }} 5xx rate > 5% for 5m"
+          description: "Sustained 5xx errors indicate a real availability incident, not a single bad request."
+
+      - alert: HighAPILatency
+        expr: |
+          histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket[5m]))) > 1.0
+        for: 10m
+        labels:
+          severity: warning
+          category: application
+          runbook: high-api-latency
+        annotations:
+          summary: "Service {{ $labels.service }} p95 latency > 1s for 10m"
+          description: "Tail latency degradation. Check downstream dependencies and DB query times."
+
+      - alert: ServiceEndpointDown
+        expr: |
+          probe_success == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: application
+          runbook: service-endpoint-down
+        annotations:
+          summary: "Probe target {{ $labels.instance }} down for 5m"
+          description: "Synthetic probe failing — either the service is dead or the network path is broken."
+
+      - alert: RequestRateAnomaly
+        expr: |
+          abs(
+            sum by (service) (rate(http_requests_total[5m]))
+            - sum by (service) (rate(http_requests_total[5m] offset 1h))
+          )
+            / sum by (service) (rate(http_requests_total[5m] offset 1h)) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+          category: application
+          runbook: request-rate-anomaly
+        annotations:
+          summary: "Service {{ $labels.service }} request rate diverges >50% from same-time-yesterday"
+          description: "Could be traffic loss (upstream broken) or a sudden surge (DDoS, viral content, retry storm)."
+
+  # =========================================================
+  # DATABASE — replication, latency, reachability.
+  # =========================================================
+  - name: database
+    interval: 30s
+    rules:
+      - alert: DatabaseConnectivityLoss
+        expr: |
+          up{job=~".*postgres.*|.*mysql.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: database
+          runbook: database-connectivity-loss
+        annotations:
+          summary: "Database {{ $labels.instance }} unreachable for 2m"
+          description: "DB exporter cannot scrape the DB. Check the DB process, networking, and credentials."
+
+      - alert: DatabaseReplicationLag
+        expr: |
+          pg_replication_lag_seconds > 30
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+          runbook: database-replication-lag
+        annotations:
+          summary: "Postgres replica {{ $labels.instance }} lag > 30s for 5m"
+          description: "Replica is behind primary. Risk of stale reads and increased failover RPO."
+
+      - alert: DatabaseHighLatency
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(pg_stat_statements_mean_time_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          category: database
+          runbook: database-high-latency
+        annotations:
+          summary: "Postgres p95 query time > 500ms for 10m"
+          description: "Slow queries usually mean missing indexes, table bloat, or a noisy-neighbor workload."
+
+  # =========================================================
+  # STORAGE — volume fill, disk fill rate.
+  # =========================================================
+  - name: storage
+    interval: 30s
+    rules:
+      - alert: PersistentVolumeFull
+        expr: |
+          (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          category: storage
+          runbook: persistent-volume-full
+        annotations:
+          summary: "PV {{ $labels.persistentvolumeclaim }} > 90% full"
+          description: "Volume close to capacity. Expand the PVC or clean up data before writes start failing."
+
+      - alert: DiskFillRateHigh
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[1h], 4 * 3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+          category: storage
+          runbook: disk-fill-rate-high
+        annotations:
+          summary: "Node {{ $labels.instance }} root disk projected to fill in < 4h"
+          description: "Linear extrapolation says the disk will fill within four hours. Act before it hits 100%."
+
+  # =========================================================
+  # NETWORKING — ingress, certs, DNS.
+  # =========================================================
+  - name: networking
+    interval: 30s
+    rules:
+      - alert: IngressHigh5xx
+        expr: |
+          sum by (ingress) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+            / sum by (ingress) (rate(nginx_ingress_controller_requests[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          category: networking
+          runbook: ingress-high-5xx
+        annotations:
+          summary: "Ingress {{ $labels.ingress }} 5xx rate > 5% for 5m"
+          description: "Ingress-level 5xx indicates upstream service failure or backend pool exhaustion."
+
+      - alert: CertificateExpiringSoon
+        expr: |
+          (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels:
+          severity: warning
+          category: networking
+          runbook: certificate-expiring-soon
+        annotations:
+          summary: "TLS cert on {{ $labels.instance }} expires in < 14 days"
+          description: "Lead time for renewal. Don't wait until the day-of."
+
+      - alert: DnsResolutionFailure
+        expr: |
+          probe_dns_lookup_time_seconds == 0 or probe_success{job="dns"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: networking
+          runbook: dns-resolution-failure
+        annotations:
+          summary: "DNS lookups failing for {{ $labels.instance }} for 5m"
+          description: "DNS failure cascades into every dependent service. Check CoreDNS / upstream resolvers."
+
+  # =========================================================
+  # OBSERVABILITY — meta-alerts on the monitoring stack itself.
+  # =========================================================
+  - name: observability
+    interval: 30s
+    rules:
+      - alert: PrometheusScrapeTargetDown
+        expr: |
+          up == 0
+        for: 5m
+        labels:
+          severity: warning
+          category: observability
+          runbook: prometheus-scrape-target-down
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }}/{{ $labels.instance }} for 5m"
+          description: "Missing scrape target = blind to that subsystem. Either the target is dead or the scrape config is wrong."
+
+      - alert: AlertmanagerNotificationFailure
+        expr: |
+          rate(alertmanager_notifications_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          category: observability
+          runbook: alertmanager-notification-failure
+        annotations:
+          summary: "Alertmanager notification failures for receiver {{ $labels.receiver }}"
+          description: "Alertmanager cannot deliver. If THIS fires, the whole alerting pipeline is degraded — investigate the receiver target (Mattermost webhook, PagerDuty, etc.)."

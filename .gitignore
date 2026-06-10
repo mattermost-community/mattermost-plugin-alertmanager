@@ -1,0 +1,31 @@
+# Build artifacts — produced by `make bundle`. Always regenerated
+# from sources, never edited by hand.
+/dist/
+/server/dist/
+
+# Rendered HTML for the docs + runbooks sites. Generated from
+# docs/*.md and runbooks/*.md by build/render-docs on every bundle.
+# Source of truth is the Markdown; do not commit the HTML.
+/public/help/
+/public/runbooks/
+
+# Go test/coverage artifacts.
+*.test
+*.out
+coverage.*
+.cache/
+
+# Editor + OS metadata.
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local-only dev artifacts.
+.env
+.env.local
+*.local
+
+# Node modules (none today, but reserve in case a webapp is added).
+node_modules/

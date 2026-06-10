@@ -1,0 +1,50 @@
+# Minimal, opinionated lint config for this plugin.
+#
+# Enabled linters are the ones that have actually caught real bugs in
+# Go projects of this shape: fmt-arity errors (govet), shadowed vars
+# (govet), unused identifiers (unused), and security-relevant patterns
+# (gosec). Disabled by default: anything stylistic that would generate
+# diff churn without catching defects.
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  # Tests are kept in the lint scope so test code stays as clean as
+  # production. Excluding tests would let assertion helpers rot.
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck      # unchecked errors — the #1 source of "looks fine, dropped state" bugs
+    - govet         # fmt arity, shadow, lock copy — go vet rules
+    - ineffassign   # assigning to a variable that's never read
+    - staticcheck   # the most useful static analyzer; catches dead code, ineffective branches, etc.
+    - unused        # unused functions / fields / variables
+    - gofmt         # canonical formatting — keeps diffs minimal
+    - goimports     # import ordering + missing imports
+    - gosec         # security-relevant patterns (G101..G505)
+    - misspell      # English misspellings in comments + strings
+
+linters-settings:
+  gosec:
+    # G101 (hardcoded credentials) flags too many false positives in
+    # test fixtures with dummy "password" strings. The risk in real
+    # production code is caught by code review.
+    excludes:
+      - G101
+  govet:
+    enable:
+      - shadow
+
+issues:
+  exclude-rules:
+    # Test files often need fixture passwords / dummy URLs that gosec
+    # flags as hardcoded creds. Allowed in *_test.go only.
+    - path: _test\.go
+      linters:
+        - gosec
+  # Don't suppress the same finding repeated across the codebase —
+  # a recurring lint hit usually means a real pattern bug.
+  max-issues-per-linter: 0
+  max-same-issues: 0
