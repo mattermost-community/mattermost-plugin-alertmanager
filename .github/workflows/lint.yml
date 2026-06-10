@@ -25,12 +25,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Pin to action v6.5.2 (last release that supports golangci-lint v1.x).
-      # action >= v7 dropped v1 support and requires golangci-lint v2, which
-      # uses an incompatible config schema. Migration to v2 is a separate
-      # task — the v1 config in .golangci.yml stays valid here.
+      # golangci-lint v1.62.0 (last v1 release) is built with Go 1.23 and
+      # refuses to lint projects targeting Go > 1.23 — so v2 is mandatory
+      # for us. Action v9 supports v2. Config schema lives in .golangci.yml.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@8564da7cb3c6866ed1da648ca8f00a258ef0c802 # v6.5.2
+        uses: golangci/golangci-lint-action@db582008a42febd596419635a5abc9d9815daa9c # v9.2.1
         with:
-          version: v1.62.0
+          version: v2.12.2
           args: --timeout=5m
