@@ -111,10 +111,9 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 	// same for all receivers bound to the same AM URL — cache the
 	// status response per unique AM URL.
 	type statusCache struct {
-		ok          bool
-		statusText  string
-		configBody  string // raw YAML text from AM, used by check (b)
-		configError string
+		ok         bool
+		statusText string
+		configBody string // raw YAML text from AM, used by check (b)
 	}
 	amStatus := make(map[string]statusCache)
 	for _, c := range scoped {
@@ -125,11 +124,11 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 	}
 
 	type rowResult struct {
-		Name             string
-		AMReach          string // "✓" / "✗ <error>"
-		LoadedInAM       string
-		WebhookAccepts   string // empty if check skipped
-		EndToEndAlertID  string
+		Name            string
+		AMReach         string // "✓" / "✗ <error>"
+		LoadedInAM      string
+		WebhookAccepts  string // empty if check skipped
+		EndToEndAlertID string
 	}
 	results := make([]rowResult, 0, len(scoped))
 	for _, c := range scoped {
@@ -267,10 +266,9 @@ func stripFlags(args []string, flags ...string) []string {
 // Result struct captures both halves so the caller can branch per
 // receiver without re-pinging.
 func doValidateAMStatus(amURL string) (out struct {
-	ok          bool
-	statusText  string
-	configBody  string
-	configError string
+	ok         bool
+	statusText string
+	configBody string
 }) {
 	if amURL == "" {
 		out.statusText = "no AM URL configured"
@@ -294,7 +292,7 @@ func doValidateAMStatus(amURL string) (out struct {
 		}
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		out.statusText = fmt.Sprintf("HTTP %d", resp.StatusCode)
@@ -307,9 +305,11 @@ func doValidateAMStatus(amURL string) (out struct {
 		} `json:"config"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		out.ok = true // AM responded, we just couldn't parse the config
+		// AM responded but we couldn't parse the config body. Treat as
+		// reachable (check a passes) but check b will be inconclusive
+		// since configBody stays empty.
+		out.ok = true
 		out.statusText = "ok"
-		out.configError = "could not parse AM status JSON: " + err.Error()
 		return
 	}
 	out.ok = true
@@ -344,7 +344,7 @@ func postValidateTestMessage(webhookURL, receiverName string) error {
 	if err != nil {
 		return fmt.Errorf("POST failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -396,7 +396,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("POST to AM failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)

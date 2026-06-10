@@ -151,21 +151,6 @@ func (p *Plugin) deleteIncomingWebhook(callerUserID, hookID string) error {
 	return nil
 }
 
-// webhookURL returns the api_url for a hook ID using the global
-// WebhookHost setting (or SiteURL fallback). Kept for the few sites
-// that don't have an alertConfig to consult (e.g., legacy callers
-// before the per-receiver override existed).
-//
-// Most callers should use webhookURLForReceiver, which honors the
-// per-receiver WebhookHostOverride.
-func (p *Plugin) webhookURL(hookID string) string {
-	host := p.getConfiguration().WebhookHost
-	if host == "" {
-		host = p.siteURL()
-	}
-	return fmt.Sprintf("%s/hooks/%s", host, hookID)
-}
-
 // webhookURLForReceiver resolves the api_url with per-receiver
 // precedence. Resolution order:
 //

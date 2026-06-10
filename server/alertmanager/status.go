@@ -27,7 +27,7 @@ func Status(alertmanagerURL, user, password string) (StatusResponse, error) {
 	if err != nil {
 		return statusResponse, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if err := json.NewDecoder(resp.Body).Decode(&statusResponse); err != nil {
 		return statusResponse, err

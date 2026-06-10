@@ -18,7 +18,8 @@ import (
 // to the invocation channel get exported.
 //
 // Usage:
-//   /alertmanager export
+//
+//	/alertmanager export
 //
 // Output: an in-channel ephemeral summary (count + receiver names),
 // plus a DM from @alertmanagerbot with the assembled receivers.yml

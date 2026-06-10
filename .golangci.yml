@@ -29,14 +29,32 @@ linters:
 
   settings:
     gosec:
-      # G101 (hardcoded credentials) flags too many false positives in
-      # test fixtures with dummy "password" strings. Real production
-      # credential leaks get caught by code review.
       excludes:
+        # G101 (hardcoded credentials) flags too many false positives in
+        # test fixtures with dummy "password" strings. Real production
+        # credential leaks get caught by code review.
         - G101
+        # G117 (marshaled struct field name matches secret pattern)
+        # flags every alertConfig.Password serialization. The export
+        # flow legitimately writes that field to the YAML bundle so AM
+        # can authenticate to backends — that's the whole point.
+        - G117
     govet:
       enable:
         - shadow
+    staticcheck:
+      # QF (quickfix) checks are pure style suggestions, not bug
+      # detectors. Disable the ones that produce noise without
+      # catching defects:
+      #   QF1003 — "use tagged switch" on if/else chains. Style.
+      #   QF1012 — "use fmt.Fprintf instead of WriteString(Sprintf(…))".
+      #            Functionally identical; b.WriteString(fmt.Sprintf(…))
+      #            is more readable when the format string contains
+      #            many "\n" terminators inline with markdown body text.
+      checks:
+        - "all"
+        - "-QF1003"
+        - "-QF1012"
 
   exclusions:
     rules:

@@ -97,7 +97,7 @@ func doAMProbe(amURL string) amReachabilityEntry {
 		}
 		return amReachabilityEntry{Reachable: false, Status: status, CheckedAt: time.Now()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return amReachabilityEntry{Reachable: false, Status: http.StatusText(resp.StatusCode), CheckedAt: time.Now()}

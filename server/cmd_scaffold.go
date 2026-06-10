@@ -62,7 +62,8 @@ var scaffoldSets = map[string][]string{
 // overwritten. Failures on individual entries don't abort the batch.
 //
 // Usage:
-//   /alertmanager add <team> <channel> <am-url> [set]
+//
+//	/alertmanager add <team> <channel> <am-url> [set]
 //
 // `set` defaults to `standard` (= all 20 embedded runbooks). Category
 // names (compute, application, database, storage, networking,
@@ -290,11 +291,11 @@ func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdC
 	fileIds := []string{receiversInfo.Id}
 	hasRoutes := strings.TrimSpace(routesYAML) != ""
 	if hasRoutes {
-		routesInfo, appErr := p.API.UploadFile([]byte(routesYAML), dm.Id, "alertmanager-routes.yml")
-		if appErr != nil {
+		routesInfo, routesErr := p.API.UploadFile([]byte(routesYAML), dm.Id, "alertmanager-routes.yml")
+		if routesErr != nil {
 			// Routes upload failure isn't fatal — receivers still useful
 			// without them (user can hand-write routes). Log and proceed.
-			p.API.LogWarn("scaffold: couldn't upload routes file to DM (receivers file still delivered)", "err", appErr.Error())
+			p.API.LogWarn("scaffold: couldn't upload routes file to DM (receivers file still delivered)", "err", routesErr.Error())
 		} else {
 			fileIds = append(fileIds, routesInfo.Id)
 		}

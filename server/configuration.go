@@ -122,17 +122,6 @@ func newConfiguration(entries []alertConfig, webhookHost string, yamlTTLHours in
 	return c
 }
 
-// findByName returns the alertConfig with the given name, or nil.
-func (c *configuration) findByName(name string) *alertConfig {
-	if c.nameIndex == nil {
-		return nil
-	}
-	if i, ok := c.nameIndex[name]; ok {
-		return &c.AlertConfigs[i]
-	}
-	return nil
-}
-
 // Clone deep-copies for safe atomic swap.
 func (c *configuration) Clone() *configuration {
 	cloned := make([]alertConfig, len(c.AlertConfigs))

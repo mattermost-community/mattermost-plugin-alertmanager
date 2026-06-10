@@ -75,35 +75,45 @@ func (p *Plugin) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	fmt.Fprintf(w, "# HELP alertmanager_plugin_receivers_total Number of receivers registered in plugin config, grouped by destination channel.\n")
-	fmt.Fprintf(w, "# TYPE alertmanager_plugin_receivers_total gauge\n")
+
+	// emit drops the (int, error) return that fmt.Fprintf produces — the
+	// metrics endpoint has no recovery path for a write failure (the
+	// scrape just retries next interval), and the writes are pure
+	// fire-and-forget. Wrapping in this closure keeps each metric line
+	// readable while satisfying errcheck.
+	emit := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(w, format, args...)
+	}
+
+	emit("# HELP alertmanager_plugin_receivers_total Number of receivers registered in plugin config, grouped by destination channel.\n")
+	emit("# TYPE alertmanager_plugin_receivers_total gauge\n")
 	if len(byChannel) == 0 {
-		fmt.Fprintf(w, "alertmanager_plugin_receivers_total 0\n")
+		emit("alertmanager_plugin_receivers_total 0\n")
 	} else {
 		for ch, n := range byChannel {
-			fmt.Fprintf(w, "alertmanager_plugin_receivers_total{channel=%q} %d\n", ch, n)
+			emit("alertmanager_plugin_receivers_total{channel=%q} %d\n", ch, n)
 		}
 	}
 
-	fmt.Fprintf(w, "# HELP alertmanager_plugin_receivers_grand_total Total receivers across all channels.\n")
-	fmt.Fprintf(w, "# TYPE alertmanager_plugin_receivers_grand_total gauge\n")
-	fmt.Fprintf(w, "alertmanager_plugin_receivers_grand_total %d\n", len(configs))
+	emit("# HELP alertmanager_plugin_receivers_grand_total Total receivers across all channels.\n")
+	emit("# TYPE alertmanager_plugin_receivers_grand_total gauge\n")
+	emit("alertmanager_plugin_receivers_grand_total %d\n", len(configs))
 
-	fmt.Fprintf(w, "# HELP alertmanager_plugin_channels_total Number of distinct channels with at least one registered receiver.\n")
-	fmt.Fprintf(w, "# TYPE alertmanager_plugin_channels_total gauge\n")
-	fmt.Fprintf(w, "alertmanager_plugin_channels_total %d\n", len(byChannel))
+	emit("# HELP alertmanager_plugin_channels_total Number of distinct channels with at least one registered receiver.\n")
+	emit("# TYPE alertmanager_plugin_channels_total gauge\n")
+	emit("alertmanager_plugin_channels_total %d\n", len(byChannel))
 
 	// YAML janitor TTL setting — useful for monitoring that the
 	// setting hasn't drifted from the security policy expectation.
-	fmt.Fprintf(w, "# HELP alertmanager_plugin_yaml_ttl_hours Configured TTL (hours) for DM'd YAML files. 0 = auto-delete disabled.\n")
-	fmt.Fprintf(w, "# TYPE alertmanager_plugin_yaml_ttl_hours gauge\n")
-	fmt.Fprintf(w, "alertmanager_plugin_yaml_ttl_hours %d\n", p.getConfiguration().AssembledYAMLTTLHours)
+	emit("# HELP alertmanager_plugin_yaml_ttl_hours Configured TTL (hours) for DM'd YAML files. 0 = auto-delete disabled.\n")
+	emit("# TYPE alertmanager_plugin_yaml_ttl_hours gauge\n")
+	emit("alertmanager_plugin_yaml_ttl_hours %d\n", p.getConfiguration().AssembledYAMLTTLHours)
 
 	// Build timestamp signal — the metric is constant, but its
 	// presence in the scrape lets you detect plugin uptime/restarts.
-	fmt.Fprintf(w, "# HELP alertmanager_plugin_info Plugin info — version label, value always 1.\n")
-	fmt.Fprintf(w, "# TYPE alertmanager_plugin_info gauge\n")
-	fmt.Fprintf(w, "alertmanager_plugin_info{version=%q,plugin_id=%q} 1\n", Manifest.Version, Manifest.Id)
+	emit("# HELP alertmanager_plugin_info Plugin info — version label, value always 1.\n")
+	emit("# TYPE alertmanager_plugin_info gauge\n")
+	emit("alertmanager_plugin_info{version=%q,plugin_id=%q} 1\n", Manifest.Version, Manifest.Id)
 }
 
 // handleAdminInventory is now implemented in admin_inventory.go.

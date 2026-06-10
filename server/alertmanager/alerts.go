@@ -15,7 +15,7 @@ func ListAlerts(alertmanagerURL, user, password string) ([]*types.Alert, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var alertResponse []*types.Alert
 	if errDec := json.NewDecoder(resp.Body).Decode(&alertResponse); errDec != nil {

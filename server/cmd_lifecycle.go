@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	neturl "net/url"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -455,34 +454,6 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string) (string, e
 		return "", fmt.Errorf("create channel %q: %w", channelSlug, appErr)
 	}
 	return created.Id, nil
-}
-
-// dockerLocalhostWarning returns a markdown-formatted warning if the URL
-// hostname is `localhost` or `127.0.0.1`. Returns empty if the URL is
-// reachable-looking from inside a typical Docker-deployed Mattermost.
-//
-// The warning is informational, not blocking: an admin running Mattermost
-// on bare metal with Alertmanager also on bare metal can legitimately use
-// localhost. The vast majority of dev installs run both in Docker, where
-// the URL needs to be host.docker.internal.
-func dockerLocalhostWarning(rawURL, fieldLabel string) string {
-	parsed, err := neturl.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	host := parsed.Hostname()
-	if host != "localhost" && host != "127.0.0.1" {
-		return ""
-	}
-	suggested := strings.Replace(rawURL, "localhost", "host.docker.internal", 1)
-	suggested = strings.Replace(suggested, "127.0.0.1", "host.docker.internal", 1)
-	return fmt.Sprintf(
-		":warning: **%s uses `%s`.** If Mattermost runs in Docker, this won't reach Alertmanager — `localhost` from inside the container points at the container itself, not the host or sibling containers. "+
-			"Use `host.docker.internal` instead:\n\n"+
-			"`%s`\n\n"+
-			"Fix by re-running `/alertmanager add` with the corrected URL. Safe to ignore if both Mattermost and Alertmanager are running on the host directly (not in containers).\n\n---\n\n",
-		fieldLabel, host, suggested,
-	)
 }
 
 // saveConfigs marshals + validates + persists. Validation runs locally
