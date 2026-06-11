@@ -34,6 +34,25 @@ The alert is warning-severity by default; if a container is over 95%
 for 20+ minutes, a sibling rule (`ContainerCPUCritical`) fires at
 critical-severity.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Which pods are eating CPU right now?
+kubectl top pods -A --sort-by=cpu | head -20
+```
+
+```promql
+# Is CFS throttling actually happening?
+rate(container_cpu_cfs_throttled_seconds_total[5m])
+```
+
+```bash
+# Recent deploys — did a release correlate?
+kubectl rollout history deployment -n $NAMESPACE --limit 5
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

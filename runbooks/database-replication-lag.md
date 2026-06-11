@@ -14,6 +14,26 @@ pg_replication_lag_seconds > 300  # critical
 
 The replica is N seconds behind the master in applying writes. Applications reading from the replica see data that's at least N seconds stale. For most apps this is invisible noise; for read-after-write workflows it causes user-visible inconsistencies ("I just posted but it's not showing up").
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```sql
+-- From the PRIMARY: which replica is lagging, by how much?
+SELECT client_addr, application_name, state, replay_lag
+FROM pg_stat_replication;
+```
+
+```bash
+# Replica pod status
+kubectl get pods -n db -l role=replica -o wide
+```
+
+```promql
+# WAL lag in seconds (postgres_exporter metric)
+pg_replication_lag_seconds
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

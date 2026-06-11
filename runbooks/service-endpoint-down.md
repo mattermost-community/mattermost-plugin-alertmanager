@@ -19,6 +19,25 @@ kube_endpoint_address_available{namespace="<ns>", endpoint="<name>"} == 0
 
 The endpoint is dark. Distinct from "high error rate" (where some requests work) — this is "all requests fail."
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Try hitting the service directly from inside the cluster
+kubectl run -it --rm httptest --image=curlimages/curl --restart=Never -- curl -v http://$SERVICE.$NAMESPACE/healthz
+```
+
+```bash
+# Does the service have ANY ready endpoints?
+kubectl get endpoints -n $NAMESPACE $SERVICE
+```
+
+```bash
+# Service details — selector, ports, type
+kubectl describe svc -n $NAMESPACE $SERVICE
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

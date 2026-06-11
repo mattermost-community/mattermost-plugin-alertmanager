@@ -13,6 +13,25 @@ CoreDNS (or your cluster DNS) is returning errors at a non-trivial rate. Service
 
 DNS failures present as connectivity loss but the underlying network is fine — it's name resolution that's broken.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Can a pod resolve kubernetes.default at all?
+kubectl run -it --rm dnstest --image=busybox --restart=Never -- nslookup kubernetes.default
+```
+
+```bash
+# CoreDNS pod status
+kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
+```
+
+```bash
+# Recent CoreDNS errors
+kubectl logs -n kube-system -l k8s-app=kube-dns --tail=100 | grep -iE "error|fail|refused"
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

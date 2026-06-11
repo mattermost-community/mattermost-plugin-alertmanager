@@ -20,7 +20,7 @@ const (
 		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
 		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: architecture, configuration, development, kubernetes, slash_commands)\n" +
 		"- `/alertmanager expire_silence <name> <silence-id>` — expire a silence\n" +
-		"- `/alertmanager export` — DM the assembled receivers.yml + routes.yml for this channel\n" +
+		"- `/alertmanager export [--diff-against-loaded]` — DM the assembled receivers.yml + routes.yml for this channel; with `--diff-against-loaded` (sysadmin) diff against AM's currently-loaded config\n" +
 		"- `/alertmanager help` — this message\n" +
 		"- `/alertmanager list` — list receivers bound to this channel\n" +
 		"- `/alertmanager reconcile` — prune receivers whose Mattermost webhook has been deleted out-of-band (sysadmin; runs automatically every 5 min)\n" +
@@ -104,7 +104,11 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	root.AddCommand(model.NewAutocompleteData("expire_silence", "[name] [silence-id]", "Expire an active Alertmanager silence"))
 
-	root.AddCommand(model.NewAutocompleteData("export", "", "DM the assembled receivers.yml + routes.yml for this channel (sysadmin/team_admin)"))
+	exportCmd := model.NewAutocompleteData("export", "[--diff-against-loaded]", "DM the assembled receivers.yml + routes.yml for this channel (sysadmin/team_admin)")
+	exportCmd.AddStaticListArgument("Optional flag: diff against AM's currently-loaded config (sysadmin only)", false, []model.AutocompleteListItem{
+		{Item: "--diff-against-loaded", HelpText: "Output a side-by-side diff between AM's loaded YAML and what this export would add (sysadmin only)"},
+	})
+	root.AddCommand(exportCmd)
 
 	root.AddCommand(model.NewAutocompleteData("help", "", "Show slash-command help"))
 

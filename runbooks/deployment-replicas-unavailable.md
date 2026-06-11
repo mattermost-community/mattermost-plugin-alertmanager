@@ -15,6 +15,25 @@ Sustained for 10+ minutes. The number of pods Kubernetes thinks are healthy and 
 
 This is usually a downstream effect of pods crashlooping, failing readiness, or the cluster being unable to schedule them. The interesting work is finding out which.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# What's the deployment showing? Compare DESIRED vs AVAILABLE
+kubectl get deploy -n $NAMESPACE -o wide
+```
+
+```bash
+# Find pods that aren't ready and why
+kubectl describe pod -n $NAMESPACE -l app=$APP | grep -A 10 "Conditions:"
+```
+
+```bash
+# Recent cluster events for this namespace
+kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -20
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

@@ -23,6 +23,25 @@ CrashLoopBackOff is rarely the disease; it's the symptom. The
 container is dying, K8s notices, restarts it, and the cycle repeats.
 The diagnostic work is finding why it's dying.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Why is the pod dying? Describe shows recent events + container state
+kubectl describe pod -n $NAMESPACE $POD
+```
+
+```bash
+# Logs from the PREVIOUS (dead) container — current is in crashloop
+kubectl logs -n $NAMESPACE $POD --previous --tail=200
+```
+
+```bash
+# Events scoped to this pod (often more useful than describe)
+kubectl get events -n $NAMESPACE --field-selector involvedObject.name=$POD --sort-by='.lastTimestamp'
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

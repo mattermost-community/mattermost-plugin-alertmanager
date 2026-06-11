@@ -11,6 +11,25 @@ predict_linear(kubelet_volume_stats_available_bytes[6h], 24*3600) < 0
 
 Linear regression on the last 6 hours of usage predicts that the volume will run out in less than 24 hours. This is the "act now, not at 95% full" alert.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Current free space + mount points
+df -h
+```
+
+```bash
+# Top 10 biggest directories under root
+du -hx --max-depth=2 / 2>/dev/null | sort -hr | head -10
+```
+
+```promql
+# When does Prometheus think the disk will fill?
+predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[1h], 4 * 3600)
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

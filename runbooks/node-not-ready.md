@@ -13,6 +13,25 @@ The kubelet on this node hasn't reported a healthy status for the past `node-mon
 
 When `Ready=False` persists past `pod-eviction-timeout` (default 5m), Kubernetes starts evicting pods. They're rescheduled on other nodes if capacity exists.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Why isn't the node Ready? Conditions tell you
+kubectl describe node $NODE | grep -A 20 "Conditions:"
+```
+
+```bash
+# Kubelet logs on the affected node (SSH in or run a node-shell pod)
+journalctl -u kubelet --since "10 minutes ago" --no-pager | tail -50
+```
+
+```bash
+# Overall cluster node state
+kubectl get nodes -o wide
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

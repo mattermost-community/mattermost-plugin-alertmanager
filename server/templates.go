@@ -15,6 +15,10 @@ import (
 //   {{CHANNEL}}         — destination channel slug with leading #
 //   {{RUNBOOK_DEFAULT}} — plugin-hosted runbook fallback URL, baked from the
 //                         current Mattermost site URL + receiver slug
+//   {{QUICK_DIAGNOSTICS}}— rendered "## Quick diagnostics" markdown for this
+//                          runbook (first 3 fenced code blocks). Empty when
+//                          the runbook lacks the section, in which case the
+//                          alert renders without inline diagnostics.
 //
 // After substitution, what's emitted is a valid Alertmanager slack_configs
 // block where title:/text: contain Alertmanager-evaluated Go templates
@@ -77,8 +81,15 @@ const canonicalTemplate = `- name: {{NAME}}
         **Runbook:** {{RUNBOOK_DEFAULT}}{{ "\n" }}
         {{- end -}}
         {{- if .Annotations.dashboard_url }}**Dashboard:** {{ .Annotations.dashboard_url }}{{ "\n" }}{{ end -}}
+        {{QUICK_DIAGNOSTICS}}
         {{ end -}}
 `
+
+// yamlBlockIndent is the leading whitespace that aligns content
+// inside the slack_configs `text: |-` literal block. Hardcoded here
+// because the template's indent is itself hardcoded — if the YAML
+// block ever gets re-indented, this constant moves with it.
+const yamlBlockIndent = "        "
 
 // renderReceiverYAML substitutes the plugin-level placeholders and
 // returns a slack_configs YAML block ready to paste under receivers: in
@@ -88,16 +99,44 @@ const canonicalTemplate = `- name: {{NAME}}
 // iconURL is the bot avatar URL injected into the slack_configs payload
 // override; same value the webhook record uses, just defended at the
 // payload level too.
+//
+// Inline quick diagnostics are looked up by the receiver's base slug
+// (the runbook identifier extracted from a possibly channel-suffixed
+// name). Multi-line content is re-indented to match the YAML literal
+// block's column position so the generated YAML parses correctly.
 func renderReceiverYAML(name, webhookURL, channel, runbookDefaultURL, iconURL string) string {
 	if !strings.HasPrefix(channel, "#") {
 		channel = "#" + channel
 	}
+
+	// Quick diagnostics block: empty string when the runbook lacks
+	// the "## Quick diagnostics" section, otherwise multi-line
+	// markdown re-indented for the YAML literal block.
+	diagnostics := loadQuickDiagnosticsForSlug(receiverBaseSlug(name))
+	diagText := formatQuickDiagnosticsForAlert(diagnostics)
+	if diagText != "" {
+		diagText = indentForYAMLBlock(diagText, yamlBlockIndent)
+	}
+
 	r := strings.NewReplacer(
 		"{{NAME}}", name,
 		"{{URL}}", webhookURL,
 		"{{CHANNEL}}", channel,
 		"{{RUNBOOK_DEFAULT}}", runbookDefaultURL,
 		"{{ICON_URL}}", iconURL,
+		"{{QUICK_DIAGNOSTICS}}", diagText,
 	)
 	return r.Replace(canonicalTemplate)
+}
+
+// indentForYAMLBlock applies `indent` to every line of `s` except the
+// first. Used to align a multi-line substitution into a YAML literal
+// block whose first line gets indentation from the surrounding
+// template text — only subsequent lines need the prefix.
+func indentForYAMLBlock(s, indent string) string {
+	lines := strings.Split(s, "\n")
+	for i := 1; i < len(lines); i++ {
+		lines[i] = indent + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }

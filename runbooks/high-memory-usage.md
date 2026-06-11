@@ -27,6 +27,25 @@ request failures during readiness probe re-acquire.
 Critical-severity rule (`ContainerMemoryCritical`) fires at >95% for
 20+ minutes — OOMKill is imminent if not already happening.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Which pods are eating memory right now?
+kubectl top pods -A --sort-by=memory | head -20
+```
+
+```bash
+# Recent OOMKilled events
+kubectl get events -A --field-selector reason=OOMKilling --sort-by='.lastTimestamp' | tail -10
+```
+
+```promql
+# Working-set memory by pod (closer to "real" usage than RSS)
+sum by (namespace, pod) (container_memory_working_set_bytes)
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

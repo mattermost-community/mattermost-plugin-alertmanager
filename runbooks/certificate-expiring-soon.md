@@ -13,6 +13,25 @@ A monitored TLS endpoint (via blackbox exporter or cert-manager) has a cert expi
 
 Critical-severity sibling (`CertificateExpiringSoon` at <3 days) fires if renewal didn't happen.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Confirm current cert expiry on the actual endpoint
+echo | openssl s_client -servername $HOST -connect $HOST:443 2>/dev/null | openssl x509 -noout -dates
+```
+
+```bash
+# cert-manager: find certs that aren't Ready
+kubectl get certificates -A | grep -v "True"
+```
+
+```bash
+# Detail on the affected Certificate resource
+kubectl describe certificate -A | grep -A 10 "Status:"
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

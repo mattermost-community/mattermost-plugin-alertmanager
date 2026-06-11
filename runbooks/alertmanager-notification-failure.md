@@ -13,6 +13,26 @@ Alertmanager attempted to send to a receiver and failed. Repeated failures mean 
 
 This is the meta-alert: if it's firing, your other alerting is potentially broken. Fix this before anything else.
 
+## Quick diagnostics
+
+Three commands to run before reading further. These cover the most
+common root causes:
+
+```bash
+# Which receiver is failing?
+curl -s $AM_URL/api/v2/alerts | jq '[.[].receivers[].name] | unique'
+```
+
+```bash
+# Recent notify errors in AM logs
+kubectl logs -n monitoring -l app=alertmanager --tail=200 | grep -i notify
+```
+
+```bash
+# Hit the failing webhook directly to verify it accepts POSTs
+curl -X POST -H "Content-Type: application/json" -d '{"text":"test"}' $WEBHOOK_URL
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

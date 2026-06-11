@@ -15,6 +15,25 @@ histogram_quantile(0.95,
 
 Latency this high doesn't usually mean total failure (those are caught by error-rate alerts), but it does mean a degraded experience. Users perceive a "slow site" — clicks take seconds, posts appear to hang. Often correlates with backend pressure (DB, cache, slow upstream).
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```promql
+# Which endpoint is slow? p95 by handler
+histogram_quantile(0.95, sum by (handler, le) (rate(http_request_duration_seconds_bucket[5m])))
+```
+
+```bash
+# Pod resource pressure — is the service starving for CPU?
+kubectl top pod -n $NAMESPACE -l app=$APP --sort-by=cpu
+```
+
+```bash
+# Recent rollouts — did a deploy correlate with the latency spike?
+kubectl rollout history deployment -n $NAMESPACE --limit 5
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

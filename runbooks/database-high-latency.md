@@ -15,6 +15,28 @@ histogram_quantile(0.95,
 
 Slow database = slow API = bad user experience. The cause is usually one of: a runaway query, a missing index, replication catching up, or DB-side resource pressure.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```sql
+-- Top slow queries by mean execution time
+SELECT query, calls, mean_exec_time, total_exec_time
+FROM pg_stat_statements
+ORDER BY mean_exec_time DESC
+LIMIT 5;
+```
+
+```bash
+# DB pod resource usage — CPU + memory at the source
+kubectl top pod -n db -l app=postgres
+```
+
+```promql
+# p95 query latency by service
+histogram_quantile(0.95, sum by (le) (rate(pg_stat_statements_mean_time_seconds_bucket[5m])))
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

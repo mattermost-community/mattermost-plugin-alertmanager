@@ -13,6 +13,25 @@ Sustained 5+ minutes. Prometheus tried to scrape the target's `/metrics` endpoin
 
 Critically: alerts based on metrics from this target won't fire correctly while it's down — they'll either fire spuriously (if the absent metric is interpreted as zero) or fail to fire at all (if the alert query returns no data). Restoring the scrape target is also restoring observability.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Which targets are down and why?
+curl -s http://prometheus:9090/api/v1/targets | jq '.data.activeTargets[] | select(.health!="up") | {labels: .labels, lastError: .lastError}'
+```
+
+```bash
+# Does the service still have endpoints?
+kubectl get endpoints -n $NAMESPACE $SERVICE -o wide
+```
+
+```bash
+# Is the ServiceMonitor / PodMonitor still picking up the target?
+kubectl get servicemonitor -A -o yaml | grep -B 5 -A 10 "$SERVICE"
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

@@ -13,6 +13,25 @@ A PVC's underlying volume is more than 85% full. Time-to-full depends on growth 
 
 When the volume hits 100%, writes return ENOSPC. The application may crash, the database may go read-only, or the service may just throw 500s on every write request.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Actual current usage from inside the mounted pod
+kubectl exec -n $NAMESPACE $POD -- df -h $MOUNT_PATH
+```
+
+```bash
+# What's filling the volume?
+kubectl exec -n $NAMESPACE $POD -- du -hx --max-depth=2 $MOUNT_PATH | sort -hr | head -10
+```
+
+```promql
+# PVC usage % across the cluster
+(kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

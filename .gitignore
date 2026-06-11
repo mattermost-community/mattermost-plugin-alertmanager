@@ -10,6 +10,10 @@
 /dist/
 /server/dist/
 
+# Compiled helper binaries built by `make` from build/manifest and
+# build/pluginctl Go sources. Platform-specific; don't track them.
+/build/bin/
+
 # Rendered HTML for the docs + runbooks sites. Generated from
 # docs/*.md and runbooks/*.md by build/render-docs on every bundle.
 # Source of truth is the Markdown; do not commit the HTML.

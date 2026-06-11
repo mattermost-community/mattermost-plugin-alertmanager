@@ -16,6 +16,25 @@ sum(rate(nginx_ingress_controller_requests[5m]))
 
 5xx at the ingress means the LB or ingress controller couldn't successfully proxy the request to an upstream pod. Different from app-level 5xx — this is the gateway saying "I couldn't reach a backend."
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Ingress controller logs — what's it complaining about?
+kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --tail=200 | grep -E "[45][0-9]{2}"
+```
+
+```bash
+# Do the upstream services even have endpoints?
+kubectl get endpoints -A | grep -v "<none>"
+```
+
+```promql
+# 5xx rate by ingress — narrow to the failing hostname
+sum by (ingress) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

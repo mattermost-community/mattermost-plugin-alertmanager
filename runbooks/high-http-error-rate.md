@@ -30,6 +30,25 @@ The exact error code matters for diagnosis:
 | 503 Service Unavailable | Capacity exhausted, or readiness probe just failed |
 | 504 Gateway Timeout | Upstream service responded too slowly |
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```promql
+# 5xx rate by service — which service is failing?
+sum by (service) (rate(http_requests_total{code=~"5.."}[5m]))
+```
+
+```bash
+# Recent deploys — did a release ship the bug?
+kubectl rollout history deployment -n $NAMESPACE --limit 3
+```
+
+```bash
+# Application error logs from the affected service
+kubectl logs -n $NAMESPACE -l app=$APP --tail=200 | grep -E "ERROR|panic|stack"
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

@@ -13,6 +13,25 @@ kube_pod_status_ready{condition="false", namespace="<ns>"} == 1
 
 Sustained for 5+ minutes per affected pod.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Pod conditions — Ready, ContainersReady, PodScheduled
+kubectl get pod -n $NAMESPACE $POD -o jsonpath='{.status.conditions}' | jq
+```
+
+```bash
+# Readiness probe configuration + last failure reason
+kubectl describe pod -n $NAMESPACE $POD | grep -A 10 "Readiness:"
+```
+
+```bash
+# Recent container logs — readiness probe failures often log here
+kubectl logs -n $NAMESPACE $POD --tail=200
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

@@ -26,6 +26,25 @@ network policy change, connection pool exhaustion. Diagnosing
 narrows from "is the DB up?" to "is the network path clean?" to
 "are the credentials still valid?"
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```bash
+# Is the DB actually accepting connections?
+kubectl exec -n db deploy/postgres -- pg_isready -U $PGUSER
+```
+
+```bash
+# Pod status — restarts, age, readiness
+kubectl get pods -n db -l app=postgres -o wide
+```
+
+```bash
+# How many active connections (vs max_connections)?
+kubectl exec -n db deploy/postgres -- psql -c "SELECT count(*) FROM pg_stat_activity"
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

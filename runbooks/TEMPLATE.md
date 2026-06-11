@@ -17,6 +17,32 @@ expression where it helps. Don't assume the reader is the rule author.
 What sustained breaching of this threshold causes downstream
 (latency, queueing, OOM, etc.) and why it matters.
 
+## Quick diagnostics
+
+The first three things to run. The plugin extracts the first three
+fenced code blocks from this section and embeds them inline in the
+alert message that lands in Mattermost — so when the alert fires at
+3am, the operator can copy-paste these without opening the runbook.
+
+Keep them short, copy-paste-ready, and ordered by "would I run this
+first?" — not by completeness. Use `bash`, `promql`, or `sql` as the
+language hint so Mattermost renders syntax highlighting.
+
+```bash
+# One-line description of what this checks
+<command>
+```
+
+```bash
+# Next narrowing step
+<command>
+```
+
+```promql
+# A relevant Prometheus query is fine here too
+<expression>
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |

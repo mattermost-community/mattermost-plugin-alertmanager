@@ -17,6 +17,25 @@ rate(http_requests_total[5m]) > 2 * avg_over_time(rate(http_requests_total[5m])[
 
 Drops can be more dangerous than spikes — a sudden drop to 10% normal traffic often means something on the path is failing silently (CDN, DNS, upstream auth), and downstream alerting may not fire if your monitoring only looks at "errors per request" ratios.
 
+## Quick diagnostics
+
+Three commands to run before reading further:
+
+```promql
+# Current rate vs same-time-yesterday — what's the actual delta?
+sum by (service) (rate(http_requests_total[5m])) / sum by (service) (rate(http_requests_total[5m] offset 1d))
+```
+
+```bash
+# Where is the traffic coming from? Top source IPs at the ingress
+kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --tail=500 | awk '{print $1}' | sort | uniq -c | sort -rn | head -10
+```
+
+```bash
+# Recent deploys — did we ship something that changed traffic patterns?
+kubectl rollout history deployment -n $NAMESPACE --limit 5
+```
+
 ## Severity & urgency
 
 | Severity | Pager? | Target response | Business impact |
