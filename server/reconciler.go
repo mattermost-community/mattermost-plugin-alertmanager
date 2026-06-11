@@ -102,6 +102,162 @@ func (p *Plugin) runBackgroundReconcile() {
 		return
 	}
 	pruneCount = len(pruned)
+
+	// Rotation reminders run after orphan pruning so we don't waste
+	// effort reminding for receivers about to be pruned this cycle.
+	// Errors are non-fatal — keep the reconcile cycle's primary
+	// purpose (orphan pruning) successful even if reminders fail.
+	if err := p.checkRotationReminders(sysadminID); err != nil {
+		p.API.LogWarn("reconciler: rotation reminder pass failed (continuing)",
+			"err", err.Error())
+	}
+}
+
+// rotationOverdueEntry is one receiver flagged as overdue. Hoisted
+// to package scope so checkRotationReminders and sendRotationReminderDM
+// share the same type (Go's inferred local-struct types don't match
+// across function boundaries).
+type rotationOverdueEntry struct {
+	Name          string
+	DaysOverdue   int
+	LastRotatedAt time.Time
+}
+
+// reminderRepeatInterval throttles how often a single receiver can
+// be reminded about overdue rotation. Once an admin gets a DM, they
+// have this long to act before the plugin nags again. One week
+// matches "I'll get to it in the next maintenance window" without
+// drifting into "I forgot about that DM" territory.
+const reminderRepeatInterval = 7 * 24 * time.Hour
+
+// checkRotationReminders scans every receiver for overdue rotation
+// and DMs sysadmins when found. Grouped by channel so admins get
+// one DM per channel listing all overdue receivers there, instead
+// of N DMs per receiver.
+//
+// Skipped silently when WebhookRotationDays is 0 (feature disabled).
+//
+// Stamps LastRotatedAt = now() for receivers with zero-value
+// LastRotatedAt — those were created before this feature shipped,
+// and we want them to start a fresh clock rather than fire reminders
+// day-one. This is a one-time migration per receiver.
+func (p *Plugin) checkRotationReminders(sysadminID string) error {
+	cfg := p.getConfiguration()
+	if cfg.WebhookRotationDays <= 0 {
+		return nil
+	}
+	threshold := time.Duration(cfg.WebhookRotationDays) * 24 * time.Hour
+	now := time.Now().UTC()
+
+	current := cfg.AlertConfigs
+	if len(current) == 0 {
+		return nil
+	}
+
+	// First pass: identify zero-value LastRotatedAt entries that need
+	// the migration stamp. Mutate a working copy; persist at the end.
+	updated := make([]alertConfig, len(current))
+	copy(updated, current)
+	mutated := false
+	for i := range updated {
+		if updated[i].LastRotatedAt.IsZero() {
+			updated[i].LastRotatedAt = now
+			mutated = true
+		}
+	}
+
+	// Second pass: find overdue receivers, group by channel, and DM.
+	byChannel := make(map[string][]rotationOverdueEntry)
+	channelToTeam := make(map[string]string)
+	indexByName := make(map[string]int, len(updated))
+	for i, c := range updated {
+		indexByName[c.Name] = i
+		// Per-receiver opt-in: skip receivers that weren't created
+		// with the `on` flag at /alertmanager add time. The global
+		// WebhookRotationDays threshold only fires reminders for
+		// receivers that explicitly opted in.
+		if !c.RotationRemindersEnabled {
+			continue
+		}
+		if c.LastRotatedAt.IsZero() {
+			continue // just stamped above; will fire on the next cycle
+		}
+		age := now.Sub(c.LastRotatedAt)
+		if age < threshold {
+			continue
+		}
+		// Throttle: skip if we already reminded recently.
+		if !c.LastReminderAt.IsZero() && now.Sub(c.LastReminderAt) < reminderRepeatInterval {
+			continue
+		}
+		daysOverdue := int((age - threshold) / (24 * time.Hour))
+		byChannel[c.Channel] = append(byChannel[c.Channel], rotationOverdueEntry{
+			Name:          c.Name,
+			DaysOverdue:   daysOverdue,
+			LastRotatedAt: c.LastRotatedAt,
+		})
+		channelToTeam[c.Channel] = c.Team
+	}
+
+	if len(byChannel) > 0 {
+		// Resolve a recipient — for v1, DM the calling sysadmin we
+		// already minted a PAT for. Future: enumerate channel team
+		// admins via GetChannelMembers + filter by role.
+		dm, appErr := p.API.GetDirectChannel(p.BotUserID, sysadminID)
+		if appErr != nil {
+			return fmt.Errorf("open DM channel with sysadmin %s: %w", sysadminID, appErr)
+		}
+
+		for channel, entries := range byChannel {
+			p.sendRotationReminderDM(dm.Id, channel, entries, cfg.WebhookRotationDays)
+			// Stamp LastReminderAt on each entry we just notified.
+			for _, e := range entries {
+				if idx, ok := indexByName[e.Name]; ok {
+					updated[idx].LastReminderAt = now
+					mutated = true
+				}
+			}
+			p.auditLog("webhook.rotation.reminder", sysadminID, channel,
+				"", fmt.Sprintf("count=%d", len(entries)))
+		}
+	}
+
+	if mutated {
+		if err := p.saveConfigs(updated); err != nil {
+			return fmt.Errorf("persist rotation timestamps: %w", err)
+		}
+	}
+	return nil
+}
+
+// sendRotationReminderDM posts the per-channel reminder summary as
+// a bot message in the sysadmin's DM. Best-effort — logged on
+// failure but not returned, because reminder send for one channel
+// shouldn't block other channels' reminders in the same cycle.
+func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []rotationOverdueEntry, thresholdDays int) {
+	var b strings.Builder
+	b.WriteString(":warning: **Webhook rotation due**\n\n")
+	b.WriteString(fmt.Sprintf("The following receiver(s) in **#%s** haven't been rotated in over %d days:\n\n", channel, thresholdDays))
+	for _, e := range entries {
+		b.WriteString(fmt.Sprintf("- `%s` — last rotated %s ago (%d days overdue)\n",
+			e.Name,
+			humanDuration(time.Since(e.LastRotatedAt)),
+			e.DaysOverdue,
+		))
+	}
+	b.WriteString(fmt.Sprintf("\nRotate them when convenient. In #%s, run:\n\n```\n/alertmanager rotate all --overdue\n```\n\n", channel))
+	b.WriteString("You'll receive a DM with the updated YAML. Paste it into your `alertmanager.yml` and reload AM (`curl -X POST http://<am>/-/reload`). Old URLs deactivate immediately on rotation.\n\n")
+	b.WriteString(fmt.Sprintf("See the [rotation playbook](%s/plugins/%s/public/help/rotation.html) for the full procedure.\n",
+		p.siteURL(), Manifest.Id))
+
+	post := &model.Post{
+		UserId:    p.BotUserID,
+		ChannelId: dmChannelID,
+		Message:   b.String(),
+	}
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		p.API.LogWarn("rotation reminder DM failed", "channel", channel, "err", appErr.Error())
+	}
 }
 
 // reconcileOrphans walks the current AlertConfigs and prunes any whose

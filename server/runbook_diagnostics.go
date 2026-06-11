@@ -1,10 +1,83 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 
 	root "github.com/christopherfickess/mattermost-plugin-alertmanager"
 )
+
+// labelPlaceholderAllowlist is the set of `<name>` tags a runbook
+// author can put in a Quick diagnostics code block. Each entry maps
+// to a Prometheus label name that AM substitutes per alert at render
+// time, so the diagnostic command lands in chat with the failing
+// host/pod/namespace already filled in.
+//
+// Only credential-free, identity-style labels are on this list. We
+// don't proxy `password`, `token`, or anything else that smells like
+// a secret — keeping the surface explicit prevents the "let's just
+// allow .Labels.* and trust the rule author" mistake.
+var labelPlaceholderAllowlist = map[string]bool{
+	"alertname": true,
+	"app":       true,
+	"cluster":   true,
+	"container": true,
+	"deployment": true,
+	"instance":  true,
+	"job":       true,
+	"namespace": true,
+	"node":      true,
+	"pod":       true,
+	"service":   true,
+}
+
+// labelPlaceholderRegex matches `<name>` where name is a lowercase
+// identifier — narrow enough that it doesn't hit shell command
+// substitution (`$VAR`), kubectl jsonpath (`{.status.X}`), regex
+// quantifiers (`{2}`), HTML-looking content with mixed case, or Go
+// template syntax (`{{ }}`).
+var labelPlaceholderRegex = regexp.MustCompile(`<([a-z][a-z_]*)>`)
+
+// substituteLabelPlaceholders rewrites `<labelname>` placeholders in
+// a Quick diagnostics code block into AM Go-template directives
+// `{{ .Labels.labelname }}`. Unknown placeholders pass through
+// unchanged — angle brackets in shell or text content are common
+// enough that "leave unfamiliar tags alone" is the right default.
+//
+// Comment lines are skipped entirely. Comments often reference
+// placeholders by name in the surrounding explanatory text
+// (e.g., "# WHERE: <namespace> is filled in by AM"), and if those
+// were substituted too the rendered chat post would read like
+// "# WHERE: monitoring is filled in by AM" — nonsensical. Only
+// executable lines get the substitution.
+//
+// Comment detection is language-agnostic: lines whose first
+// non-whitespace character is `#` (shell/PromQL convention) or
+// whose first two non-whitespace characters are `--` (SQL
+// convention). Covers every language hint we emit (bash, promql,
+// sql) and anything else likely to land in a runbook.
+//
+// Called at YAML-render time (renderReceiverYAML) so the slack_configs
+// `text:` block contains live AM template syntax; AM then evaluates
+// the directives per alert at delivery time and emits the actual
+// label value in the chat post.
+func substituteLabelPlaceholders(code string) string {
+	lines := strings.Split(code, "\n")
+	for i, line := range lines {
+		trim := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--") {
+			continue
+		}
+		lines[i] = labelPlaceholderRegex.ReplaceAllStringFunc(line, func(match string) string {
+			name := match[1 : len(match)-1]
+			if labelPlaceholderAllowlist[name] {
+				return "{{ .Labels." + name + " }}"
+			}
+			return match
+		})
+	}
+	return strings.Join(lines, "\n")
+}
 
 // quickDiagnosticLimit caps how many fenced code blocks the plugin
 // pulls out of a runbook's "## Quick diagnostics" section. The contract
@@ -146,7 +219,7 @@ func formatQuickDiagnosticsForAlert(blocks []quickDiagnostic) string {
 		b.WriteString("```")
 		b.WriteString(blk.Lang)
 		b.WriteString("\n")
-		b.WriteString(blk.Code)
+		b.WriteString(substituteLabelPlaceholders(blk.Code))
 		b.WriteString("\n```\n")
 	}
 	return strings.TrimRight(b.String(), "\n")

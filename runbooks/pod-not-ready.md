@@ -18,18 +18,44 @@ Sustained for 5+ minutes per affected pod.
 Three commands to run before reading further:
 
 ```bash
-# Pod conditions — Ready, ContainersReady, PodScheduled
-kubectl get pod -n $NAMESPACE $POD -o jsonpath='{.status.conditions}' | jq
+# WHERE: shell with kubectl context + jq. <namespace> and <pod>
+#   are filled in by AM at alert time.
+# WHAT: pod's status conditions as JSON. The 4 standard conditions
+#   are PodScheduled, Initialized, ContainersReady, Ready —
+#   evaluated top-down.
+# READ: find the FIRST condition with Status=False — that's the
+#   bottleneck:
+#   PodScheduled=False → no node fits (resources/affinity/taints)
+#   Initialized=False → init container failed
+#   ContainersReady=False → one+ main containers not Ready
+#   Ready=False (others True) → readiness probe failing
+#   The Message field on the False condition narrows further.
+kubectl get pod -n <namespace> <pod> -o jsonpath='{.status.conditions}' | jq
 ```
 
 ```bash
-# Readiness probe configuration + last failure reason
-kubectl describe pod -n $NAMESPACE $POD | grep -A 10 "Readiness:"
+# WHERE: shell with kubectl context set.
+# WHAT: readiness probe config + recent failure events for the pod.
+# READ: the Readiness: section shows the actual check kubelet
+#   runs (httpGet path/port, exec command, tcpSocket). Below it,
+#   events include lines like:
+#     "Readiness probe failed: HTTP probe failed with statuscode: 503"
+#   That's the EXACT response the probe got. Tells you whether
+#   the probe config is wrong or the app's readiness logic is.
+kubectl describe pod -n <namespace> <pod> | grep -A 10 "Readiness:"
 ```
 
 ```bash
-# Recent container logs — readiness probe failures often log here
-kubectl logs -n $NAMESPACE $POD --tail=200
+# WHERE: shell with kubectl context set.
+# WHAT: last 200 log lines from the pod's main container. Runs
+#   even when the pod is NotReady (the container is still alive,
+#   just failing readiness checks).
+# READ: look for errors right before the readiness probe failure
+#   timestamps. Common patterns:
+#     app started but can't reach a downstream dependency
+#     a config error left a feature flag in a startup-blocking state
+#     a health check endpoint expects DB connectivity that's missing
+kubectl logs -n <namespace> <pod> --tail=200
 ```
 
 ## Severity & urgency
@@ -94,6 +120,20 @@ If unresolved within target response:
 1. File a follow-up issue with root cause.
 2. Update this runbook if a novel cause was hit.
 3. Tune probe parameters if they fire too aggressively.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the failing pod
+- `pod` — the specific pod that isn't passing readiness
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

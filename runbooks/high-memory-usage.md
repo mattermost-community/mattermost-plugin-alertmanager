@@ -32,17 +32,38 @@ Critical-severity rule (`ContainerMemoryCritical`) fires at >95% for
 Three commands to run before reading further:
 
 ```bash
-# Which pods are eating memory right now?
+# WHERE: shell with kubectl context set.
+# WHAT: top 20 pods cluster-wide by memory, sorted desc.
+# READ: pods near or at their memory LIMIT (compare with
+#   `kubectl describe pod`) are minutes from OOMKill. Pods near
+#   their REQUEST but well under LIMIT are fine for now but
+#   eating cluster capacity. The MEMORY(bytes) column shows RSS
+#   — for the value the kernel actually compares against the
+#   cgroup limit, see the PromQL below (working-set).
 kubectl top pods -A --sort-by=memory | head -20
 ```
 
 ```bash
-# Recent OOMKilled events
+# WHERE: shell with kubectl context set.
+# WHAT: cluster events filtered to OOMKilling — kernel-level
+#   events fired when a container hits its memory limit and
+#   gets killed.
+# READ: empty → no recent OOMs, the alert is preventive. Populated
+#   → the alert is reactive, those pods just died and are likely
+#   restarting; check their restart count:
+#     kubectl get pod <name> -n <namespace> -o jsonpath='{.status.containerStatuses[].restartCount}'
 kubectl get events -A --field-selector reason=OOMKilling --sort-by='.lastTimestamp' | tail -10
 ```
 
 ```promql
-# Working-set memory by pod (closer to "real" usage than RSS)
+# WHERE: Grafana → Explore (Prometheus data source) or Prometheus /graph.
+# WHAT: working-set memory by pod. Working-set ≈ "active" memory
+#   the kernel won't reclaim without paging. This IS the value
+#   the OOM killer compares against the cgroup limit (cAdvisor
+#   exposes it from kernel memory.usage_in_bytes - inactive_file).
+# READ: compare to each pod's memory limit. At >90% of limit,
+#   OOMKill is minutes away. Filter to the failing pod:
+#     container_memory_working_set_bytes{namespace="<namespace>",pod="<pod>"}
 sum by (namespace, pod) (container_memory_working_set_bytes)
 ```
 

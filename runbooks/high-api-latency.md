@@ -20,18 +20,41 @@ Latency this high doesn't usually mean total failure (those are caught by error-
 Three commands to run before reading further:
 
 ```promql
-# Which endpoint is slow? p95 by handler
+# WHERE: Grafana → Explore (Prometheus data source) or Prometheus /graph.
+# WHAT: p95 HTTP request duration per handler over the last 5
+#   minutes. Histogram quantile requires the service to expose
+#   _bucket metrics (standard for Go/Java/Python with the
+#   prometheus client libs).
+# READ: result is per-handler latency in seconds. Compare against
+#   each handler's SLO. A handler usually at 50ms now at 2s = root
+#   cause; one usually at 1s still at 1s = noise. Sort to find
+#   the worst:
+#     sort_desc(histogram_quantile(0.95, sum by (handler, le) (rate(http_request_duration_seconds_bucket[5m]))))
 histogram_quantile(0.95, sum by (handler, le) (rate(http_request_duration_seconds_bucket[5m])))
 ```
 
 ```bash
-# Pod resource pressure — is the service starving for CPU?
-kubectl top pod -n $NAMESPACE -l app=$APP --sort-by=cpu
+# WHERE: shell with kubectl context set. <namespace> and <app>
+#   are filled in by AM at alert time.
+# WHAT: top pods by CPU in the affected service's namespace,
+#   sorted desc.
+# READ: pods near their CPU LIMIT (compare with `kubectl describe
+#   pod`) → latency is throttle-induced; raise limit or add
+#   replicas. Pods well under their limit → latency is downstream
+#   (DB, cache, external API). Use the runbook below for next steps.
+kubectl top pod -n <namespace> -l app=<app> --sort-by=cpu
 ```
 
 ```bash
-# Recent rollouts — did a deploy correlate with the latency spike?
-kubectl rollout history deployment -n $NAMESPACE --limit 5
+# WHERE: shell with kubectl context set.
+# WHAT: last 5 deploy revisions for the affected service.
+# READ: a revision created within the alert window (~30 min) and
+#   the latency spike following it = strong cause hypothesis.
+#   Roll back to test:
+#     kubectl rollout undo deployment/<name> -n <namespace>
+#   If no recent deploys, look downstream (DB query times,
+#   external API latency, cache hit rates).
+kubectl rollout history deployment -n <namespace> --limit 5
 ```
 
 ## Severity & urgency
@@ -98,6 +121,22 @@ TODO — high throttling causes latency without showing as CPU exhaustion.
 1. SLO miss tracking.
 2. Update this runbook with cause novelty.
 3. Consider whether p99 (or p99.9) deserves a separate alert for outlier-experience tracking.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the failing service
+- `app` — the application label of the failing service (typically the
+  value of `app.kubernetes.io/name` or your team's app label
+  convention)
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

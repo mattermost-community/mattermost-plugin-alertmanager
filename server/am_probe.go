@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -115,6 +117,37 @@ func doAMProbe(amURL string) amReachabilityEntry {
 		entry.ConfigBody = body.Config.Original
 	}
 	return entry
+}
+
+// extractAMReceiverNames scans an Alertmanager-loaded YAML body for
+// receiver names. Used by the inventory page's inverse drift check
+// — the inverse of LoadedInAM. Given AM's `config.original` we want
+// to know "which receiver names exist in AM that the plugin doesn't
+// track," which is the answer to "did someone hand-edit
+// alertmanager.yml outside the plugin?"
+//
+// Parsing is regex-based rather than YAML-parsing because the body
+// AM returns is already validated YAML (AM wouldn't have loaded it
+// otherwise). The pattern `^\s+-\s+name: <value>` is unique to
+// receiver list entries — slack_configs sub-blocks lead with
+// `api_url:` and route entries lead with `matchers:`, neither of
+// which would match this regex.
+func extractAMReceiverNames(configBody string) []string {
+	re := regexp.MustCompile(`(?m)^\s+-\s+name:\s+([^\s]+)`)
+	matches := re.FindAllStringSubmatch(configBody, -1)
+	seen := make(map[string]bool)
+	var out []string
+	for _, m := range matches {
+		// Trim wrapping quotes — YAML allows quoted or unquoted scalars.
+		name := strings.Trim(m[1], `"'`)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // uniqueAMURLs deduplicates the AlertManagerURL field across a list of

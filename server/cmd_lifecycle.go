@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -247,9 +248,20 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 	return b.String(), nil
 }
 
-// handleRotate: delete the old webhook, create a new one in the same
-// channel, update the entry's WebhookID. Re-renders the YAML so the admin
-// can paste the new URL into alertmanager.yml.
+// handleRotate dispatches to single-receiver or bulk-overdue paths
+// based on the args. Both share the underlying "delete old webhook,
+// create a new one, persist, stamp LastRotatedAt" mechanism, just
+// applied to one entry vs. many.
+//
+// Usage:
+//
+//	/alertmanager rotate <name>           # one receiver by name
+//	/alertmanager rotate all --overdue    # every receiver in this
+//	                                       # channel past its rotation
+//	                                       # threshold (sysadmin / team
+//	                                       # admin only; reads
+//	                                       # WebhookRotationDays from
+//	                                       # System Console)
 func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
 		return err.Error(), nil
@@ -257,10 +269,21 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
-		return "Usage: `/alertmanager rotate <name>`", nil
+		return "Usage: `/alertmanager rotate <name>` or `/alertmanager rotate all --overdue`", nil
 	}
-	name := fields[2]
+	target := fields[2]
+	rest := fields[3:]
 
+	if target == "all" && containsFlag(rest, "--overdue") {
+		return p.handleRotateOverdue(args)
+	}
+
+	return p.handleRotateSingle(args, target)
+}
+
+// handleRotateSingle rotates one receiver by name (or short-name).
+// Stamps LastRotatedAt on success.
+func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (string, error) {
 	current := p.getConfiguration().AlertConfigs
 	resolved := resolveReceiverName(current, name, args.ChannelId, p)
 	idx := -1
@@ -292,13 +315,110 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 	updated := make([]alertConfig, len(current))
 	copy(updated, current)
 	updated[idx].WebhookID = newHookID
+	// Stamp LastRotatedAt and clear LastReminderAt — the reminder
+	// scheduler treats this as a fresh start for the receiver.
+	updated[idx].LastRotatedAt = time.Now().UTC()
+	updated[idx].LastReminderAt = time.Time{}
 
 	if err := p.saveConfigs(updated); err != nil {
 		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
 		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v", err), nil
 	}
 
+	p.auditLog("webhook.rotation.executed", args.UserId, updated[idx].Name, args.ChannelId, "single")
 	return p.renderRotateResponse(updated[idx]), nil
+}
+
+// handleRotateOverdue rotates every receiver bound to the calling
+// channel whose LastRotatedAt is older than WebhookRotationDays.
+// One DM at the end with the merged updated YAML — same format as
+// /alertmanager export — so the operator pastes once.
+//
+// Skipped silently when WebhookRotationDays is 0 (feature disabled);
+// emits a hint pointing the sysadmin at the setting.
+func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
+	cfg := p.getConfiguration()
+	if cfg.WebhookRotationDays <= 0 {
+		return ":information_source: Webhook rotation reminders are disabled. Set `WebhookRotationDays` in System Console → Plugins → Alertmanager to a non-zero value to enable, then this command will identify receivers past the threshold.", nil
+	}
+
+	threshold := time.Duration(cfg.WebhookRotationDays) * 24 * time.Hour
+	now := time.Now().UTC()
+
+	scoped := p.configsForCurrentChannel(args)
+	if len(scoped) == 0 {
+		return ":information_source: No receivers bound to this channel — nothing to rotate.", nil
+	}
+
+	// Identify which receivers are overdue. Zero-value LastRotatedAt
+	// counts as "rotated at plugin upgrade time" — the reconciler
+	// stamps that on first sight so existing receivers don't trigger
+	// reminders day-one. Here we trust that stamping has happened.
+	var overdueNames []string
+	for _, c := range scoped {
+		if c.LastRotatedAt.IsZero() {
+			continue
+		}
+		if now.Sub(c.LastRotatedAt) > threshold {
+			overdueNames = append(overdueNames, c.Name)
+		}
+	}
+
+	if len(overdueNames) == 0 {
+		return fmt.Sprintf(":white_check_mark: No receivers in this channel are past the %d-day rotation threshold.", cfg.WebhookRotationDays), nil
+	}
+
+	rotated := make([]alertConfig, 0, len(overdueNames))
+	failed := make([]string, 0)
+	for _, name := range overdueNames {
+		summary, err := p.handleRotateSingle(args, name)
+		if err != nil || strings.HasPrefix(summary, "Failed") || strings.HasPrefix(summary, "Receiver") {
+			failed = append(failed, name+" — "+summary)
+			continue
+		}
+		// Pull the updated entry from the current config so the
+		// summary DM has the new WebhookID baked in.
+		for _, c := range p.getConfiguration().AlertConfigs {
+			if c.Name == name {
+				rotated = append(rotated, c)
+				break
+			}
+		}
+	}
+
+	// Build the merged YAML DM in the same shape /alertmanager export
+	// produces, but scoped to JUST the rotated set.
+	var y strings.Builder
+	y.WriteString("# Alertmanager receivers re-rotated by /alertmanager rotate all --overdue\n")
+	y.WriteString(fmt.Sprintf("# %d receiver(s) past the %d-day rotation threshold.\n", len(rotated), cfg.WebhookRotationDays))
+	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
+	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
+	for _, ac := range rotated {
+		y.WriteString(renderReceiverYAML(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL))
+		y.WriteString("\n")
+	}
+	routesYAML := assembleRoutesYAML(rotated)
+	if dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(rotated), ""); dmErr != nil {
+		p.API.LogWarn("rotation: couldn't DM YAML after bulk overdue rotate", "err", dmErr.Error())
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(":arrows_counterclockwise: Rotated %d receiver(s) past the %d-day threshold.\n\n", len(rotated), cfg.WebhookRotationDays))
+	if len(rotated) > 0 {
+		b.WriteString("**Rotated:**\n")
+		for _, ac := range rotated {
+			b.WriteString("- `" + ac.Name + "`\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("Updated YAML DM'd to you from `@%s`. Paste it into your `alertmanager.yml`, then reload AM (`curl -X POST http://<am>/-/reload`). Old URLs deactivate immediately.\n", webhookUsername))
+	}
+	if len(failed) > 0 {
+		b.WriteString("\n**Failed:**\n")
+		for _, f := range failed {
+			b.WriteString("- " + f + "\n")
+		}
+	}
+	return b.String(), nil
 }
 
 // resolveReceiverName takes a user-supplied receiver name and returns
@@ -459,6 +579,23 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string) (string, e
 // saveConfigs marshals + validates + persists. Validation runs locally
 // before SavePluginConfig so handlers can return clean errors without
 // touching durable state.
+//
+// Mattermost's SavePluginConfig REPLACES the entire plugin config map
+// rather than merging. If we pass just `alertconfigsjson`, every
+// other setting (WebhookHost, MetricsToken, CA bundle, YAML TTL) gets
+// wiped on every save — which happens on /alertmanager add, remove,
+// rotate, and the background reconciler. The bug is silent: the
+// settings still appear in System Console (defaults from
+// plugin.json's settings_schema kick in), but custom values an
+// admin set are erased on the next mutate operation.
+//
+// Fix: always pass the full set of keys we own. Read the live
+// configuration first, splice in the new alertconfigsjson, write
+// the merged map back. Lowercased keys because MM's webapp
+// lowercases setting.key when constructing the storage path —
+// keeping our save path aligned with its read path. Go's
+// case-insensitive JSON unmarshaling handles the read side
+// regardless.
 func (p *Plugin) saveConfigs(entries []alertConfig) error {
 	blob, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
@@ -467,12 +604,14 @@ func (p *Plugin) saveConfigs(entries []alertConfig) error {
 	if _, err := parseAlertConfigs(string(blob)); err != nil {
 		return fmt.Errorf("validation: %w", err)
 	}
-	// Lowercase the key because Mattermost's System Console webapp
-	// lowercases setting.key when constructing the storage path — keeping
-	// our save path aligned with its read path. Go's case-insensitive
-	// JSON unmarshaling handles the read side regardless.
+	cur := p.getConfiguration()
 	return p.client.Configuration.SavePluginConfig(map[string]any{
-		"alertconfigsjson": string(blob),
+		"alertconfigsjson":      string(blob),
+		"webhookhost":           cur.WebhookHost,
+		"assembledyamlttlhours": cur.AssembledYAMLTTLHours,
+		"alertmanagercabundle":  cur.AlertManagerCABundle,
+		"metricstoken":          cur.MetricsToken,
+		"webhookrotationdays":   cur.WebhookRotationDays,
 	})
 }
 

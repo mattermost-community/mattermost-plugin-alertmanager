@@ -22,18 +22,47 @@ Drops can be more dangerous than spikes — a sudden drop to 10% normal traffic 
 Three commands to run before reading further:
 
 ```promql
-# Current rate vs same-time-yesterday — what's the actual delta?
+# WHERE: Grafana → Explore (Prometheus data source) or Prometheus /graph.
+# WHAT: ratio of CURRENT 5-min request rate to YESTERDAY'S 5-min
+#   rate at the same time of day. Day-over-day cancels out
+#   normal time-of-day traffic patterns.
+# READ:
+#   1.0 = same as yesterday, healthy
+#   0.5 = HALF of yesterday → traffic loss (upstream broken)
+#   2.0 = DOUBLE → surge (DDoS, viral content, retry storm,
+#     marketing event)
+#   Sort to find outliers:
+#     sort_desc(
+#       sum by (service) (rate(http_requests_total[5m]))
+#       / sum by (service) (rate(http_requests_total[5m] offset 1d))
+#     )
 sum by (service) (rate(http_requests_total[5m])) / sum by (service) (rate(http_requests_total[5m] offset 1d))
 ```
 
 ```bash
-# Where is the traffic coming from? Top source IPs at the ingress
+# WHERE: shell with kubectl context set. Assumes ingress-nginx in
+#   the ingress-nginx namespace — adjust selector if you run a
+#   different ingress controller.
+# WHAT: top 10 source IPs from the last 500 ingress log lines.
+#   First column of nginx access logs is $remote_addr.
+# READ: one IP with thousands of requests = single client surge
+#   (DDoS, buggy client, scraper). Block at ingress
+#   (NetworkPolicy or ingress rate-limit annotations).
+#   Well-distributed across many IPs = real traffic surge (or
+#   a botnet). Real surge → scale up; botnet → CDN/WAF the
+#   problem upstream.
 kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --tail=500 | awk '{print $1}' | sort | uniq -c | sort -rn | head -10
 ```
 
 ```bash
-# Recent deploys — did we ship something that changed traffic patterns?
-kubectl rollout history deployment -n $NAMESPACE --limit 5
+# WHERE: shell with kubectl context set.
+# WHAT: last 5 deploys for the affected service.
+# READ: a recent deploy can cause either anomaly direction:
+#   bug that drops traffic (clients bounce on errors), or a
+#   change that increases it (new feature suddenly being used).
+#   Roll back to test if the timing aligns:
+#     kubectl rollout undo deployment/<name> -n <namespace>
+kubectl rollout history deployment -n <namespace> --limit 5
 ```
 
 ## Severity & urgency
@@ -97,6 +126,20 @@ TODO — CDN logs, LB logs, DNS resolution check. Is the traffic reaching your e
 
 1. Capacity review if the spike caused real strain.
 2. Improve detection — should you have an alert on *direction* (spike vs drop), with different responses?
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the service with the rate
+  anomaly
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

@@ -102,10 +102,26 @@ func (p *Plugin) localBaseURL() string {
 	return "http://localhost" + listenAddr
 }
 
+// incomingWebhookDisplayNameMax mirrors Mattermost server's
+// model.IncomingWebhookDisplayNameMaxLength constant (64). Importing
+// that constant directly would pull in the server module's heavy
+// dependencies; mirroring it here keeps the plugin's import surface
+// small. If MM ever changes the limit, this value drifts and we'd
+// see "Invalid title" errors on previously-fitting names — the
+// failure mode is loud, not silent.
+const incomingWebhookDisplayNameMax = 64
+
 // createIncomingWebhook registers a Mattermost incoming webhook in the
 // destination channel. The hook is technically owned by the calling
 // admin (since the PAT we minted is theirs), but Username/IconURL
 // override fields ensure posts render as @alertmanagerbot.
+//
+// The displayName is truncated to the MM-server limit because
+// long receiver names (channel-suffixed slugs) plus the
+// "Alertmanager: " prefix overflow the 64-char cap. Truncation
+// keeps the create call from failing with "Invalid title"; the
+// receiver's full identity is preserved in plugin config and the
+// AM YAML, where the truncation doesn't apply.
 //
 // Returns the hook ID — that's the public identifier going into the URL
 // path /hooks/<id>.
@@ -115,6 +131,10 @@ func (p *Plugin) createIncomingWebhook(callerUserID, channelID, displayName stri
 		return "", err
 	}
 	defer cleanup()
+
+	if len(displayName) > incomingWebhookDisplayNameMax {
+		displayName = displayName[:incomingWebhookDisplayNameMax]
+	}
 
 	hook := &model.IncomingWebhook{
 		ChannelId:   channelID,

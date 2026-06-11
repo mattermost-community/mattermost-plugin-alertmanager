@@ -16,17 +16,40 @@ Linear regression on the last 6 hours of usage predicts that the volume will run
 Three commands to run before reading further:
 
 ```bash
-# Current free space + mount points
+# WHERE: shell on the affected node — SSH directly, or
+#   `kubectl debug node/<node> -it --image=ubuntu`.
+# WHAT: human-readable disk usage per mount point.
+# READ: Use% column. The mount that's >85% (or that matches the
+#   alert's mountpoint label) is the one filling. Avail tells
+#   you how many bytes left — GB = hours of runway; MB = minutes.
 df -h
 ```
 
 ```bash
-# Top 10 biggest directories under root
+# WHERE: shell on the affected node.
+# WHAT: top 10 biggest directories under root, sorted desc. The
+#   -x flag stops du at filesystem boundaries so it doesn't walk
+#   into /proc, /sys, or other special mounts.
+# READ: usual suspects:
+#     /var/lib/docker → image/log buildup (docker system prune)
+#     /var/lib/containerd → same, containerd flavor
+#     /var/log → logs not rotating (check logrotate, journald)
+#     /var/lib/journal → systemd journal too verbose (set
+#       SystemMaxUse= in journald.conf)
+#     /tmp → forgotten artifacts from a process that should clean up
 du -hx --max-depth=2 / 2>/dev/null | sort -hr | head -10
 ```
 
 ```promql
-# When does Prometheus think the disk will fill?
+# WHERE: Grafana → Explore (Prometheus data source) or Prometheus /graph.
+# WHAT: predict_linear extrapolates the last 1h of available-bytes
+#   data forward 4 hours. Returns the predicted byte count at T+4h
+#   based on the current consumption rate.
+# READ: NEGATIVE value → projection says you hit 0 bytes within
+#   4 hours, act now. Small positive (<10 GiB) → 4-8 hours of
+#   runway. Confirm with the actual `df -h` above before making
+#   capacity decisions — predict_linear gets fooled by recent log
+#   churn or backup jobs that aren't representative of steady state.
 predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[1h], 4 * 3600)
 ```
 

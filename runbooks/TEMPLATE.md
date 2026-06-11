@@ -28,20 +28,40 @@ Keep them short, copy-paste-ready, and ordered by "would I run this
 first?" — not by completeness. Use `bash`, `promql`, or `sql` as the
 language hint so Mattermost renders syntax highlighting.
 
-```bash
-# One-line description of what this checks
+**Inline template structure** (every command block follows this):
+
+```
+# WHERE: which tool to run the command in (shell + kubectl context /
+#   Grafana → Explore / Prometheus /graph / psql with $DATABASE_URL).
+# WHAT: one or two sentences on what the command queries and why.
+#   Include surrounding theory only when it makes the output legible
+#   (e.g., "CFS throttling = Linux scheduler capping the container").
+# READ: how to interpret the output — what value is "bad", what's
+#   normal, what the next action is. Concrete numbers ("> 0.1 means
+#   throttled 10%+ of the time") beat vague hedging.
 <command>
 ```
 
+**Label placeholders for per-alert auto-fill:** if the command should
+include label values from the firing alert (e.g., the failing pod,
+namespace, host), use `<labelname>` in the command line itself (not
+in the comment — comments are skipped by the substituter). At alert
+render time, Alertmanager fills in the real value. Allowed labels:
+`alertname`, `app`, `cluster`, `container`, `deployment`, `instance`,
+`job`, `namespace`, `node`, `pod`, `service`. Unknown placeholders
+pass through unchanged.
+
 ```bash
-# Next narrowing step
-<command>
+# WHERE: shell with kubectl context set.
+# WHAT: describe the affected pod.
+# READ: see the Conditions block for what's False.
+kubectl describe pod -n <namespace> <pod>
 ```
 
-```promql
-# A relevant Prometheus query is fine here too
-<expression>
-```
+If you add placeholders, also add a `## Required Prometheus labels`
+section near the end of the runbook (before `## Related runbooks`)
+listing the labels your diagnostics expect. See existing runbooks
+for the format.
 
 ## Severity & urgency
 

@@ -18,17 +18,42 @@ When `Ready=False` persists past `pod-eviction-timeout` (default 5m), Kubernetes
 Three commands to run before reading further:
 
 ```bash
-# Why isn't the node Ready? Conditions tell you
-kubectl describe node $NODE | grep -A 20 "Conditions:"
+# WHERE: shell with kubectl context set. <node> is filled in by AM
+#   at alert time.
+# WHAT: full description of the affected node, filtered to the
+#   Conditions block (status of Ready, DiskPressure, MemoryPressure,
+#   PIDPressure, NetworkUnavailable).
+# READ: conditions to watch:
+#   Ready=False → the trigger; the Message names the underlying cause
+#   DiskPressure=True → node rejects new pods due to disk fullness
+#   MemoryPressure=True → similar, memory
+#   PIDPressure=True → out of process IDs (rare but real)
+#   NetworkUnavailable=True → CNI failure
+#   LastHeartbeatTime shows how long since kubelet last reported in.
+kubectl describe node <node> | grep -A 20 "Conditions:"
 ```
 
 ```bash
-# Kubelet logs on the affected node (SSH in or run a node-shell pod)
+# WHERE: SSH onto the affected node, OR
+#   `kubectl debug node/<node> -it --image=ubuntu` and chroot
+#   into /host. journalctl needs root on the host.
+# WHAT: last 10 minutes of kubelet's systemd journal logs.
+# READ: error/warning lines you'll see:
+#   "container runtime is down" → containerd/docker dead, restart it
+#   "Failed to talk to apiserver" → control-plane connectivity
+#   "evicting pod" → node shedding pods due to pressure
+#   "CSI driver" errors → storage plugin issue
+#   "NetworkPlugin cni failed" → CNI plugin failure
 journalctl -u kubelet --since "10 minutes ago" --no-pager | tail -50
 ```
 
 ```bash
-# Overall cluster node state
+# WHERE: shell with kubectl context set.
+# WHAT: all nodes in the cluster with status, age, version, IPs.
+# READ: cross-reference — is this isolated to one node or are
+#   others Ready=Unknown / NotReady too? Multiple → control-
+#   plane–to–node network is the issue, bigger incident.
+#   Only this node → focus on its kubelet/runtime/host.
 kubectl get nodes -o wide
 ```
 
@@ -95,6 +120,20 @@ kubectl describe node <node-name> | grep -A1 "MemoryPressure\|DiskPressure"
 
 1. Postmortem if pods were evicted and caused user impact.
 2. Review whether the cluster has spare capacity for an N-1 node loss. If not, scale up.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `node` — the failing node name (e.g.,
+  `ip-10-0-12-47.ec2.internal`, `node-pool-prod-abc123`)
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

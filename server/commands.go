@@ -15,7 +15,7 @@ const (
 	helpMsg = "**Alertmanager bridge slash commands** _(channel-scoped — you only see receivers bound to this channel)_\n\n" +
 		"_All commands listed in alphabetical order to match the autocomplete dropdown._\n\n" +
 		"- `/alertmanager about` — plugin build info, configured settings, reconciler health, jump-off links\n" +
-		"- `/alertmanager add <team> <channel> <am-url> [set]` — bulk-create receivers for a named set: `all` (default, every runbook), `application`, `compute`, `database`, `networking`, `observability`, `storage`\n" +
+		"- `/alertmanager add <team> <channel> <am-url> [set] [on]` — bulk-create receivers for a named set: `all` (default, every runbook), `application`, `compute`, `database`, `networking`, `observability`, `storage`. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays).\n" +
 		"- `/alertmanager alerts` — list currently firing alerts (grouped by Alertmanager URL — one section per backend, not per receiver)\n" +
 		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
 		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: architecture, configuration, development, kubernetes, slash_commands)\n" +
@@ -71,7 +71,7 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	root.AddCommand(model.NewAutocompleteData("about", "", "Plugin build info, configured settings, and links"))
 
-	add := model.NewAutocompleteData("add", "[team] [channel] [am-url] [set] [--webhook-host=<url>]", "Create receivers for a named runbook set (sysadmin/team_admin)")
+	add := model.NewAutocompleteData("add", "[team] [channel] [am-url] [set] [on]", "Create receivers for a named runbook set. Trailing `on` opts in to rotation reminders. (sysadmin/team_admin)")
 	add.AddDynamicListArgument("Mattermost team URL slug — tab through your teams", teamFetchURL, true)
 	add.AddDynamicListArgument("Mattermost channel URL slug — public channels in the chosen team (or type a new name to auto-create)", channelFetchURL, true)
 	add.AddTextArgument("Alertmanager API base URL (no trailing slash)", "[am-url]", "")
@@ -83,6 +83,9 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "networking", HelpText: "Ingress 5xx, cert expiry, DNS failure (3)"},
 		{Item: "observability", HelpText: "Prometheus scrape down, Alertmanager notify fail (2)"},
 		{Item: "storage", HelpText: "PV full, disk fill rate (2)"},
+	})
+	add.AddStaticListArgument("Optional: enable webhook rotation reminders for these receivers", false, []model.AutocompleteListItem{
+		{Item: "on", HelpText: "Opt receivers in this channel INTO rotation reminders. Sysadmins get DM'd when these webhooks haven't been rotated for the threshold set in System Console → WebhookRotationDays. Without this flag, these receivers are never reminded — even if the global threshold is set. Per-channel scope: opting in here does not affect receivers in other channels."},
 	})
 	root.AddCommand(add)
 
@@ -135,8 +138,11 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	root.AddCommand(remove)
 
-	rotate := model.NewAutocompleteData("rotate", "[name]", "Recreate the webhook with a new hook-id (sysadmin/team_admin)")
-	rotate.AddTextArgument("Name of the receiver to rotate", "[name]", "")
+	rotate := model.NewAutocompleteData("rotate", "[name|all --overdue]", "Recreate webhook with a new hook-id. `all --overdue` rotates everything past the threshold set by System Console → WebhookRotationDays.")
+	rotate.AddTextArgument("Receiver name to rotate, OR `all` followed by --overdue to rotate everything past the rotation threshold in this channel", "[name|all]", "")
+	rotate.AddStaticListArgument("Optional flag — only valid after `all`", false, []model.AutocompleteListItem{
+		{Item: "--overdue", HelpText: "Rotate only receivers past the WebhookRotationDays threshold (System Console setting; default 0 = feature off)"},
+	})
 	root.AddCommand(rotate)
 
 	root.AddCommand(model.NewAutocompleteData("silences", "", "List active Alertmanager silences (grouped by Alertmanager URL)"))

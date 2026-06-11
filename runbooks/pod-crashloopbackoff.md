@@ -28,18 +28,45 @@ The diagnostic work is finding why it's dying.
 Three commands to run before reading further:
 
 ```bash
-# Why is the pod dying? Describe shows recent events + container state
-kubectl describe pod -n $NAMESPACE $POD
+# WHERE: shell with kubectl context set. <namespace> and <pod>
+#   are filled in by AM at alert time.
+# WHAT: full pod description: spec, status, events, conditions.
+# READ: most useful sections, top to bottom:
+#   Status: current Phase (Running, Pending, Failed)
+#   Containers: each container's State (Running/Waiting/Terminated)
+#     and LastState (what it was before the current state).
+#     Terminated LastState with Reason=Error or OOMKilled +
+#     ExitCode=N tells you why it died this time.
+#   Events: chronological list of what kubelet did. Repeated
+#     "Back-off restarting failed container" confirms the loop.
+kubectl describe pod -n <namespace> <pod>
 ```
 
 ```bash
-# Logs from the PREVIOUS (dead) container — current is in crashloop
-kubectl logs -n $NAMESPACE $POD --previous --tail=200
+# WHERE: shell with kubectl context set.
+# WHAT: logs from the PREVIOUS container instance — the one that
+#   crashed. Current container is in waiting state and hasn't
+#   logged yet. --previous reads /var/log/containers/<>.log on
+#   the node, which the kubelet preserves across restarts.
+# READ: scan the last 50-100 lines for stack traces, panic
+#   messages, "FATAL", "ERROR", "panic:" patterns. The very last
+#   few lines before EOF are usually the cause — processes
+#   typically log a final error line before exit.
+kubectl logs -n <namespace> <pod> --previous --tail=200
 ```
 
 ```bash
-# Events scoped to this pod (often more useful than describe)
-kubectl get events -n $NAMESPACE --field-selector involvedObject.name=$POD --sort-by='.lastTimestamp'
+# WHERE: shell with kubectl context set.
+# WHAT: events scoped to this specific pod, time-sorted. More
+#   focused than the namespace-wide event list.
+# READ: watch for:
+#   BackOff → currently in backoff, will retry after the delay
+#   Failed → container exited non-zero (with exit code)
+#   Unhealthy → readiness or liveness probe failed
+#   FailedMount → PVC didn't attach (check PVC + PV state)
+#   CreateContainerError → image pull, configmap, secret, or
+#     volume reference problem
+kubectl get events -n <namespace> --field-selector involvedObject.name=<pod> --sort-by='.lastTimestamp'
 ```
 
 ## Severity & urgency
@@ -184,6 +211,20 @@ If unresolved within 5 minutes:
 3. **For OOM/leak/regression**: file a code-side regression bug.
 4. **For probe misconfig**: update the workload manifest. Don't let the kill threshold be the rate-limiter on application startup.
 5. **Review whether the alert threshold is right** — `> 3 restarts in 15m` is a common default, but very-slow-starting services may hit this in normal operation. Tune if it's noisy.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the crashlooping pod
+- `pod` — the specific pod that's restarting
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

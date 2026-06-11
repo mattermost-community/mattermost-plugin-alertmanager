@@ -52,6 +52,14 @@
                 "help_text": "Optional. Overrides the host:port portion of the Mattermost webhook URL that gets rendered into alertmanager.yml's api_url field. Leave empty to use the Mattermost SiteURL.\n\nSet this when Alertmanager reaches Mattermost over a different network path than end users:\n- **Docker compose**: http://host.docker.internal:8065 (AM container can't reach localhost)\n- **Kubernetes**: http://mattermost.<namespace>.svc.cluster.local:8065 (cluster-internal service DNS; avoids Ingress round-trip)\n- **Bare metal / shared host**: leave empty\n\nThe runbook URLs in the slack_configs text template continue using SiteURL because those are clicked by users in browsers.",
                 "placeholder": "http://mattermost.mattermost.svc.cluster.local:8065",
                 "default": ""
+            },
+            {
+                "key": "WebhookRotationDays",
+                "display_name": "Webhook rotation reminder period (days)",
+                "type": "number",
+                "help_text": "Optional. When set to a value > 0, the plugin DMs sysadmins when a receiver's webhook hasn't been rotated for this many days. The DM includes the exact `/alertmanager rotate all --overdue` command to run in the affected channel.\n\nIMPORTANT: this is a REMINDER only — the plugin does NOT automatically rotate webhooks. Webhook delivery continues to work until an admin runs the rotation command. After rotation, the admin must paste the new YAML into alertmanager.yml (Alertmanager has no write API; the plugin can't push the new URL to AM directly).\n\nCommon values:\n- 90 (quarterly) — recommended baseline for security hygiene\n- 180 (semi-annual)\n- 365 (annual)\n\nLower than 30 generates noise unless you have a specific secret-rotation policy. Default 0 = feature disabled.\n\nReminders repeat at most once every 7 days per receiver until the rotation happens.",
+                "placeholder": "0",
+                "default": 0
             }
         ]
     }

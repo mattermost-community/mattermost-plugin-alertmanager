@@ -35,18 +35,46 @@ The exact error code matters for diagnosis:
 Three commands to run before reading further:
 
 ```promql
-# 5xx rate by service — which service is failing?
-sum by (service) (rate(http_requests_total{code=~"5.."}[5m]))
+# Run in Grafana → Explore (Prometheus data source) or in Prometheus'
+# own UI at /graph. Returns services sorted by 5xx ratio, worst first.
+# A value of 0.05 = 5% of that service's requests returning 5xx;
+# 0.30 = 30%. Raw 5xx counts mislead — 3 errors/s on a 1 req/s service
+# is "on fire", same 3 errors/s on a 1000 req/s service is noise.
+sort_desc(
+  sum by (service) (rate(http_requests_total{code=~"5.."}[5m]))
+  /
+  sum by (service) (rate(http_requests_total[5m]))
+)
 ```
 
 ```bash
-# Recent deploys — did a release ship the bug?
-kubectl rollout history deployment -n $NAMESPACE --limit 3
+# WHERE: shell with kubectl context set. <namespace> is filled
+#   in by AM at alert time.
+# WHAT: last 3 deploy revisions for the failing service.
+# READ: a revision created within the alert window (last ~30
+#   min) and the 5xx spike following it = strong cause hypothesis.
+#   Roll back to test:
+#     kubectl rollout undo deployment/<name> -n <namespace>
+#   If no recent deploys, the cause is upstream — check the
+#   service's downstream dependencies (DB query times, external
+#   API latency, cache outage).
+kubectl rollout history deployment -n <namespace> --limit 3
 ```
 
 ```bash
-# Application error logs from the affected service
-kubectl logs -n $NAMESPACE -l app=$APP --tail=200 | grep -E "ERROR|panic|stack"
+# WHERE: shell with kubectl context set.
+# WHAT: last 200 log lines from the failing service's pods,
+#   filtered to error/panic/stack patterns. <service> is filled
+#   in by AM at alert time.
+# READ: scan for:
+#   panic / stack trace → bug in the code, find the file:line
+#     where the panic originates
+#   "ERROR" lines with downstream failure → external dependency
+#     issue (DB, cache, API)
+#   "EOF" / "connection reset" → backend pod restarting under load
+#   Timestamps tell you if errors are still happening or have
+#   stopped (alert may be lagging real state by minutes).
+kubectl logs -n <namespace> -l app=<service> --tail=200 | grep -E "ERROR|panic|stack"
 ```
 
 ## Severity & urgency
@@ -172,6 +200,22 @@ If unresolved within 5 minutes:
 2. **Update this runbook** if the cause was novel.
 3. **For regression**: file a code-side bug. The deploy gate that let it through is also worth examining — were tests insufficient? Was canary skipped?
 4. **For capacity**: file a follow-up to make HPA actually engage, or to raise the floor of replicas if HPA reacted too slowly.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the failing service
+- `service` — the application/service identifier used by your
+  `app=<service>` selector (typically matches the K8s Service name
+  and the `app.kubernetes.io/name` pod label)
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

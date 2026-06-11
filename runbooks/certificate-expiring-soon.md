@@ -18,17 +18,41 @@ Critical-severity sibling (`CertificateExpiringSoon` at <3 days) fires if renewa
 Three commands to run before reading further:
 
 ```bash
-# Confirm current cert expiry on the actual endpoint
-echo | openssl s_client -servername $HOST -connect $HOST:443 2>/dev/null | openssl x509 -noout -dates
+# WHERE: shell with openssl (any Mac/Linux). <instance> is filled
+#   in by AM at alert time with the affected hostname.
+# WHAT: TLS handshake against the host, then print the cert's
+#   notBefore and notAfter dates. Bypasses cert-manager entirely
+#   — shows what your USERS see at handshake time.
+# READ: notAfter is the hard expiry. Compare to today.
+#   Past = users see browser cert warnings now, page immediately.
+#   <14 days = act this week.
+#   <3 days = act today.
+echo | openssl s_client -servername <instance> -connect <instance>:443 2>/dev/null | openssl x509 -noout -dates
 ```
 
 ```bash
-# cert-manager: find certs that aren't Ready
+# WHERE: shell with kubectl context set. Only relevant if you use
+#   cert-manager. Skip if certs are managed by ACM, hand-rolled,
+#   or any other tool.
+# WHAT: every cert-manager Certificate resource cluster-wide,
+#   filtering out those with READY=True. Anything printed = not
+#   currently ready (renewal stuck, validation failing, etc.).
+# READ: each row shows the Certificate name + namespace + READY=False.
+#   Next step is `kubectl describe certificate -n <ns> <name>` to
+#   see the failure Reason in Events. Common: Let's Encrypt rate
+#   limit, DNS-01 challenge failing, HTTP-01 wrong path.
 kubectl get certificates -A | grep -v "True"
 ```
 
 ```bash
-# Detail on the affected Certificate resource
+# WHERE: shell with kubectl context set.
+# WHAT: cert-manager status block for all certs cluster-wide.
+#   Filters to the Status: section which has conditions + reasons.
+# READ: look for `Type: Ready, Status: False` paired with Reason.
+#   NoActiveOrders → renewal hasn't started, check Issuer logs
+#   Issuing → renewal in flight, wait 1-2 min
+#   Failed → renewal hit a hard error, check the Message field
+#     for the underlying ACME response
 kubectl describe certificate -A | grep -A 10 "Status:"
 ```
 
@@ -78,6 +102,20 @@ kubectl get events -n <ns> --field-selector involvedObject.kind=Certificate
 
 1. **Platform on-call**.
 2. **Security team** if internal CA workflow.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `instance` — the hostname being probed for TLS (e.g.,
+  `api.example.com`, `mattermost.example.com`)
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

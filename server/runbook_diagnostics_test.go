@@ -98,6 +98,57 @@ Content with no quick diagnostics section.
 	})
 }
 
+// TestSubstituteLabelPlaceholders pins the placeholder-to-template
+// rewrite. The contract is: known labels become AM Go-template
+// directives; unknown ones pass through (an angle-bracketed token
+// in a shell or SQL command is far more likely to be content than
+// an intentional placeholder).
+func TestSubstituteLabelPlaceholders(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"single known label", "host=<instance>", "host={{ .Labels.instance }}"},
+		{"multiple known labels", "kubectl logs -n <namespace> <pod>", "kubectl logs -n {{ .Labels.namespace }} {{ .Labels.pod }}"},
+		{"unknown label passes through", "<unknown>", "<unknown>"},
+		{"mixed known and unknown", "<instance> <unknown>", "{{ .Labels.instance }} <unknown>"},
+		{"uppercase is not a placeholder", "<INSTANCE>", "<INSTANCE>"},
+		{"angle brackets in shell expression untouched", "if [ $x -lt 5 ]; then echo '<5'; fi", "if [ $x -lt 5 ]; then echo '<5'; fi"},
+		{"empty input", "", ""},
+		{"no placeholders", "psql -c 'SELECT 1'", "psql -c 'SELECT 1'"},
+		{"shell comments left alone", "# <namespace> is the alert's namespace\nkubectl get pod -n <namespace>", "# <namespace> is the alert's namespace\nkubectl get pod -n {{ .Labels.namespace }}"},
+		{"SQL comments left alone", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '<instance>';", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '{{ .Labels.instance }}';"},
+		{"indented comment still skipped", "   # <pod> here\nkubectl logs <pod>", "   # <pod> here\nkubectl logs {{ .Labels.pod }}"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := substituteLabelPlaceholders(tc.in)
+			if got != tc.want {
+				t.Fatalf("substitute: expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestFormatQuickDiagnosticsForAlertWithPlaceholders confirms the
+// substitution lands in the rendered diagnostics block — guards
+// against a refactor that wires the parser without wiring the
+// substitution.
+func TestFormatQuickDiagnosticsForAlertWithPlaceholders(t *testing.T) {
+	blocks := []quickDiagnostic{
+		{Lang: "bash", Code: "psql host=<instance> -c 'SELECT 1;'"},
+	}
+	got := formatQuickDiagnosticsForAlert(blocks)
+	if !strings.Contains(got, "{{ .Labels.instance }}") {
+		t.Fatalf("expected AM template directive in output, got: %s", got)
+	}
+	if strings.Contains(got, "<instance>") {
+		t.Fatalf("expected <instance> to be replaced, but it's still present: %s", got)
+	}
+}
+
 // TestFormatQuickDiagnosticsForAlert pins the chat-output rendering
 // so a future template tweak doesn't silently change the on-call
 // experience.

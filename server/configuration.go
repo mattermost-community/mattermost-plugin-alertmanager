@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // rawConfiguration is what Mattermost's settings framework fills in. The
@@ -26,6 +27,7 @@ type rawConfiguration struct {
 	AssembledYAMLTTLHours int
 	AlertManagerCABundle  string
 	MetricsToken          string
+	WebhookRotationDays   int
 }
 
 // configuration is the parsed, validated, ready-to-serve plugin state.
@@ -37,6 +39,7 @@ type configuration struct {
 	AssembledYAMLTTLHours int
 	AlertManagerCABundle  string
 	MetricsToken          string
+	WebhookRotationDays   int
 	nameIndex             map[string]int
 }
 
@@ -75,6 +78,32 @@ type alertConfig struct {
 	// set via System Console JSON edit if needed.
 	User     string `json:"user,omitempty"`
 	Password string `json:"password,omitempty"`
+
+	// LastRotatedAt is when the WebhookID was last (re)created via
+	// /alertmanager add or /alertmanager rotate. Used by the rotation
+	// reminder scheduler — when the configured WebhookRotationDays
+	// elapses since this timestamp, the plugin DMs sysadmins to
+	// suggest rotation. Zero value (== time.Time{}) is treated as
+	// "rotated at plugin upgrade time" by the reconciler, so
+	// existing receivers don't immediately fire reminders after the
+	// feature is enabled.
+	LastRotatedAt time.Time `json:"lastRotatedAt,omitempty"`
+
+	// LastReminderAt is when the most-recent rotation-due reminder
+	// was sent for this receiver. Used to throttle repeats — the
+	// reconciler skips re-reminding for the same receiver until
+	// reminderRepeatInterval has elapsed since this timestamp.
+	// Reset on rotation along with LastRotatedAt.
+	LastReminderAt time.Time `json:"lastReminderAt,omitempty"`
+
+	// RotationRemindersEnabled is the per-receiver opt-in for the
+	// rotation reminder system. Set true at creation time via the
+	// optional `on` arg to /alertmanager add. When false (default),
+	// the reconciler skips this receiver in its reminder check even
+	// if the global WebhookRotationDays threshold passes. Two-tier
+	// design: sysadmin sets the threshold globally; channel-team-admin
+	// opts INTO rotation per channel at add time.
+	RotationRemindersEnabled bool `json:"rotationRemindersEnabled,omitempty"`
 }
 
 // Names are user-facing identifiers — URL-safe so they can appear in slash
@@ -104,9 +133,12 @@ func (ac *alertConfig) IsValid() error {
 
 // newConfiguration builds a configuration from validated entries and
 // pre-computes the name index. Caller must have validated entries.
-func newConfiguration(entries []alertConfig, webhookHost string, yamlTTLHours int, caBundle, metricsToken string) *configuration {
+func newConfiguration(entries []alertConfig, webhookHost string, yamlTTLHours int, caBundle, metricsToken string, rotationDays int) *configuration {
 	if yamlTTLHours < 0 {
 		yamlTTLHours = 0
+	}
+	if rotationDays < 0 {
+		rotationDays = 0
 	}
 	c := &configuration{
 		AlertConfigs:          entries,
@@ -114,6 +146,7 @@ func newConfiguration(entries []alertConfig, webhookHost string, yamlTTLHours in
 		AssembledYAMLTTLHours: yamlTTLHours,
 		AlertManagerCABundle:  caBundle,
 		MetricsToken:          metricsToken,
+		WebhookRotationDays:   rotationDays,
 		nameIndex:             make(map[string]int, len(entries)),
 	}
 	for i, e := range entries {
@@ -126,7 +159,7 @@ func newConfiguration(entries []alertConfig, webhookHost string, yamlTTLHours in
 func (c *configuration) Clone() *configuration {
 	cloned := make([]alertConfig, len(c.AlertConfigs))
 	copy(cloned, c.AlertConfigs)
-	return newConfiguration(cloned, c.WebhookHost, c.AssembledYAMLTTLHours, c.AlertManagerCABundle, c.MetricsToken)
+	return newConfiguration(cloned, c.WebhookHost, c.AssembledYAMLTTLHours, c.AlertManagerCABundle, c.MetricsToken, c.WebhookRotationDays)
 }
 
 // configMutex guards getConfiguration / setConfiguration. Embedded in Plugin
@@ -247,7 +280,7 @@ func (p *Plugin) OnConfigurationChange() error {
 		}
 	}
 
-	p.setConfiguration(newConfiguration(entries, raw.WebhookHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken))
+	p.setConfiguration(newConfiguration(entries, raw.WebhookHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
 	// Refresh the alertmanager package's HTTP client to use the new
 	// CA bundle (if set). Applied on every config change so admins
 	// can rotate certificates without a plugin restart.

@@ -21,17 +21,45 @@ sum(rate(nginx_ingress_controller_requests[5m]))
 Three commands to run before reading further:
 
 ```bash
-# Ingress controller logs — what's it complaining about?
+# WHERE: shell with kubectl context set. Assumes ingress-nginx;
+#   adjust namespace + selector if you run Traefik, HAProxy,
+#   Contour, or another controller.
+# WHAT: last 200 log lines from the ingress controller pods,
+#   filtered to lines containing a 4xx or 5xx response code.
+# READ: each line shows the request that errored, including
+#   upstream and error message. Common patterns:
+#     "no live upstreams" → all backend pods unhealthy
+#     "upstream timed out" → backend slow, not dead
+#     "connect() failed (111: Connection refused)" → backend pod
+#       unreachable on configured port (deploy mismatch, NetworkPolicy)
+#     "client closed connection" → benign user behavior
 kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --tail=200 | grep -E "[45][0-9]{2}"
 ```
 
 ```bash
-# Do the upstream services even have endpoints?
+# WHERE: shell with kubectl context set.
+# WHAT: every Service in every namespace + its Endpoints. The
+#   ENDPOINTS column lists actual pod IP:port pairs.
+# READ: a service with ENDPOINTS=<none> has no Ready pods backing
+#   it — all requests routed there return 503 at ingress. Common
+#   cause: pod readiness probe failing, or deployment scaled to 0.
+#   Cross-reference with the failing ingress hostname to find the
+#   right service.
 kubectl get endpoints -A | grep -v "<none>"
 ```
 
 ```promql
-# 5xx rate by ingress — narrow to the failing hostname
+# WHERE: Grafana → Explore (Prometheus data source) or Prometheus /graph.
+# WHAT: per-ingress 5xx rate over 5 min from nginx-ingress-controller's
+#   request counter.
+# READ: nonzero result for a specific ingress = that hostname is
+#   the failing one. Convert to a RATIO for a better signal —
+#   raw rate misleads on low-traffic services:
+#     sort_desc(
+#       sum by (ingress) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+#       /
+#       sum by (ingress) (rate(nginx_ingress_controller_requests[5m]))
+#     )
 sum by (ingress) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
 ```
 

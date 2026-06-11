@@ -18,17 +18,40 @@ When the volume hits 100%, writes return ENOSPC. The application may crash, the 
 Three commands to run before reading further:
 
 ```bash
-# Actual current usage from inside the mounted pod
-kubectl exec -n $NAMESPACE $POD -- df -h $MOUNT_PATH
+# WHERE: shell with kubectl context set. <namespace> and <pod> are
+#   filled in by AM at alert time. Set MOUNT_PATH to the in-pod
+#   path of the PV (find via `kubectl describe pod <pod>` →
+#   look under Mounts: in the container spec).
+# WHAT: df -h run from INSIDE the pod, scoped to the PV mount.
+#   Most accurate live usage — kubelet metrics in Prometheus can
+#   lag by minutes.
+# READ: USE% column. >90% = act now. Confirms the alert isn't
+#   stale data the metric hasn't cleared yet.
+kubectl exec -n <namespace> <pod> -- df -h $MOUNT_PATH
 ```
 
 ```bash
-# What's filling the volume?
-kubectl exec -n $NAMESPACE $POD -- du -hx --max-depth=2 $MOUNT_PATH | sort -hr | head -10
+# WHERE: shell with kubectl context set.
+# WHAT: top 10 biggest directories under the PV mount, sorted desc.
+#   -x prevents crossing into other mounts.
+# READ: usual culprits:
+#     application data that didn't rotate (logs, uploads, cache)
+#     a database that grew its WAL or didn't VACUUM
+#     a forgotten backup directory the cleanup job missed
+#     temp files from a job that crashed without cleanup
+kubectl exec -n <namespace> <pod> -- du -hx --max-depth=2 $MOUNT_PATH | sort -hr | head -10
 ```
 
 ```promql
-# PVC usage % across the cluster
+# WHERE: Grafana → Explore (Prometheus data source) or Prometheus /graph.
+# WHAT: PVC usage percentage cluster-wide. kubelet exposes used
+#   and capacity metrics for every PV it knows about.
+# READ: result is a percentage (e.g., 92 = 92% full). Sort desc
+#   or filter to one PVC for the time-series view:
+#     (kubelet_volume_stats_used_bytes{persistentvolumeclaim="<pvc-name>"}
+#      / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim="<pvc-name>"}) * 100
+#   This metric is best for TRENDING — for exact live state,
+#   use df -h from inside the pod above.
 (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100
 ```
 
@@ -91,6 +114,20 @@ deriv(kubelet_volume_stats_used_bytes{persistentvolumeclaim="<pvc-name>"}[24h])
 1. Capacity planning review.
 2. If a bug caused runaway write, file regression.
 3. Verify volume expansion is supported on the StorageClass for future growth.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the pod using the PV
+- `pod` — the specific pod with the PV mount
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

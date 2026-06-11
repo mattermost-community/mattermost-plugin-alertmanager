@@ -216,11 +216,51 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		reconcilerHealthy = age < 10*time.Minute
 	}
 
+	// Inverse drift detection: receivers that exist in AM's loaded
+	// config but have no matching plugin entry. Means someone
+	// hand-edited alertmanager.yml outside the plugin's lifecycle
+	// (or rotated a webhook via /alertmanager rotate without
+	// pasting the new YAML into AM yet).
+	//
+	// Computed per AM URL because each backend has its own loaded
+	// config. Limited to reachable backends — we can't drift-check
+	// against AM if we couldn't fetch its config in this cycle.
+	pluginNamesPerAM := make(map[string]map[string]bool)
+	for _, c := range configs {
+		if pluginNamesPerAM[c.AlertManagerURL] == nil {
+			pluginNamesPerAM[c.AlertManagerURL] = make(map[string]bool)
+		}
+		pluginNamesPerAM[c.AlertManagerURL][c.Name] = true
+	}
+	type amDriftGroup struct {
+		AMURL string
+		Names []string
+	}
+	var amDrift []amDriftGroup
+	for amURL, entry := range amStatus {
+		if !entry.Reachable || entry.ConfigBody == "" {
+			continue
+		}
+		amNames := extractAMReceiverNames(entry.ConfigBody)
+		pluginSet := pluginNamesPerAM[amURL]
+		var driftNames []string
+		for _, n := range amNames {
+			if !pluginSet[n] {
+				driftNames = append(driftNames, n)
+			}
+		}
+		if len(driftNames) > 0 {
+			amDrift = append(amDrift, amDriftGroup{AMURL: amURL, Names: driftNames})
+		}
+	}
+	sort.Slice(amDrift, func(i, j int) bool { return amDrift[i].AMURL < amDrift[j].AMURL })
+
 	data := struct {
 		Total             int
 		Channels          int
 		Groups            []inventoryGroup
 		TeamRollup        []teamRow
+		AMDrift           []amDriftGroup
 		ReconcilerStatus  string
 		ReconcilerHealthy bool
 		GroupMode         string
@@ -231,6 +271,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		Channels:          countDistinctChannels(configs),
 		Groups:            groups,
 		TeamRollup:        teamRows,
+		AMDrift:           amDrift,
 		ReconcilerStatus:  reconcilerStatus,
 		ReconcilerHealthy: reconcilerHealthy,
 		GroupMode:         groupMode,
@@ -375,6 +416,10 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
         .status.ok { background: #d4f5dd; color: #16753a; }
         .status.warn { background: #ffe9c2; color: #8a5a00; }
         .status.bad { background: #fde2e2; color: #9b2222; }
+        .status.drift { background: #ffe9c2; color: #8a5a00; }
+        .drift-group { background: white; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 24px; overflow: hidden; max-width: 1200px; border-left: 4px solid #f59e0b; }
+        .drift-group .group-header { background: #8a5a00; }
+        .drift-group .group-header .sub { opacity: 0.9; }
         .legend { font-size: 13px; color: #555; margin-bottom: 16px; max-width: 1200px; background: white; padding: 12px 16px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
         .legend .row { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; }
         .legend .status { margin-left: 0; margin-right: 0; flex-shrink: 0; min-width: 140px; text-align: center; }
@@ -411,6 +456,7 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
         <div class="row"><span class="status ok">OK</span><span class="desc">Receiver is loaded in AM and AM is reachable.</span></div>
         <div class="row"><span class="status warn">Not in AM YAML</span><span class="desc">Receiver in plugin config but missing from AM's loaded config (paste the latest receivers.yml + reload AM).</span></div>
         <div class="row"><span class="status bad">AM unreachable</span><span class="desc">Plugin can't reach the Alertmanager URL (network, TLS, or AM down).</span></div>
+        <div class="row"><span class="status drift">AM-only</span><span class="desc">Loaded in AM but NOT tracked by the plugin (someone hand-edited alertmanager.yml). Shown in the orange "AM-only receivers" section below.</span></div>
     </div>
 
     <div class="controls">
@@ -422,6 +468,30 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
         </div>
         <a class="csv-link" href="{{.CSVHref}}">Download CSV</a>
     </div>
+
+    {{if .AMDrift}}
+    {{range .AMDrift}}
+    <div class="drift-group">
+        <div class="group-header">
+            <h2>⚠ AM-only receivers</h2>
+            <div class="sub">{{.AMURL}} · {{len .Names}} receiver(s) loaded in AM but not tracked by the plugin. Usually means someone hand-edited alertmanager.yml outside the plugin lifecycle, OR a /alertmanager rotate ran but the new YAML wasn't pasted in. Investigate before they go stale.</div>
+        </div>
+        <table>
+            <thead>
+                <tr><th>Receiver name (AM-side)</th><th>Plugin status</th></tr>
+            </thead>
+            <tbody>
+                {{range .Names}}
+                <tr class="receiver-row">
+                    <td><code>{{.}}</code></td>
+                    <td><span class="status drift">AM-only</span> <em>(no plugin entry)</em></td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{end}}
+    {{end}}
 
     {{if .Groups}}
     {{range .Groups}}

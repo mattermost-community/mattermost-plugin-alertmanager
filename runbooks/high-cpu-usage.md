@@ -39,18 +39,45 @@ critical-severity.
 Three commands to run before reading further:
 
 ```bash
-# Which pods are eating CPU right now?
+# WHERE: shell with kubectl context set to the affected cluster.
+# WHAT: top 20 pods cluster-wide by CPU, sorted descending.
+# READ: if the alert's <pod> is at the top with millicores in the
+#   thousands, that confirms the source. If the alert's pod is mid-
+#   list, look at neighbors that may be CPU-starving it (noisy
+#   neighbor on the same node). The CPU column is current usage,
+#   not limit — compare against the pod's CPU limit (from
+#   `kubectl describe pod`) to know if you're at the cap.
 kubectl top pods -A --sort-by=cpu | head -20
 ```
 
 ```promql
-# Is CFS throttling actually happening?
+# WHERE: Grafana → Explore (Prometheus data source) or Prometheus /graph.
+# WHAT: CFS throttle time per container per 5 minutes, as a rate.
+#   CFS throttling = Linux scheduler capping the container at its
+#   CPU limit. The container's threads literally stop running until
+#   the next 100ms accounting window. That IS the user-visible
+#   latency cause for CPU alerts.
+# READ: 0 = no throttling, healthy. >0.1 (rate of 100ms+ throttled
+#   per second) means the container is throttled 10%+ of the time —
+#   raise the CPU limit or shrink the workload. Filter to the
+#   specific failing container by appending a label selector:
+#     rate(container_cpu_cfs_throttled_seconds_total{namespace="<namespace>",pod="<pod>"}[5m])
 rate(container_cpu_cfs_throttled_seconds_total[5m])
 ```
 
 ```bash
-# Recent deploys — did a release correlate?
-kubectl rollout history deployment -n $NAMESPACE --limit 5
+# WHERE: shell with kubectl context set.
+# WHAT: last 5 rollouts of the deployment in <namespace>. <namespace>
+#   is filled in by AM at alert time; replace `<deployment-name>`
+#   with the actual deployment from the alert's pod (the pod name
+#   typically has the deployment name as a prefix).
+# READ: if REVISION N was created in the last ~30 minutes and the
+#   CPU alert started after, you've found the cause. Roll back with
+#     kubectl rollout undo deployment/<deployment-name> -n <namespace>
+#   If no recent deploys, the cause is upstream (traffic spike,
+#   downstream slowness, or a config change applied via a different
+#   path like a ConfigMap reload).
+kubectl rollout history deployment -n <namespace> --limit 5
 ```
 
 ## Severity & urgency
@@ -231,6 +258,22 @@ After the immediate fix lands:
 4. **Consider whether the alert thresholds are right.** A real
    incident that fires below your threshold (you found out from a
    user, not from PagerDuty) is a tuning signal.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the failing deployment
+- `pod` — referenced in the PromQL filter example for narrowing
+  throttle-rate analysis; useful but not required for the basic
+  command to run
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

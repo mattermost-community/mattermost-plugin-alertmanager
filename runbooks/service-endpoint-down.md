@@ -24,18 +24,46 @@ The endpoint is dark. Distinct from "high error rate" (where some requests work)
 Three commands to run before reading further:
 
 ```bash
-# Try hitting the service directly from inside the cluster
-kubectl run -it --rm httptest --image=curlimages/curl --restart=Never -- curl -v http://$SERVICE.$NAMESPACE/healthz
+# WHERE: shell with kubectl context set. <namespace> and <service>
+#   are filled in by AM at alert time. Spins up an ephemeral pod
+#   with curl baked in — works regardless of whether your own
+#   workload images have curl.
+# WHAT: hit the service's /healthz endpoint from INSIDE the
+#   cluster (same network the service serves).
+# READ:
+#   200 → service IS reachable from inside; alert may be stale
+#     or you're testing the wrong path. Try the actual app path.
+#   Connection refused → service has no Ready endpoints (next
+#     command will confirm).
+#   Timeout → service exists but its handler is hung (alive but
+#     non-functional). Check the backing pod's logs.
+kubectl run -it --rm httptest --image=curlimages/curl --restart=Never -- curl -v http://<service>.<namespace>/healthz
 ```
 
 ```bash
-# Does the service have ANY ready endpoints?
-kubectl get endpoints -n $NAMESPACE $SERVICE
+# WHERE: shell with kubectl context set.
+# WHAT: endpoints for the failing service. Subsets[].Addresses
+#   lists Ready pod IPs that receive traffic.
+# READ: empty Addresses → no Ready pods backing the service.
+#   That's why the probe fails. Pivot to:
+#     pod-not-ready runbook (pods exist but failing readiness), or
+#     pod-crashloopbackoff (pods restart-looping)
+#   NotReadyAddresses also worth scanning — pods exist but
+#   haven't passed readiness yet (slow startup, dependency wait).
+kubectl get endpoints -n <namespace> <service>
 ```
 
 ```bash
-# Service details — selector, ports, type
-kubectl describe svc -n $NAMESPACE $SERVICE
+# WHERE: shell with kubectl context set.
+# WHAT: service spec details — selector, ports, type.
+# READ: confirm:
+#   Selector matches actual pod labels (#1 cause of phantom-empty
+#     endpoints — labels changed without updating the service)
+#   Type=ClusterIP → ClusterIP must be routable from the test pod
+#   Type=LoadBalancer → check ExternalIP. <pending> = cloud
+#     provider hasn't provisioned the LB yet (look at events).
+#   Ports[].targetPort matches a port the pod actually listens on
+kubectl describe svc -n <namespace> <service>
 ```
 
 ## Severity & urgency
@@ -89,6 +117,21 @@ TODO — Service selector changes, network policy changes, ingress reconfig.
 
 1. Postmortem if user impact.
 2. Update this runbook.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the failing Service
+- `service` — the Kubernetes Service name (typically matches the
+  Service resource's `metadata.name`)
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

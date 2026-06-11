@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
+	amconfig "github.com/prometheus/alertmanager/config"
 )
 
 // handleExport renders fresh YAML for every receiver bound to the
@@ -168,7 +170,28 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 		}
 		newRoutes.WriteString(assembleRoutesYAML(toAdd))
 
-		diffText := buildDiffAgainstLoaded(entry.ConfigBody, newRecvs.String(), newRoutes.String())
+		diffText, mergedYAML := buildDiffAgainstLoaded(entry.ConfigBody, newRecvs.String(), newRoutes.String())
+
+		// Schema validation runs on the UN-redacted merged YAML so we
+		// catch real schema issues regardless of what we'll mask in
+		// the display.
+		if err := validateMergedConfig(mergedYAML); err != nil {
+			fmt.Fprintf(&diffOutput, "Validation: :x: merged config would NOT load.\n  Error: %s\n  Do NOT paste this into alertmanager.yml as-is — fix the underlying issue first.\n\n", err.Error())
+		} else {
+			diffOutput.WriteString("Validation: :white_check_mark: merged config parses cleanly via alertmanager/config. Safe to paste.\n\n")
+		}
+
+		// Redact other channels' secrets in the diff display. The
+		// caller can see their own channel's receivers in the clear
+		// (they own those URLs and need them for the paste); every
+		// other channel's webhook URLs / passwords / vendor tokens
+		// get masked.
+		ownNames := make(map[string]bool, len(g.Receivers))
+		for _, ac := range g.Receivers {
+			ownNames[ac.Name] = true
+		}
+		diffText = redactOtherChannelsInDiff(diffText, ownNames)
+
 		diffOutput.WriteString(diffText)
 		diffOutput.WriteString("\n")
 	}
@@ -194,28 +217,36 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 	}
 
 	summary.WriteString(fmt.Sprintf("Total additions across all backends: **%d**\n\n", totalAdds))
-	summary.WriteString(fmt.Sprintf("Diff DM'd as `alertmanager-diff.txt` from `@%s`. Open the DM to download.\n", webhookUsername))
-	summary.WriteString("\n:warning: This output is RAW — it contains every receiver loaded in AM (across all channels and teams), including their webhook URLs and any basic-auth credentials. Don't paste it into a public channel. Redacted-output mode is planned for a follow-up release.")
+	summary.WriteString(fmt.Sprintf("Diff DM'd as `alertmanager-diff.txt` from `@%s`. Open the DM to download.\n\n", webhookUsername))
+	summary.WriteString(":lock: Other channels' webhook URLs, passwords, and vendor tokens in the diff are shown as `<REDACTED>`. Your channel's additions are un-redacted so you can paste them into `alertmanager.yml`. Schema validation runs on the un-redacted merge in-memory, so the validation result reflects the real config — not the redacted display.")
 	return summary.String(), nil
 }
 
 // buildDiffAgainstLoaded produces unified-diff-style output showing
-// what would be inserted into the AM-loaded YAML. Not a strict diff
-// algorithm — assumes pure-addition semantics (which the plugin's
-// additions always are) and identifies the insertion points by
-// finding top-level `receivers:` and `route.routes:` keys.
+// what would be inserted into the AM-loaded YAML AND emits the
+// merged YAML as a plain (un-prefixed) string for downstream
+// validation. Not a strict diff algorithm — assumes pure-addition
+// semantics (which the plugin's additions always are) and
+// identifies the insertion points by finding top-level `receivers:`
+// and `route.routes:` keys.
 //
-// Lines that exist in the loaded YAML get prefixed with two spaces
-// (unified-diff "context" convention). Inserted lines get prefixed
-// with `+ ` (unified-diff "addition" convention). The result is
-// readable with `git diff`-style rendering or in any text editor.
+// diffDisplay: each line of the loaded YAML prefixed with `  `
+// (two-space context convention), each inserted line prefixed with
+// `+ ` (unified-diff addition convention). Readable with git-diff
+// style or any text editor.
+//
+// mergedYAML: same content as diffDisplay minus the prefixes — the
+// actual YAML that would result from pasting the diff's additions
+// into the AM config. Used by validateMergedConfig downstream so we
+// can tell the operator whether the paste would parse cleanly.
 //
 // Behavior when the insertion points aren't found (malformed YAML,
 // unusual structure): append at end with a comment explaining the
-// fallback. The operator can still see what would be added and apply
-// the merge manually.
-func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) string {
-	var b strings.Builder
+// fallback. The operator can still see what would be added and
+// apply the merge manually; validation may still pass if the
+// surrounding YAML is well-formed.
+func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDisplay, mergedYAML string) {
+	var b, m strings.Builder
 
 	loadedLines := strings.Split(loadedYAML, "\n")
 
@@ -265,13 +296,17 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) string {
 
 	// Helper closures avoid repeating the marker+addition emit
 	// pattern at three different call sites (mid-file, end-of-file,
-	// and no-block-found fallback).
+	// and no-block-found fallback). Each emit writes to BOTH the
+	// diff display (with `+ ` markers + comment headers) and the
+	// merged YAML (plain text, ready for validation/paste).
 	emitReceivers := func() {
 		b.WriteString("+ # ---- plugin additions: receivers ----\n")
 		for _, addLine := range strings.Split(strings.TrimRight(newReceivers, "\n"), "\n") {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")
+			m.WriteString(addLine)
+			m.WriteString("\n")
 		}
 	}
 	emitRoutes := func() {
@@ -280,6 +315,8 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) string {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")
+			m.WriteString(addLine)
+			m.WriteString("\n")
 		}
 	}
 
@@ -299,13 +336,16 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) string {
 			b.WriteString("  ")
 			b.WriteString(loadedLines[i])
 			b.WriteString("\n")
+			m.WriteString(loadedLines[i])
+			m.WriteString("\n")
 		}
 	}
 
 	// Fallback: if insertion points weren't found at all (malformed
 	// YAML, unusual layout, partial config), append at the end of
 	// the output with a NOTE so the operator knows it wasn't a
-	// clean splice.
+	// clean splice. We still append to the merged YAML so validation
+	// runs over the same content the operator would see.
 	if receiversEndIdx == -1 && newReceivers != "" {
 		b.WriteString("\n+ # ---- plugin additions: receivers ----\n")
 		b.WriteString("+ # NOTE: couldn't find `receivers:` block — merge these manually under it.\n")
@@ -313,6 +353,8 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) string {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")
+			m.WriteString(addLine)
+			m.WriteString("\n")
 		}
 	}
 	if routesEndIdx == -1 && newRoutes != "" {
@@ -322,8 +364,114 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) string {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")
+			m.WriteString(addLine)
+			m.WriteString("\n")
 		}
 	}
 
-	return b.String()
+	return b.String(), m.String()
+}
+
+// redactSensitiveLineRegex matches a YAML line setting one of the
+// sensitive AM-config keys to a quoted-or-unquoted scalar. Captures
+// the leading whitespace + key + ":" so we can substitute just the
+// value while preserving indentation.
+//
+// Limited to keys that actually carry secret material in alertmanager
+// configs — api_url (webhook bearer tokens), password (basic auth),
+// service_key + routing_key + integration_url (PagerDuty / Opsgenie
+// / generic webhook). Adding more is cheap; the conservative default
+// avoids redacting keys that look secret but aren't.
+var redactSensitiveLineRegex = regexp.MustCompile(`^(\s+(?:-\s+)?(?:api_url|password|service_key|routing_key|integration_url|auth_token|bearer_token|webhook_url|url|secret):\s+).+$`)
+
+// receiverNameLineRegex captures the receiver name on a `- name: foo`
+// list entry. Used by redactOtherChannelsInDiff to track which
+// receiver block we're currently inside while walking the diff.
+var receiverNameLineRegex = regexp.MustCompile(`^\s+-\s+name:\s+([^\s]+)`)
+
+// redactOtherChannelsInDiff masks sensitive values (api_url, password,
+// vendor-specific keys) in the diff DISPLAY for receivers that don't
+// belong to the calling channel. The validation step has already run
+// on the un-redacted in-memory merge, so the security promise here is
+// purely about what lands in the operator's DM: only their channel's
+// receivers' secrets are exposed; everyone else's get `<REDACTED>`.
+//
+// `+ ` lines (additions from THIS channel) never get redacted — those
+// are the URLs the operator needs to paste into alertmanager.yml.
+//
+// `  ` lines (context, copied from AM's loaded YAML) get redacted
+// when they sit inside a receiver block whose name isn't in the
+// caller's set. Lines outside receiver blocks (global config, route
+// tree, etc.) pass through unchanged because they don't typically
+// carry secrets.
+func redactOtherChannelsInDiff(diffDisplay string, ownReceiverNames map[string]bool) string {
+	lines := strings.Split(diffDisplay, "\n")
+	out := make([]string, 0, len(lines))
+
+	inReceiversBlock := false
+	currentReceiver := ""
+
+	for _, line := range lines {
+		if len(line) < 2 {
+			out = append(out, line)
+			continue
+		}
+		prefix := line[:2]
+		body := line[2:]
+
+		// Track entry into / exit from the `receivers:` block. We
+		// only consider TOP-LEVEL `receivers:` — nested mentions in
+		// comments or doc strings don't shift state.
+		bodyTrim := strings.TrimSpace(body)
+		if bodyTrim == "receivers:" {
+			inReceiversBlock = true
+			currentReceiver = ""
+		} else if len(bodyTrim) > 0 && len(body) > 0 && body[0] != ' ' && body[0] != '#' && !strings.HasPrefix(bodyTrim, "receivers:") {
+			inReceiversBlock = false
+			currentReceiver = ""
+		}
+
+		// Inside the receivers block, watch for `- name: <X>` markers
+		// to know which receiver we're currently rendering.
+		if inReceiversBlock {
+			if m := receiverNameLineRegex.FindStringSubmatch(body); m != nil {
+				currentReceiver = strings.Trim(m[1], `"'`)
+			}
+		}
+
+		// Redaction trigger: context line (not addition), inside the
+		// receivers block, inside a receiver that isn't ours.
+		shouldRedact := prefix == "  " &&
+			inReceiversBlock &&
+			currentReceiver != "" &&
+			!ownReceiverNames[currentReceiver]
+
+		if shouldRedact {
+			if m := redactSensitiveLineRegex.FindStringSubmatch(body); m != nil {
+				body = m[1] + "<REDACTED>"
+				line = prefix + body
+			}
+		}
+		out = append(out, line)
+	}
+
+	return strings.Join(out, "\n")
+}
+
+// validateMergedConfig runs the merged YAML through the official
+// Alertmanager config parser to confirm the paste would actually
+// load. Catches schema errors (undefined receiver references,
+// malformed matchers, route tree issues) that a textual splice
+// could happily produce but AM would reject at reload time.
+//
+// Returns nil on success. On failure, returns a user-facing error
+// the operator can act on (typically the exact error AM would print
+// during config reload). Empty input is treated as no-op: we can't
+// validate "no additions" against AM, so skip rather than mislead.
+func validateMergedConfig(mergedYAML string) error {
+	if strings.TrimSpace(mergedYAML) == "" {
+		return nil
+	}
+	_, err := amconfig.Load(mergedYAML)
+	return err
 }

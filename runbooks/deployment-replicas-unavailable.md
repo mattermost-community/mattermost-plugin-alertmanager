@@ -20,18 +20,46 @@ This is usually a downstream effect of pods crashlooping, failing readiness, or 
 Three commands to run before reading further:
 
 ```bash
-# What's the deployment showing? Compare DESIRED vs AVAILABLE
-kubectl get deploy -n $NAMESPACE -o wide
+# WHERE: shell with kubectl context set. <namespace> is filled in
+#   by AM at alert time.
+# WHAT: deployments in <namespace> showing READY (current/desired),
+#   UP-TO-DATE (replicas at the latest revision), AVAILABLE
+#   (replicas passing readiness for ≥MinReadySeconds), image.
+# READ:
+#   DESIRED > READY → you're hitting the alert.
+#   DESIRED > UP-TO-DATE → a rollout is in flight.
+#   READY = 0 with DESIRED > 0 → no pods can come up (bad image,
+#     missing config, no fitting nodes).
+#   AVAILABLE < READY for >30s → pods came up but aren't yet
+#     passing readiness probes.
+kubectl get deploy -n <namespace> -o wide
 ```
 
 ```bash
-# Find pods that aren't ready and why
-kubectl describe pod -n $NAMESPACE -l app=$APP | grep -A 10 "Conditions:"
+# WHERE: shell with kubectl context set.
+# WHAT: pod conditions for the failing app's pods. Conditions
+#   are PodScheduled, Initialized, ContainersReady, Ready.
+# READ: find the first condition with Status=False — that's
+#   the bottleneck:
+#     PodScheduled=False → no node fits (resources, affinity, taints)
+#     Initialized=False → init container failed
+#     ContainersReady=False → container probe failing
+#     Ready=False (others True) → readiness probe failing
+#   The Reason and Message under each False condition narrow further.
+kubectl describe pod -n <namespace> -l app=<app> | grep -A 10 "Conditions:"
 ```
 
 ```bash
-# Recent cluster events for this namespace
-kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -20
+# WHERE: shell with kubectl context set.
+# WHAT: last 20 cluster events in <namespace>, time-sorted.
+# READ: events surface reasons conditions don't show in detail.
+#   Look for Warning type events:
+#     FailedScheduling → no node has capacity
+#     FailedMount → PVC didn't bind
+#     BackOff → image pull or container crash
+#     Unhealthy → probe failure (with the actual response code)
+#     ErrImagePull → image not found or registry unreachable
+kubectl get events -n <namespace> --sort-by='.lastTimestamp' | tail -20
 ```
 
 ## Severity & urgency
@@ -97,6 +125,22 @@ kubectl get events -n <namespace> --sort-by='.lastTimestamp' | grep -iE "FailedS
 1. Postmortem if the deployment serves user-facing traffic.
 2. Review the deployment's `maxUnavailable` setting — was it too permissive?
 3. Update this runbook if cause was novel.
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `namespace` — the Kubernetes namespace of the failing deployment
+- `app` — the application label of the failing deployment (typically
+  the value of `app.kubernetes.io/name` or your team's app label
+  convention)
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

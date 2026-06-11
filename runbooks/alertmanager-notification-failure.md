@@ -19,17 +19,42 @@ Three commands to run before reading further. These cover the most
 common root causes:
 
 ```bash
-# Which receiver is failing?
+# WHERE: shell with curl + jq. Set AM_URL to your Alertmanager
+#   (e.g., http://alertmanager:9093 if port-forwarded).
+# WHAT: lists distinct receiver names AM is trying to notify.
+#   AM holds a backlog when notify fails — any receiver that
+#   repeatedly appears while errors fire is the one in trouble.
+# READ: one receiver name dominating = that's the smoking gun.
+#   Many receivers failing = your receiver target (Mattermost,
+#   PagerDuty, etc.) is degraded org-wide, escalate to its owner.
 curl -s $AM_URL/api/v2/alerts | jq '[.[].receivers[].name] | unique'
 ```
 
 ```bash
-# Recent notify errors in AM logs
+# WHERE: shell with kubectl context set, OR your log aggregator
+#   (Loki / Splunk / Datadog) filtered to the alertmanager service.
+# WHAT: last 200 log lines from alertmanager pods, filtered to
+#   notify-related entries (errors, retries, timeouts).
+# READ: look for "Notify for alerts failed" + the receiver name
+#   and underlying error. Common ones:
+#     "connect: connection refused" → receiver host unreachable
+#     "unexpected status code 401/403" → auth/credential issue
+#     "unexpected status code 400" → payload rejection
+#     "context deadline exceeded" → receiver too slow
 kubectl logs -n monitoring -l app=alertmanager --tail=200 | grep -i notify
 ```
 
 ```bash
-# Hit the failing webhook directly to verify it accepts POSTs
+# WHERE: shell with curl, run from a host that has network access
+#   to the receiver URL (same network where AM runs).
+# WHAT: POST a minimal payload directly to the receiver, bypassing
+#   AM's templating + retry logic. Substitute WEBHOOK_URL with the
+#   actual api_url from the failing receiver's config.
+# READ: 200 = receiver works, AM-side issue (template, config).
+#   401/403 = creds. 400 = payload schema rejection (check
+#   Content-Type, JSON shape). Connection refused = the URL
+#   doesn't resolve from where AM runs (host networking, DNS,
+#   wrong endpoint, container vs host).
 curl -X POST -H "Content-Type: application/json" -d '{"text":"test"}' $WEBHOOK_URL
 ```
 

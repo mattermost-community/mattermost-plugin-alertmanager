@@ -18,17 +18,45 @@ DNS failures present as connectivity loss but the underlying network is fine —
 Three commands to run before reading further:
 
 ```bash
-# Can a pod resolve kubernetes.default at all?
+# WHERE: shell with kubectl context set. Assumes CoreDNS for
+#   in-cluster DNS — adjust the namespace + selector for kube-dns
+#   or other resolvers if you run them.
+# WHAT: spin up an ephemeral busybox pod and resolve
+#   kubernetes.default via the in-cluster DNS service.
+# READ: success → in-cluster DNS works for at least one client;
+#   the alert's source may be specific to one node or pod's
+#   network namespace. Failure ("can't find", "connection refused")
+#   → DNS itself broken. Test an EXTERNAL host too (substitute
+#   google.com) to differentiate intra-cluster vs upstream/forward.
 kubectl run -it --rm dnstest --image=busybox --restart=Never -- nslookup kubernetes.default
 ```
 
 ```bash
-# CoreDNS pod status
+# WHERE: shell with kubectl context set.
+# WHAT: CoreDNS pod status. Default install has 2 replicas in
+#   kube-system labeled k8s-app=kube-dns.
+# READ: STATUS=Running + READY=1/1 for all replicas = healthy.
+#   READY=0/1 with Running → pod alive but readiness probe
+#     failing (likely overloaded or hitting a config error).
+#   CrashLoopBackOff → CoreDNS process can't start, check
+#     logs (next command) and the corefile ConfigMap.
+#   Only 1 replica when expected 2 → schedule/eviction issue.
 kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
 ```
 
 ```bash
-# Recent CoreDNS errors
+# WHERE: shell with kubectl context set.
+# WHAT: last 100 log lines from all CoreDNS pods, filtered to
+#   error-related entries.
+# READ: common patterns:
+#     "i/o timeout" on an upstream → forward DNS dead, check the
+#       cluster's upstream resolver (often a VPC resolver pointed
+#       at via /etc/resolv.conf on nodes)
+#     "no such host" → likely benign noise from invalid lookups
+#     "loop detected" → corefile has a forwarding loop, fix the
+#       Corefile ConfigMap (often a self-reference)
+#     "permission denied" / "operation not permitted" → seccomp
+#       or NetworkPolicy blocking CoreDNS's outbound DNS
 kubectl logs -n kube-system -l k8s-app=kube-dns --tail=100 | grep -iE "error|fail|refused"
 ```
 

@@ -28,21 +28,58 @@ narrows from "is the DB up?" to "is the network path clean?" to
 
 ## Quick diagnostics
 
-Three commands to run before reading further:
+Three commands to run before reading further. These work whether
+your Postgres is RDS, Azure Database for PostgreSQL, Cloud SQL, a
+self-managed VM, or an in-cluster StatefulSet — they connect via
+`$DATABASE_URL` rather than assuming a specific topology.
 
 ```bash
-# Is the DB actually accepting connections?
-kubectl exec -n db deploy/postgres -- pg_isready -U $PGUSER
+# WHERE: shell with psql installed. <instance> is filled in by AM
+#   at alert time with the failing DB host. Auth comes from
+#   ~/.pgpass or the PGUSER/PGPASSWORD env vars. sslmode=require
+#   is correct for managed DBs (RDS, Azure DB, Cloud SQL) which
+#   require TLS; works against in-cluster too.
+# WHAT: minimal connectivity probe — does the DB accept connections
+#   and run a trivial query?
+# READ:
+#   returns "1" → healthy.
+#   connection refused → DB process down OR network blocked.
+#   timeout → DB reachable but unresponsive (locked, max_connections
+#     hit, internal crash).
+#   FATAL: password authentication failed → auth issue, check
+#     credentials or rotated password.
+#   FATAL: no pg_hba.conf entry for host → your IP isn't allowed
+#     (security group / pg_hba.conf rule needed).
+psql "host=<instance> sslmode=require" -c "SELECT 1;"
 ```
 
 ```bash
-# Pod status — restarts, age, readiness
-kubectl get pods -n db -l app=postgres -o wide
+# WHERE: shell with psql. Same connection params as above.
+# WHAT: active connection count vs the DB's max_connections setting.
+# READ: active near max → you're connection-saturated; new
+#   connections fail with "FATAL: too many connections." Usual
+#   causes: app-side connection leak (pool not returning connections),
+#   missed pgbouncer config, or undersized max_connections for
+#   the workload. Raise max_connections OR fix the leaker; both
+#   require a different runbook follow-up.
+psql "host=<instance> sslmode=require" -c "SELECT count(*) AS active, current_setting('max_connections') AS max FROM pg_stat_activity;"
 ```
 
 ```bash
-# How many active connections (vs max_connections)?
-kubectl exec -n db deploy/postgres -- psql -c "SELECT count(*) FROM pg_stat_activity"
+# WHERE: shell with kubectl context set (works when the APP runs
+#   in k8s, even if the DB doesn't). <namespace> is filled in by
+#   AM at alert time; <app> needs to match the calling app's label.
+# WHAT: last 200 lines from the application pods, filtered to
+#   connection-failure patterns.
+# READ: common patterns the grep catches:
+#   "could not connect" → DB unreachable from app's network
+#   "connection refused" → port/firewall issue
+#   "FATAL" → DB-side rejection (usually auth)
+#   "password authentication failed" → credentials mismatch
+#   Spot-check timestamps: if errors started within the alert's
+#   window, the alert is current. If they trail off, the issue
+#   already resolved and the alert is stale.
+kubectl logs -n <namespace> -l app=<app> --tail=200 | grep -iE "could not connect|connection refused|FATAL|password authentication failed"
 ```
 
 ## Severity & urgency
@@ -195,6 +232,24 @@ If unresolved within 5 minutes:
    connection loss? Should there be a circuit-breaker before
    user-visible errors? Should reads route to a replica during master
    outages?
+
+## Required Prometheus labels
+
+The Quick diagnostics commands above use `<label>` placeholders that
+Alertmanager fills in from each alert's labels at delivery time. For
+this runbook to render copy-paste-runnable commands, your Prometheus
+rule must emit:
+
+- `instance` — the DB hostname (e.g.,
+  `postgres-prod.internal.example.com`, `db.rds.amazonaws.com`)
+- `namespace` — the Kubernetes namespace of the connecting application
+- `app` — the application label of the connecting service (typically
+  the value of `app.kubernetes.io/name` or your team's app label
+  convention)
+
+When a label is missing, the rendered command shows `<no value>` in
+that slot — still readable, just not auto-runnable. Add the label to
+your rule and reload Prometheus.
 
 ## Related runbooks
 

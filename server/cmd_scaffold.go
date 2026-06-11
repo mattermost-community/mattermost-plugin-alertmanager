@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 
@@ -87,6 +88,23 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		}
 	}
 
+	// Extract optional `on` positional anywhere in the args list. Opts
+	// the receivers being created into the rotation reminder system.
+	// Default off — without this, the receivers we create here never
+	// trigger rotation reminders regardless of the global
+	// WebhookRotationDays setting. Two-tier opt-in: sysadmin sets the
+	// global threshold; channel team-admins opt INTO rotation per-add.
+	rotationOptIn := false
+	filtered := make([]string, 0, len(rest))
+	for _, arg := range rest {
+		if strings.EqualFold(arg, "on") {
+			rotationOptIn = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	rest = filtered
+
 	if len(rest) < 3 || len(rest) > 4 {
 		return addUsageMessage(), nil
 	}
@@ -157,12 +175,14 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		}
 
 		newEntries = append(newEntries, alertConfig{
-			Name:                receiverName,
-			Team:                team,
-			Channel:             channel,
-			AlertManagerURL:     amURL,
-			WebhookID:           hookID,
-			WebhookHostOverride: webhookHostOverride,
+			Name:                     receiverName,
+			Team:                     team,
+			Channel:                  channel,
+			AlertManagerURL:          amURL,
+			WebhookID:                hookID,
+			WebhookHostOverride:      webhookHostOverride,
+			LastRotatedAt:            time.Now().UTC(),
+			RotationRemindersEnabled: rotationOptIn,
 		})
 		results = append(results, scaffoldResult{receiverName, "created", hookID})
 	}
@@ -328,11 +348,22 @@ func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdC
 }
 
 // assembleRoutesYAML generates the `routes:` block matching the
-// receivers in the given list. Each runbook slug maps to one or more
-// receiver entries (one per channel binding). When a slug has multiple
-// bindings (= fan-out), all but the last route get `continue: true`
-// so AM keeps evaluating after each match and the alert fans out to
-// every destination channel.
+// receivers in the given list. Every emitted route carries
+// `continue: true`.
+//
+// Why unconditionally continue: this generator is invoked once per
+// /alertmanager add or /alertmanager export call. Those calls are
+// channel-scoped — the generator only sees the receivers in ONE
+// channel. When the user runs /alertmanager add twice (once per
+// channel) and pastes both routes blocks under a single
+// `route.routes:`, a fan-out runbook (same slug bound to two
+// channels) ends up with two routes that have identical matchers.
+// AM's default is "stop at first match" — without `continue: true`
+// the second route is silently dead and the second channel never
+// gets the alert. Setting continue on every plugin-generated route
+// is defensive: each route's matcher is unique to one runbook slug,
+// so continue only changes behavior in the fan-out case, where it
+// fixes the dead-route bug.
 //
 // Output is a plain `routes:` block ready to paste under
 // `route.routes:` in alertmanager.yml.
@@ -359,20 +390,17 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	b.WriteString("# Paste this block under `route.routes:` in your alertmanager.yml.\n")
 	b.WriteString("# Routes match on the `runbook` label of each alert — set that label\n")
 	b.WriteString("# on your Prometheus rules to drive alerts to the right receiver.\n")
-	b.WriteString("# Fan-out (same runbook → multiple channels) uses `continue: true`\n")
-	b.WriteString("# so AM keeps evaluating routes after each match.\n")
+	b.WriteString("# Every route carries `continue: true` so fan-out (same runbook routed\n")
+	b.WriteString("# to multiple channels via separate /alertmanager add calls) works\n")
+	b.WriteString("# correctly when both blocks are pasted under one routes: list.\n")
 	b.WriteString("\n")
 	b.WriteString("routes:\n")
 	for _, slug := range slugs {
 		group := grouped[slug]
-		for i, ac := range group {
+		for _, ac := range group {
 			b.WriteString(fmt.Sprintf("  - matchers: [runbook=%q]\n", slug))
 			b.WriteString(fmt.Sprintf("    receiver: %s\n", ac.Name))
-			// Fan-out: keep evaluating after each match except the last
-			// (the final one in the chain stops naturally).
-			if i < len(group)-1 {
-				b.WriteString("    continue: true\n")
-			}
+			b.WriteString("    continue: true\n")
 		}
 	}
 	return b.String()
