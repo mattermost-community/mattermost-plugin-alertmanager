@@ -122,7 +122,7 @@ receivers:
 		}
 		found := false
 		for _, m := range matches {
-			if string(m.RouteOpts.Receiver) == "high-cpu-usage--alerts" {
+			if m.RouteOpts.Receiver == "high-cpu-usage--alerts" {
 				found = true
 				break
 			}
@@ -130,7 +130,7 @@ receivers:
 		if !found {
 			var names []string
 			for _, m := range matches {
-				names = append(names, string(m.RouteOpts.Receiver))
+				names = append(names, m.RouteOpts.Receiver)
 			}
 			t.Fatalf("expected high-cpu-usage--alerts in matches, got: %v", names)
 		}
@@ -144,7 +144,7 @@ receivers:
 		// effective receiver is the root's receiver ("catchall").
 		// Our handler treats no-matches as "would fall to default."
 		for _, m := range matches {
-			if string(m.RouteOpts.Receiver) != "catchall" {
+			if m.RouteOpts.Receiver != "catchall" {
 				t.Fatalf("expected only catchall in matches when no sub-route applies, got %q", m.RouteOpts.Receiver)
 			}
 		}

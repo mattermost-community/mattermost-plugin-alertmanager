@@ -156,7 +156,7 @@ make dist-host     # current host's arch only (faster for dev iter)
 make deploy-local  # build + upload to localhost:8065
 ```
 
-Requires `MM_ADMIN_TOKEN` and `MM_SERVICESETTINGS_SITEURL` for deploy targets.
+Requires export `MM_ADMIN_TOKEN` and `MM_SERVICESETTINGS_SITEURL` for deploy targets.
 
 ## Contributing
 

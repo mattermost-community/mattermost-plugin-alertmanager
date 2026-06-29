@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -201,10 +202,8 @@ func (p *Plugin) requireChannelTeamAdmin(userID, channelID string) error {
 		return fmt.Errorf("you must be a member of this channel's team")
 	}
 	// team_admin role is space-separated in the Roles string.
-	for _, r := range strings.Fields(member.Roles) {
-		if r == "team_admin" {
-			return nil
-		}
+	if slices.Contains(strings.Fields(member.Roles), "team_admin") {
+		return nil
 	}
 	return fmt.Errorf("this command requires team_admin (in this channel's team) or system_admin privilege")
 }

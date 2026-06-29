@@ -40,3 +40,19 @@ coverage.*
 
 # Node modules (none today, but reserve in case a webapp is added).
 node_modules/
+
+# CodeQL CLI bundle + database (downloaded by `make install-codeql`).
+# Both are large (~500MB+) and regenerated from scratch on each scan.
+/build/codeql/
+/build/codeql-db/
+
+# Spurious go.sum CodeQL drops in server/ during database creation —
+# the canonical go.sum lives at the repo root since the module is rooted there.
+/server/go.sum
+
+# Docker dev environment volumes (Mattermost + Postgres data).
+/docker/postgres-data/
+/docker/mattermost/
+
+# Claude Code local settings (per-user, not shared).
+.claude/settings.local.json

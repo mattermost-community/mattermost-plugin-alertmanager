@@ -1,0 +1,21 @@
+# Grype vulnerability scanner configuration
+# https://github.com/anchore/grype#configuration
+#
+# Add entries under `ignore` for CVEs that do not apply to the shipped plugin
+# bundle. Common legitimate reasons:
+#   - Dev-only transitive dependency (eslint, babel, webpack toolchain) not
+#     present in webapp/dist/main.js or server/dist/plugin-*.
+#   - Runtime dependency that Mattermost externalizes (e.g. the prometheus
+#     client library version in mattermost-server itself), so the vulnerable
+#     version in our go.sum is never the one actually executed at runtime.
+#
+# Each ignore SHOULD include a `reason` string so reviewers understand why the
+# finding was suppressed.
+
+ignore: []
+  # Example:
+  # - vulnerability: GHSA-xxxx-yyyy-zzzz
+  #   package:
+  #     name: github.com/foo/bar
+  #     type: go-module
+  #   reason: "Transitive dep only reached via test code, not shipped binary"

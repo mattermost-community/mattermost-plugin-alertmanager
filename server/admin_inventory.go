@@ -300,17 +300,16 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 			simActionResult = p.runInventoryEndToEnd(targetSlugs, simSeverity, simExtra, filteredConfigs, amStatus)
 		default:
 			// simulate (default)
-			if len(targetSlugs) > 1 {
+			switch {
+			case len(targetSlugs) > 1:
 				simMatrix = p.runInventorySimulationMatrixForSlugs(targetSlugs, simSeverity, simExtra, configs, amStatus)
-			} else if len(targetSlugs) == 1 {
+			case len(targetSlugs) == 1:
 				simResult = p.runInventorySimulation(buildSimulateLabelsInput(targetSlugs[0], simSeverity, simExtra), configs, amStatus)
-			} else {
-				// No slugs selected — just sim with severity/extra alone
-				if simSeverity != "" || simExtra != "" {
-					simResult = p.runInventorySimulation(buildSimulateLabelsInput("", simSeverity, simExtra), configs, amStatus)
-				} else {
-					simResult = inventorySimResult{Mode: "error", Message: "Pick a target type + group/runbook OR supply labels via the extras field."}
-				}
+			case simSeverity != "" || simExtra != "":
+				// No slugs selected — sim with severity/extra alone
+				simResult = p.runInventorySimulation(buildSimulateLabelsInput("", simSeverity, simExtra), configs, amStatus)
+			default:
+				simResult = inventorySimResult{Mode: "error", Message: "Pick a target type + group/runbook OR supply labels via the extras field."}
 			}
 		}
 	}
@@ -353,16 +352,16 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 	slugsJSON, _ := json.Marshal(runbookSlugs())
 
 	data := struct {
-		Total             int
-		Channels          int
-		Groups            []inventoryGroup
-		TeamRollup        []teamRow
-		AMDrift           []amDriftGroup
-		ReconcilerStatus  string
-		ReconcilerHealthy bool
-		GroupMode         string
-		Version           string
-		CSVHref           string
+		Total              int
+		Channels           int
+		Groups             []inventoryGroup
+		TeamRollup         []teamRow
+		AMDrift            []amDriftGroup
+		ReconcilerStatus   string
+		ReconcilerHealthy  bool
+		GroupMode          string
+		Version            string
+		CSVHref            string
 		SimulateMode       string
 		SimulateType       string
 		SimulateValue      string
@@ -388,21 +387,29 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		ReconcilerHealthy: reconcilerHealthy,
 		GroupMode:         groupMode,
 		Version:           Manifest.Version,
-		SimulateMode:       simMode,
-		SimulateType:       simType,
-		SimulateValue:      simValue,
-		SimulateChannel:    simChannel,
-		SimulateSeverity:   simSeverity,
-		SimulateExtra:      simExtra,
-		SimulateResult:     simResult,
-		SimulateMatrix:     simMatrix,
-		SimulateAction:     simActionResult,
-		RunbookSlugs:       runbookSlugs(),
-		ChannelOptions:     channelOptions,
-		GroupOptions:       groupOptions,
-		TargetChannelsJSON: template.JS(targetChannelsJSON),
-		GroupOptionsJSON:   template.JS(groupsJSON),
-		RunbookSlugsJSON:   template.JS(slugsJSON),
+		SimulateMode:      simMode,
+		SimulateType:      simType,
+		SimulateValue:     simValue,
+		SimulateChannel:   simChannel,
+		SimulateSeverity:  simSeverity,
+		SimulateExtra:     simExtra,
+		SimulateResult:    simResult,
+		SimulateMatrix:    simMatrix,
+		SimulateAction:    simActionResult,
+		RunbookSlugs:      runbookSlugs(),
+		ChannelOptions:    channelOptions,
+		GroupOptions:      groupOptions,
+		// G203 false positives: targetChannelsJSON/groupsJSON/slugsJSON are
+		// already json.Marshal output of server-controlled data (channel
+		// list, group options, embedded runbook slugs — never user input).
+		// json.Marshal defaults to SetEscapeHTML(true), so `<` is already
+		// emitted as `<`, preventing `</script>` breakouts. template.JS
+		// here just tells html/template to treat the bytes as a JS literal
+		// (skip the wrap-in-quotes pass) — which is what we want because
+		// the literal IS the JSON.
+		TargetChannelsJSON: template.JS(targetChannelsJSON), //nolint:gosec // G203: pre-escaped by json.Marshal (HTML escape default)
+		GroupOptionsJSON:   template.JS(groupsJSON),         //nolint:gosec // G203: pre-escaped by json.Marshal (HTML escape default)
+		RunbookSlugsJSON:   template.JS(slugsJSON),          //nolint:gosec // G203: pre-escaped by json.Marshal (HTML escape default)
 		// Relative URL: browser resolves against the current URL,
 		// which is /plugins/<id>/admin/inventory. Using `?format=csv`
 		// gives the right target. Earlier bug: using r.URL.Path
@@ -447,7 +454,7 @@ func parseEndToEndExtraLabels(extra string) map[string]string {
 		return nil
 	}
 	labels := map[string]string{}
-	for _, pair := range strings.Fields(extra) {
+	for pair := range strings.FieldsSeq(extra) {
 		eq := strings.IndexByte(pair, '=')
 		if eq < 1 || eq == len(pair)-1 {
 			continue
@@ -492,9 +499,9 @@ type inventoryActionResult struct {
 }
 
 type actionResult struct {
-	Name    string // receiver name OR runbook slug, depending on mode
-	OK      bool
-	Detail  string // success-detail or error message
+	Name   string // receiver name OR runbook slug, depending on mode
+	OK     bool
+	Detail string // success-detail or error message
 }
 
 // buildTargetChannelMap returns a map from each possible target
@@ -505,10 +512,11 @@ type actionResult struct {
 // matching receiver (dropdown collapses to just "(any channel)").
 //
 // Keys:
-//   ""             — any target (= all channels with plugin receivers)
-//   "all"          — same as ""
-//   "group:<name>" — channels with at least one receiver in that group
-//   "individual:<slug>" — channels with that specific receiver
+//
+//	""             — any target (= all channels with plugin receivers)
+//	"all"          — same as ""
+//	"group:<name>" — channels with at least one receiver in that group
+//	"individual:<slug>" — channels with that specific receiver
 func buildTargetChannelMap(configs []alertConfig, groups, slugs []string) map[string][]string {
 	out := make(map[string][]string)
 
@@ -575,10 +583,11 @@ func sortedKeys(m map[string]bool) []string {
 
 // decodeTargetSelection turns the (Type, Value) dropdown pair into
 // a flat list of runbook slugs:
-//   type=all                → all 20 slugs (value ignored)
-//   type=group, value=X     → scaffoldSets[X]
-//   type=individual, value=X → [X]
-//   anything else           → nil (caller falls back to label-only sim)
+//
+//	type=all                → all 20 slugs (value ignored)
+//	type=group, value=X     → scaffoldSets[X]
+//	type=individual, value=X → [X]
+//	anything else           → nil (caller falls back to label-only sim)
 //
 // Two-dropdown cascade lets the secondary dropdown's contents
 // reflect what was picked in the primary — JS swaps it client-side,
@@ -779,29 +788,6 @@ func (p *Plugin) runInventoryEndToEnd(targetSlugs []string, severity, extra stri
 	return res
 }
 
-// runInventorySimulationMatrix walks every shipped runbook slug,
-// builds a label set per slug, and simulates the route resolution.
-// Output is a slice of inventorySimResult, one per runbook, that
-// the template renders as a coverage table. Useful for answering
-// "do all 20 of my runbooks actually have working routes wired up?"
-// at a glance.
-//
-// The same `severity` + `extra` inputs from the form are applied
-// to every row — letting the admin ask "what would each runbook
-// fire to AT CRITICAL severity in the billing namespace?" by
-// filling those slots while leaving runbook on __all__.
-func (p *Plugin) runInventorySimulationMatrix(severity, extra string, configs []alertConfig, amStatus map[string]amReachabilityEntry) []inventorySimResult {
-	slugs := runbookSlugs()
-	out := make([]inventorySimResult, 0, len(slugs))
-	for _, slug := range slugs {
-		input := buildSimulateLabelsInput(slug, severity, extra)
-		row := p.runInventorySimulation(input, configs, amStatus)
-		row.MatrixRow = slug
-		out = append(out, row)
-	}
-	return out
-}
-
 // runInventorySimulation parses the form's label input, picks the
 // first reachable AM, walks its loaded route tree against the
 // labels, and returns a result struct the template can render.
@@ -870,7 +856,7 @@ func (p *Plugin) runInventorySimulation(input string, configs []alertConfig, amS
 		labelDisplay[string(k)] = string(v)
 	}
 
-	if len(matches) == 0 || (len(matches) == 1 && string(matches[0].RouteOpts.Receiver) == cfg.Route.Receiver) {
+	if len(matches) == 0 || (len(matches) == 1 && matches[0].RouteOpts.Receiver == cfg.Route.Receiver) {
 		return inventorySimResult{
 			Mode:      "fell-through",
 			Message:   "No sub-route matched. Alert would fall through to the default receiver.",
@@ -882,7 +868,7 @@ func (p *Plugin) runInventorySimulation(input string, configs []alertConfig, amS
 
 	receivers := make([]string, 0, len(matches))
 	for _, m := range matches {
-		receivers = append(receivers, string(m.RouteOpts.Receiver))
+		receivers = append(receivers, m.RouteOpts.Receiver)
 	}
 	return inventorySimResult{
 		Mode:      "ok",

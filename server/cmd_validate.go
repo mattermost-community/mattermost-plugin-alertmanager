@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 	"github.com/mattermost/mattermost/server/public/model"
 	pmodel "github.com/prometheus/common/model"
+
+	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 
 	amconfig "github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/dispatch"
@@ -343,7 +346,7 @@ func (p *Plugin) handleValidateSimulate(args *model.CommandArgs, simulateArgs []
 		loadedSet[n] = true
 	}
 	for _, m := range matches {
-		if !loadedSet[string(m.RouteOpts.Receiver)] {
+		if !loadedSet[m.RouteOpts.Receiver] {
 			fmt.Fprintf(&b, "\n:warning: Receiver `%s` is referenced by a route but NOT defined in AM's receivers list — alerts dispatched to it will fail. Fix the receiver definition or the route's `receiver:` field.\n", m.RouteOpts.Receiver)
 		}
 	}
@@ -367,7 +370,10 @@ func parseSimulateLabels(args []string) (pmodel.LabelSet, error) {
 		}
 		name := pmodel.LabelName(a[:eq])
 		value := pmodel.LabelValue(a[eq+1:])
-		if !name.IsValid() {
+		// LegacyValidation matches the historical IsValid() rules: starts
+		// with [A-Za-z_], rest [A-Za-z0-9_]. The newer UTF8Validation
+		// would accept Unicode but would break Alertmanager v0.x backends.
+		if !pmodel.LegacyValidation.IsValidLabelName(string(name)) {
 			return nil, fmt.Errorf("invalid label name %q (must match Prometheus label name rules: starts with [A-Za-z_], rest [A-Za-z0-9_])", a[:eq])
 		}
 		ls[name] = value
@@ -412,12 +418,7 @@ func indexOfFlag(args []string, flag string) int {
 
 // containsFlag returns true if the args list includes the exact flag.
 func containsFlag(args []string, flag string) bool {
-	for _, a := range args {
-		if a == flag {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, flag)
 }
 
 // stripFlags removes the named flags from the args list, returning
@@ -449,10 +450,11 @@ func doValidateAMStatus(amURL string) (out struct {
 	ok         bool
 	statusText string
 	configBody string
-}) {
+},
+) {
 	if amURL == "" {
 		out.statusText = "no AM URL configured"
-		return
+		return out
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -461,7 +463,7 @@ func doValidateAMStatus(amURL string) (out struct {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, amURL+"/api/v2/status", nil)
 	if err != nil {
 		out.statusText = "bad URL"
-		return
+		return out
 	}
 	resp, err := alertmanager.Client.Do(req)
 	if err != nil {
@@ -470,13 +472,13 @@ func doValidateAMStatus(amURL string) (out struct {
 		} else {
 			out.statusText = "unreachable"
 		}
-		return
+		return out
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		out.statusText = fmt.Sprintf("HTTP %d", resp.StatusCode)
-		return
+		return out
 	}
 
 	var body struct {
@@ -490,12 +492,12 @@ func doValidateAMStatus(amURL string) (out struct {
 		// since configBody stays empty.
 		out.ok = true
 		out.statusText = "ok"
-		return
+		return out
 	}
 	out.ok = true
 	out.statusText = "ok"
 	out.configBody = body.Config.Original
-	return
+	return out
 }
 
 // postValidateTestMessage POSTs a clearly-marked test message directly
@@ -580,9 +582,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 		"alertname": alertname,
 		"runbook":   runbookSlug,
 	}
-	for k, v := range extraLabels {
-		labels[k] = v
-	}
+	maps.Copy(labels, extraLabels)
 	// Markers come last so they always win — guarantees the alert is
 	// identifiable as synthetic even if a caller passed conflicting keys.
 	labels["severity"] = severity

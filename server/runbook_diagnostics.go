@@ -124,7 +124,7 @@ func extractQuickDiagnostics(md []byte) []quickDiagnostic {
 		body      strings.Builder
 	)
 
-	for _, line := range strings.Split(string(md), "\n") {
+	for line := range strings.SplitSeq(string(md), "\n") {
 		trim := strings.TrimSpace(line)
 
 		// Pre-section: scan until we hit the Quick diagnostics heading.
@@ -144,9 +144,9 @@ func extractQuickDiagnostics(md []byte) []quickDiagnostic {
 			if strings.HasPrefix(trim, "## ") {
 				return out
 			}
-			if strings.HasPrefix(trim, "```") {
+			if after, ok := strings.CutPrefix(trim, "```"); ok {
 				current = quickDiagnostic{
-					Lang: strings.TrimPrefix(trim, "```"),
+					Lang: after,
 				}
 				body.Reset()
 				inBlock = true

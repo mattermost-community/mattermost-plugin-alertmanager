@@ -203,7 +203,7 @@ func TestRenderReceiverYAML_WithDiagnostics(t *testing.T) {
 	// Indentation: every non-first line of the diagnostics block
 	// must start at column 9 (8 spaces) to align with the YAML
 	// literal block.
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(line, "kubectl") || strings.HasPrefix(line, "**Quick diagnostics") || strings.HasPrefix(line, "1.") {
 			t.Fatalf("line lacks YAML block indent — would break YAML parse:\n%q", line)
 		}

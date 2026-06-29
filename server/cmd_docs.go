@@ -49,7 +49,7 @@ func (p *Plugin) handleDocs(args *model.CommandArgs) (string, error) {
 		return "", fmt.Errorf("read embedded doc %q: %w", filename, err)
 	}
 
-	githubURL := fmt.Sprintf("https://github.com/mattermost/mattermost-plugin-alertmanager/blob/main/docs/%s", filename)
+	githubURL := fmt.Sprintf("%s/blob/main/docs/%s", root.RepoURL, filename)
 	if len(body) <= maxDocPostBytes {
 		return fmt.Sprintf("**%s** — [view on GitHub](%s)\n\n%s", filename, githubURL, string(body)), nil
 	}
@@ -94,8 +94,8 @@ func listDocTopics() string {
 		if topic == "" {
 			topic = "(unregistered)"
 		}
-		b.WriteString(fmt.Sprintf("| `%s` | `docs/%s` | [link](https://github.com/mattermost/mattermost-plugin-alertmanager/blob/main/docs/%s) |\n",
-			topic, file, file))
+		b.WriteString(fmt.Sprintf("| `%s` | `docs/%s` | [link](%s/blob/main/docs/%s) |\n",
+			topic, file, root.RepoURL, file))
 	}
 	b.WriteString("\nUsage: `/alertmanager docs <topic>`")
 	return b.String()

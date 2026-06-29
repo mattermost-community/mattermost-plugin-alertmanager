@@ -1,31 +1,37 @@
-# golangci-lint v2 config. v1.62.0 (last v1 release) refuses to lint
-# projects targeting Go > 1.23, so v2 is mandatory at our Go version
-# even though the v1 ruleset would have been simpler to read.
+# golangci-lint v2 config. v1.62.0 (last v1 release) is built with Go
+# 1.23 and refuses to lint projects targeting Go > 1.23, so v2 is
+# mandatory at our Go toolchain version.
 #
-# Enabled linters are the ones that have actually caught real bugs in
-# Go projects of this shape: fmt-arity errors (govet), shadowed vars
-# (govet), unused identifiers (unused), and security-relevant patterns
-# (gosec). Disabled by default: anything stylistic that would generate
-# diff churn without catching defects.
+# Linter set follows mattermost-plugin-template (community baseline)
+# plus alertmanager-specific gosec exclusions for legitimate password
+# fields in the Alertmanager YAML config flow.
 version: "2"
 
 run:
   timeout: 5m
   modules-download-mode: readonly
-  # Tests are kept in the lint scope so test code stays as clean as
-  # production. Excluding tests would let assertion helpers rot.
+  # Tests stay in the lint scope so test code stays as clean as production.
   tests: true
 
 linters:
   default: none
   enable:
+    - bidichk       # detects bidirectional unicode characters (CVE-2021-42574 class)
+    - bodyclose     # HTTP response body must be closed; alertmanager calls AM API
     - errcheck      # unchecked errors — the #1 source of "looks fine, dropped state" bugs
-    - govet         # fmt arity, shadow, lock copy — go vet rules
-    - ineffassign   # assigning to a variable that's never read
-    - staticcheck   # the most useful static analyzer; catches dead code, ineffective branches, etc.
-    - unused        # unused functions / fields / variables
+    - gocritic      # opinionated checks; catches a lot of real defects
     - gosec         # security-relevant patterns (G101..G505)
+    - govet         # fmt arity, shadow, lock copy — go vet rules (all enabled below)
+    - ineffassign   # assigning to a variable that's never read
+    - makezero      # make([]T, N) followed by append (almost always a bug)
     - misspell      # English misspellings in comments + strings
+    - modernize     # suggests modern Go idioms
+    - nakedret      # naked returns in long functions (readability hazard)
+    - revive        # broad stylistic + correctness checks (configured to skip the noisy ones)
+    - staticcheck   # the most useful static analyzer; dead code, ineffective branches, etc.
+    - unconvert     # unnecessary type conversions
+    - unused        # unused functions / fields / variables
+    - whitespace    # leading/trailing whitespace anomalies
 
   settings:
     gosec:
@@ -40,34 +46,64 @@ linters:
         # can authenticate to backends — that's the whole point.
         - G117
     govet:
-      enable:
-        - shadow
+      enable-all: true
+      disable:
+        # fieldalignment is a memory-layout micro-optimization, not a
+        # correctness check. Costs readability for marginal gain.
+        - fieldalignment
+    revive:
+      rules:
+        # `exported` requires doc comments on every exported symbol —
+        # too much churn for a plugin of this size. Re-enable if we
+        # ever publish a public API.
+        - name: exported
+          disabled: true
+        # Unused params are common in interface implementations
+        # (Mattermost plugin API hooks).
+        - name: unused-parameter
+          disabled: true
     staticcheck:
       # QF (quickfix) checks are pure style suggestions, not bug
       # detectors. Disable the ones that produce noise without
-      # catching defects:
-      #   QF1003 — "use tagged switch" on if/else chains. Style.
-      #   QF1012 — "use fmt.Fprintf instead of WriteString(Sprintf(…))".
-      #            Functionally identical; b.WriteString(fmt.Sprintf(…))
-      #            is more readable when the format string contains
-      #            many "\n" terminators inline with markdown body text.
+      # catching defects.
       checks:
         - "all"
-        - "-QF1003"
-        - "-QF1012"
+        - "-QF1003"   # "use tagged switch" on if/else chains
+        - "-QF1012"   # "use fmt.Fprintf instead of WriteString(Sprintf(…))"
 
   exclusions:
+    # `docker/` is populated by docker-compose.dev.yml volume mounts;
+    # the MM container drops other plugins' Go source there (e.g. Calls,
+    # AI, Playbooks). Not our code, not in git — but golangci-lint walks
+    # the filesystem and would otherwise flag them.
+    # `build/codeql*` is the CodeQL CLI bundle + DBs; vendored Go that
+    # isn't ours.
+    paths:
+      - docker/.*
+      - build/codeql/.*
+      - build/codeql-db/.*
     rules:
       # Test files often need fixture passwords / dummy URLs that gosec
       # flags as hardcoded creds. Allowed in *_test.go only.
       - path: _test\.go
         linters:
           - gosec
+          - bodyclose
 
-# Formatters moved out of `linters:` in v2 — they live in their own
-# block now. gofmt is canonical Go formatting; goimports orders imports
-# and adds missing ones.
+# Formatters moved out of `linters:` in v2 — they live in their own block.
+# gofmt is canonical Go formatting; gofumpt is a stricter superset;
+# goimports orders imports and adds missing ones.
 formatters:
   enable:
     - gofmt
+    - gofumpt
     - goimports
+  settings:
+    gofmt:
+      simplify: true
+      rewrite-rules:
+        - pattern: interface{}
+          replacement: any
+    goimports:
+      local-prefixes:
+        - github.com/mattermost/mattermost-plugin-alertmanager

@@ -1,0 +1,60 @@
+# Mattermost Enterprise Edition for plugin development.
+#
+# `make docker-setup` bootstraps the whole environment: starts these
+# services, waits for /api/v4/system/ping, then creates an admin user
+# and a Test team via mmctl --local.
+#
+# Use `mattermost-enterprise-edition` (not team-edition) — alertmanager
+# is shipped to EE customers and we want feature parity in dev.
+services:
+  postgres:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: mmuser_password
+      POSTGRES_DB: mattermost
+    volumes:
+      - ./docker/postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mattermost:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    image: mattermost/mattermost-enterprise-edition:${MATTERMOST_IMAGE_TAG:-latest}
+    # mattermost-enterprise-edition ships linux/amd64 only — no arm64 build.
+    # On Apple Silicon hosts Docker uses Rosetta emulation. On linux/amd64
+    # CI runners (ubuntu-latest, etc.) this is a no-op. Override per-env
+    # by exporting MATTERMOST_PLATFORM if you need something else.
+    platform: ${MATTERMOST_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    ports:
+      - "${MM_PORT:-8065}:8065"
+    volumes:
+      - ./docker/mattermost/config:/mattermost/config:rw
+      - ./docker/mattermost/data:/mattermost/data:rw
+      - ./docker/mattermost/logs:/mattermost/logs:rw
+      - ./docker/mattermost/plugins:/mattermost/plugins:rw
+      - ./docker/mattermost/client-plugins:/mattermost/client/plugins:rw
+    environment:
+      TZ: UTC
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: http://localhost:${MM_PORT:-8065}
+      MM_SERVICESETTINGS_LISTENADDRESS: :8065
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
+      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
+      MM_LOGSETTINGS_ENABLEFILE: "true"
+      # ENABLELOCALMODE exposes the local mmctl socket inside the container,
+      # which `make docker-deploy` uses to install + enable the plugin
+      # without needing an admin token.
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
+      MM_ANNOUNCEMENTSETTINGS_ENABLEPREVIEWMODEBANNER: "false"

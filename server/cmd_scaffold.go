@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io/fs"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -208,7 +209,10 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// firings = atomic-to-plugin-settings semantics. If the save fails, we
 	// roll back the shared webhook so the user isn't left with an orphan.
 	if len(newEntries) > 0 {
-		merged := append(p.getConfiguration().AlertConfigs, newEntries...)
+		// slices.Concat allocates a fresh backing array — guards against
+		// the append-aliasing pitfall where reusing the source slice's
+		// capacity would mutate p.getConfiguration().AlertConfigs in place.
+		merged := slices.Concat(p.getConfiguration().AlertConfigs, newEntries)
 		if err := p.saveConfigs(merged); err != nil {
 			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
 			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v", err), nil
@@ -516,10 +520,8 @@ func resolveAddTarget(target string) (groupName string, slugs []string, err erro
 		return target, setSlugs, nil
 	}
 	// Individual add path: must match a known runbook slug exactly.
-	for _, s := range runbookSlugs() {
-		if s == target {
-			return target, []string{target}, nil
-		}
+	if slices.Contains(runbookSlugs(), target) {
+		return target, []string{target}, nil
 	}
 	return "", nil, fmt.Errorf("unknown target `%s` — must be a category set (`%s`) OR a specific runbook slug (e.g. `high-cpu-usage`). Run `/alertmanager add` with no args for the full list",
 		target, strings.Join(scaffoldSetNames(), "`, `"))
@@ -581,8 +583,8 @@ func addUsageMessage() string {
 func extractFlagValue(args []string, prefix string) (value string, rest []string) {
 	rest = make([]string, 0, len(args))
 	for _, a := range args {
-		if strings.HasPrefix(a, prefix) {
-			value = strings.TrimPrefix(a, prefix)
+		if after, ok := strings.CutPrefix(a, prefix); ok {
+			value = after
 			continue
 		}
 		rest = append(rest, a)

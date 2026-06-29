@@ -1,6 +1,14 @@
-# Triggers on `v*` tag push (e.g. `v1.0.3`). Builds the multi-arch
-# plugin bundle, generates a sha256 checksum, and creates a GitHub
-# Release with both attached.
+# Triggers on `v*` tag push (e.g. `v1.0.3`). Runs the full security-gated
+# release pipeline:
+#   1. `make release-check`   — uncommitted changes + CHANGELOG validation
+#   2. `make all`             — style + tests + dist (multi-arch tarball)
+#   3. `make sbom-audit`      — CycloneDX SBOM + Grype scan (fail on HIGH)
+#   4. `make codeql-analyze`  — CodeQL SARIF reports
+#   5. `make security-gate`   — fails on error-level CodeQL findings
+#   6. `make release-bundle`  — re-packs tarball with sbom/ + security/
+#   7. `make virus-scan`      — ClamAV scan of dist/
+#   8. `make release-sign`    — GPG sign (optional, needs PLUGIN_SIGNING_KEY)
+#   9. `make release-checksum`— sha256 sidecar
 #
 # Operator workflow to ship a new version:
 #   1. Update plugin.json version + CHANGELOG.md entry
@@ -8,12 +16,9 @@
 #   3. git tag -a v1.0.3 -m "release v1.0.3"
 #   4. git push origin v1.0.3
 #
-# Step 4 is what fires this workflow. No manual `make dist` or
-# `gh release create` required.
-#
-# Release notes are pulled from GitHub's auto-generated changelog
-# (commits since the previous tag). The body also links back to
-# CHANGELOG.md so reviewers can see the curated notes.
+# Step 4 fires this workflow. The release tarball ships with embedded
+# SBOMs (sbom/) and CodeQL SARIF (security/) so downstream operators
+# can verify provenance and CVE posture without rebuilding.
 name: Release
 
 on:
@@ -22,7 +27,8 @@ on:
       - 'v*'
 
 permissions:
-  contents: write  # needed to create the release + upload assets
+  contents: write       # create the release + upload assets
+  security-events: write # upload SARIF to code scanning
 
 jobs:
   release:
@@ -32,8 +38,8 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # softprops/action-gh-release uses git history to generate
-          # release notes between tags. Default checkout depth is 1
-          # (just the tag commit) which makes the auto-notes empty.
+          # release notes between tags. Default depth 1 (just the tag
+          # commit) makes the auto-notes empty.
           fetch-depth: 0
 
       - name: Set up Go
@@ -42,42 +48,90 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Same target the Build workflow uses. Cross-compiles for all
-      # five supported platforms and assembles the tarball at
-      # dist/com.mattermost.alertmanager-<version>.tar.gz.
-      - name: Build bundle
-        run: make dist
-
-      # Sidecar checksum so operators can verify the downloaded
-      # tarball matches what CI produced — standard hygiene for
-      # plugin distribution.
-      - name: Compute SHA256 checksum
+      - name: Install ClamAV
+        # Run install-clamav up-front so it can use sudo apt-get without
+        # the make target needing to prompt. Skips freshclam DB update
+        # failures — apt-installed clamav ships with a baseline DB.
         run: |
-          cd dist
-          for f in *.tar.gz; do
-            sha256sum "$f" > "${f}.sha256"
-          done
-          ls -la
+          sudo apt-get update
+          sudo apt-get install -y clamav
+          sudo systemctl stop clamav-freshclam 2>/dev/null || true
+          sudo freshclam || true
+
+      # Import GPG signing key if configured. Optional — release-sign
+      # is a no-op when PLUGIN_SIGNING_KEY is unset.
+      - name: Import GPG signing key
+        if: env.PLUGIN_SIGNING_KEY != ''
+        env:
+          PLUGIN_SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+          PLUGIN_SIGNING_KEY_PASSPHRASE: ${{ secrets.PLUGIN_SIGNING_KEY_PASSPHRASE }}
+        run: |
+          echo "$PLUGIN_SIGNING_KEY" | gpg --batch --import
+          echo "PLUGIN_SIGNING_KEY=$(gpg --list-secret-keys --keyid-format=long | awk -F'/' '/^sec/{print $2; exit}' | awk '{print $1}')" >> $GITHUB_ENV
+
+      # Run the full security-gated release pipeline. `make release`
+      # encapsulates SBOM, CodeQL, security-gate, virus-scan, signing,
+      # and checksum generation. Single entry point keeps the local
+      # `make release` and CI release in lock-step.
+      - name: Build release (full security pipeline)
+        env:
+          PLUGIN_SIGNING_KEY: ${{ env.PLUGIN_SIGNING_KEY }}
+        run: make release
+
+      - name: Get plugin info
+        id: plugin_info
+        run: |
+          PLUGIN_ID=$(build/bin/manifest id)
+          PLUGIN_VERSION=$(build/bin/manifest version)
+          BUNDLE_NAME="${PLUGIN_ID}-${PLUGIN_VERSION}.tar.gz"
+          echo "plugin_id=${PLUGIN_ID}" >> $GITHUB_OUTPUT
+          echo "plugin_version=${PLUGIN_VERSION}" >> $GITHUB_OUTPUT
+          echo "bundle_name=${BUNDLE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Upload CodeQL SARIF to code scanning
+        if: always() && hashFiles('dist/codeql-go.sarif') != ''
+        uses: github/codeql-action/upload-sarif@4e94bd11f71e507f7f87df81788dff88d1dacbfb # v3.30.0
+        with:
+          sarif_file: dist/codeql-go.sarif
+          category: codeql-go-release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # v2.3.2
         with:
+          name: ${{ steps.plugin_info.outputs.plugin_id }} v${{ steps.plugin_info.outputs.plugin_version }}
           files: |
-            dist/*.tar.gz
-            dist/*.tar.gz.sha256
+            dist/${{ steps.plugin_info.outputs.bundle_name }}
+            dist/${{ steps.plugin_info.outputs.bundle_name }}.sha256
+            dist/${{ steps.plugin_info.outputs.bundle_name }}.sig
+            dist/sbom/server-sbom.json
+            dist/codeql-go.sarif
+          fail_on_unmatched_files: false
           generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
           body: |
             ## Mattermost Alertmanager Plugin ${{ github.ref_name }}
 
-            See [`CHANGELOG.md`](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for the curated release notes.
+            See [`CHANGELOG.md`](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for curated release notes.
 
             ### Install
 
-            1. Download `com.mattermost.alertmanager-*.tar.gz` from the assets below.
+            1. Download `${{ steps.plugin_info.outputs.bundle_name }}` from the assets below.
             2. (Optional) Verify the checksum:
                ```bash
-               sha256sum -c com.mattermost.alertmanager-*.tar.gz.sha256
+               sha256sum -c ${{ steps.plugin_info.outputs.bundle_name }}.sha256
                ```
-            3. Upload via System Console → Plugin Management → Choose File → Enable.
+            3. (Optional) Verify the GPG signature (if `.sig` attached):
+               ```bash
+               gpg --verify ${{ steps.plugin_info.outputs.bundle_name }}.sig ${{ steps.plugin_info.outputs.bundle_name }}
+               ```
+            4. Upload via System Console → Plugin Management → Choose File → Enable.
+
+            ### Supply-chain artifacts
+
+            - **SBOM** (CycloneDX JSON): `server-sbom.json` lists every Go module in the shipped binaries.
+              Also embedded under `sbom/` inside the tarball.
+            - **CodeQL SARIF**: `codeql-go.sarif` contains the static-analysis findings used to gate this build.
+              Also embedded under `security/` inside the tarball.
 
             ### Auto-generated changelog

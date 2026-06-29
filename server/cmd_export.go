@@ -301,7 +301,7 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 	// merged YAML (plain text, ready for validation/paste).
 	emitReceivers := func() {
 		b.WriteString("+ # ---- plugin additions: receivers ----\n")
-		for _, addLine := range strings.Split(strings.TrimRight(newReceivers, "\n"), "\n") {
+		for addLine := range strings.SplitSeq(strings.TrimRight(newReceivers, "\n"), "\n") {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")
@@ -311,7 +311,7 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 	}
 	emitRoutes := func() {
 		b.WriteString("+ # ---- plugin additions: routes ----\n")
-		for _, addLine := range strings.Split(strings.TrimRight(newRoutes, "\n"), "\n") {
+		for addLine := range strings.SplitSeq(strings.TrimRight(newRoutes, "\n"), "\n") {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")
@@ -349,7 +349,7 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 	if receiversEndIdx == -1 && newReceivers != "" {
 		b.WriteString("\n+ # ---- plugin additions: receivers ----\n")
 		b.WriteString("+ # NOTE: couldn't find `receivers:` block — merge these manually under it.\n")
-		for _, addLine := range strings.Split(strings.TrimRight(newReceivers, "\n"), "\n") {
+		for addLine := range strings.SplitSeq(strings.TrimRight(newReceivers, "\n"), "\n") {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")
@@ -360,7 +360,7 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 	if routesEndIdx == -1 && newRoutes != "" {
 		b.WriteString("\n+ # ---- plugin additions: routes ----\n")
 		b.WriteString("+ # NOTE: couldn't find `route.routes:` block — merge these manually under it.\n")
-		for _, addLine := range strings.Split(strings.TrimRight(newRoutes, "\n"), "\n") {
+		for addLine := range strings.SplitSeq(strings.TrimRight(newRoutes, "\n"), "\n") {
 			b.WriteString("+ ")
 			b.WriteString(addLine)
 			b.WriteString("\n")

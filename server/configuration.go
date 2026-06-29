@@ -107,14 +107,14 @@ type alertConfig struct {
 	// "rotated at plugin upgrade time" by the reconciler, so
 	// existing receivers don't immediately fire reminders after the
 	// feature is enabled.
-	LastRotatedAt time.Time `json:"lastRotatedAt,omitempty"`
+	LastRotatedAt time.Time `json:"lastRotatedAt,omitzero"`
 
 	// LastReminderAt is when the most-recent rotation-due reminder
 	// was sent for this receiver. Used to throttle repeats — the
 	// reconciler skips re-reminding for the same receiver until
 	// reminderRepeatInterval has elapsed since this timestamp.
 	// Reset on rotation along with LastRotatedAt.
-	LastReminderAt time.Time `json:"lastReminderAt,omitempty"`
+	LastReminderAt time.Time `json:"lastReminderAt,omitzero"`
 
 	// RotationRemindersEnabled is the per-receiver opt-in for the
 	// rotation reminder system. Set true at creation time via the

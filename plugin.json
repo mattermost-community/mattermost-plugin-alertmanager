@@ -2,8 +2,8 @@
     "id": "com.mattermost.alertmanager",
     "name": "Alertmanager",
     "description": "Bring Prometheus Alertmanager alerts into Mattermost with the runbook attached. Each alert post includes the runbook's first three diagnostic commands inline, pre-filled with the failing host and pod from the alert's labels — copy-paste ready at 3am. Run `/alertmanager help` for the full command list.",
-    "homepage_url": "https://github.com/mattermost/mattermost-plugin-alertmanager",
-    "support_url": "https://github.com/mattermost/mattermost-plugin-alertmanager/issues",
+    "homepage_url": "__PLUGIN_REPO_URL__",
+    "support_url": "__PLUGIN_REPO_URL__/issues",
     "icon_path": "assets/alertmanager-logo.svg",
     "version": "1.0.3",
     "min_server_version": "10.5.0",
@@ -17,7 +17,7 @@
         }
     },
     "settings_schema": {
-        "header": "## Alertmanager Plugin\n\nBrings Prometheus Alertmanager alerts into Mattermost via native incoming webhooks.\n\n- 📚 [Plugin documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [SRE Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nConfigure the settings below if needed, then run `/alertmanager help` in any channel for the full command list."
+        "header": "## Alertmanager Plugin\n\nBrings Prometheus Alertmanager alerts into Mattermost via native incoming webhooks.\n\n- 📚 [Plugin documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [SRE Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nConfigure the settings below if needed, then run `/alertmanager help` in any channel for the full command list.\n\n---\n*Plugin version: `__PLUGIN_VERSION__` — [release notes](__PLUGIN_RELEASE_URL__)*"
 ,
         "footer": "### Most-used commands\n\n| Command | Use it when |\n|---|---|\n| `/alertmanager add <team> <channel> <am-url>` | First-time setup — creates the 20 canonical receivers in the named channel and DMs you the assembled `receivers:` block |\n| `/alertmanager list` | See what receivers are bound to the current channel |\n| `/alertmanager config <name>` | View one receiver's `slack_configs` YAML block + metadata |\n| `/alertmanager export` | DM yourself a fresh `receivers.yml` for the current channel (use after template changes or to back up state) |\n\nRun `/alertmanager help` in chat for the full list. Created webhooks appear at System Console → Integrations → Incoming Webhooks as `Alertmanager: <name>`.",
         "settings": [

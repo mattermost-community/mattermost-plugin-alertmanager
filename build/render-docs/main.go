@@ -37,6 +37,17 @@ import (
 // detected separately and skipped — they're meant to stay as .md.
 var mdLinkRe = regexp.MustCompile(`href="([^"]+)\.md(#[^"]*)?"`)
 
+// repoURL returns the GitHub URL the docs site should link to. The
+// Makefile passes the resolved URL via PLUGIN_REPO_URL when invoking
+// `go run`. Falls back to the upstream URL when running this binary
+// directly (out of band of make), so manual `go run` still works.
+func repoURL() string {
+	if v := os.Getenv("PLUGIN_REPO_URL"); v != "" {
+		return v
+	}
+	return "https://github.com/mattermost/mattermost-plugin-alertmanager"
+}
+
 // siteSection describes one rendered HTML site — a (sourceDir, outputDir,
 // siteName, landingBody) tuple. We render two of these in lockstep: the
 // plugin documentation under public/help/, and the SRE runbook library
@@ -105,7 +116,7 @@ const pageTemplate = `<!DOCTYPE html>
             {{ end -}}
         </nav>
         <div class="sidebar-footer">
-            <a href="https://github.com/mattermost/mattermost-plugin-alertmanager">View on GitHub</a>
+            <a href="{{ .RepoURL }}">View on GitHub</a>
         </div>
     </aside>
 
@@ -437,7 +448,8 @@ func writePage(tmpl *template.Template, section siteSection, pages []page, p pag
 		Pages     []page
 		SiteName  string
 		IsRunbook bool
-	}{p.Slug, p.Title, p.HTML, p.Source, navPages, section.SiteName, isRunbook}
+		RepoURL   string
+	}{p.Slug, p.Title, p.HTML, p.Source, navPages, section.SiteName, isRunbook, repoURL()}
 
 	out, err := os.Create(filepath.Join(section.OutDir, p.Slug+".html"))
 	if err != nil {

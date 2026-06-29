@@ -245,7 +245,7 @@ receivers:
 `
 		diff, _ := buildDiffAgainstLoaded(loaded, "", "")
 		// Should have no + lines.
-		for _, line := range strings.Split(diff, "\n") {
+		for line := range strings.SplitSeq(diff, "\n") {
 			if strings.HasPrefix(line, "+ ") {
 				t.Fatalf("expected no additions, found: %q", line)
 			}
