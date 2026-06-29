@@ -5,6 +5,11 @@
 # Build is gated on `make security-gate` for CodeQL and on
 # `--fail-on high` for Grype — HIGH/CRITICAL findings block the merge.
 # MEDIUM/LOW surface in the run logs but don't fail the job.
+#
+# Code-scanning SARIF upload is best-effort (continue-on-error):
+# it fails on private repos without GitHub Advanced Security. SARIF
+# files are also uploaded as workflow artifacts so they're retrievable
+# either way.
 name: Security
 
 on:
@@ -58,12 +63,25 @@ jobs:
           severity-cutoff: high
           output-format: sarif
 
+      # Best-effort: requires GitHub Advanced Security on private repos.
+      # If code scanning isn't enabled the step fails but the workflow
+      # continues. The SARIF still gets uploaded as a workflow artifact
+      # below so reviewers can download it manually.
       - name: Upload Grype SARIF to code scanning
         if: always() && steps.grype-scan.outputs.sarif != ''
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@4e94bd11f71e507f7f87df81788dff88d1dacbfb # v3.30.0
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
           category: grype
+
+      - name: Upload Grype SARIF as workflow artifact
+        if: always() && steps.grype-scan.outputs.sarif != ''
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: grype-sarif
+          path: ${{ steps.grype-scan.outputs.sarif }}
+          retention-days: 30
 
   codeql:
     name: CodeQL static analysis (Go)
@@ -90,8 +108,30 @@ jobs:
       - name: Autobuild
         uses: github/codeql-action/autobuild@4e94bd11f71e507f7f87df81788dff88d1dacbfb # v3.30.0
 
+      # `upload: failure-only` writes the SARIF to disk and only uploads
+      # if the analysis step itself fails — so on a clean run, no upload
+      # is attempted (avoids the GHAS gate). The explicit upload step
+      # below runs always and is allowed to fail.
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@4e94bd11f71e507f7f87df81788dff88d1dacbfb # v3.30.0
+        id: codeql-analyze
         with:
           category: codeql-go
-          upload: always
+          upload: never
+          output: codeql-results
+
+      - name: Upload CodeQL SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@4e94bd11f71e507f7f87df81788dff88d1dacbfb # v3.30.0
+        with:
+          sarif_file: codeql-results
+          category: codeql-go
+
+      - name: Upload CodeQL SARIF as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: codeql-sarif
+          path: codeql-results/
+          retention-days: 30

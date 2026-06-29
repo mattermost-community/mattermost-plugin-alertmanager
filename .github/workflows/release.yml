@@ -88,8 +88,14 @@ jobs:
           echo "plugin_version=${PLUGIN_VERSION}" >> $GITHUB_OUTPUT
           echo "bundle_name=${BUNDLE_NAME}" >> $GITHUB_OUTPUT
 
+      # Best-effort: requires GitHub Advanced Security on private repos.
+      # The SARIF is also embedded in the release tarball under
+      # security/codeql-go.sarif (via `make release-bundle`) and attached
+      # to the GitHub release as a standalone asset, so it's available
+      # to operators regardless of whether code scanning is enabled.
       - name: Upload CodeQL SARIF to code scanning
         if: always() && hashFiles('dist/codeql-go.sarif') != ''
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@4e94bd11f71e507f7f87df81788dff88d1dacbfb # v3.30.0
         with:
           sarif_file: dist/codeql-go.sarif
