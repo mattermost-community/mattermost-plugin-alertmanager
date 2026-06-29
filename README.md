@@ -1,5 +1,13 @@
 # Mattermost Alertmanager Plugin
 
+[![Lint](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/lint.yml)
+[![Test](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/test.yml)
+[![Build](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/build.yml)
+[![Security](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/security.yml)
+[![Latest release](https://img.shields.io/github/v/release/christopherfickess/mattermost-plugin-alertmanager?sort=semver)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/releases/latest)
+[![Go version](https://img.shields.io/github/go-mod/go-version/christopherfickess/mattermost-plugin-alertmanager)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/christopherfickess/mattermost-plugin-alertmanager)](./LICENSE)
+
 **When `PostgresReplicationLagHigh` fires into your channel at 3am,
 the runbook's first three diagnostic commands appear inline with the
 alert — pre-filled with the failing host and pod, copy-paste ready.**

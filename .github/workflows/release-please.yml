@@ -1,0 +1,36 @@
+# release-please opens (and keeps current) a Release PR on every push
+# to main. It reads conventional-commit messages since the last tag,
+# computes the next semver bump, updates plugin.json's version field
+# and CHANGELOG.md, and lets you merge when ready.
+#
+# Merging the Release PR creates the v* tag, which fires release.yml
+# — the full security-gated build + GitHub Release publish pipeline.
+#
+# Conventional commit rules driving the bump:
+#   feat: ...        -> minor (1.0.x -> 1.1.0)
+#   fix:  ...        -> patch (1.0.0 -> 1.0.1)
+#   feat!: / BREAKING -> major (1.x.y -> 2.0.0)
+#   chore:/docs:/test:/refactor: -> no version bump, no changelog
+#
+# Subject lines that don't match a conventional prefix are NOT
+# included in the changelog. Use `feat:` and `fix:` deliberately.
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write       # tag + commit the release PR
+  pull-requests: write  # open/update the release PR
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run release-please
+        uses: googleapis/release-please-action@a02a34c4d625f9be7cb89156071d8567266a2445 # v4.1.3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
