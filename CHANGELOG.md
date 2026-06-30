@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4](https://github.com/christopherfickess/mattermost-plugin-alertmanager/compare/v1.0.3...v1.0.4) (2026-06-30)
+
+
+### Chores
+
+* release 1.0.4 ([dca70a8](https://github.com/christopherfickess/mattermost-plugin-alertmanager/commit/dca70a8b00284f503d9a65387e9953e8619610bf))
+
 ## [Unreleased]
 
 ## [1.0.3] - 2026-06-12
