@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5](https://github.com/christopherfickess/mattermost-plugin-alertmanager/compare/v1.0.4...v1.0.5) (2026-06-30)
+
+
+### Bug Fixes
+
+* migrate to prometheus/alertmanager v0.33 API surface ([64dce85](https://github.com/christopherfickess/mattermost-plugin-alertmanager/commit/64dce850168a54acba76512c9b52ac12e17272d8))
+
+
+### Dependencies
+
+* **actions:** bump golangci/golangci-lint-action ([2f14ec5](https://github.com/christopherfickess/mattermost-plugin-alertmanager/commit/2f14ec5829bf9e29eaa1d47de07495ad8f6b41e7))
+* **actions:** bump softprops/action-gh-release from 2.3.2 to 3.0.1 ([32e18a6](https://github.com/christopherfickess/mattermost-plugin-alertmanager/commit/32e18a6b3602b28714046c0f1bcf06bd1727d188))
+* **actions:** bump the actions-minor-patch group across 1 directory with 4 updates ([766a456](https://github.com/christopherfickess/mattermost-plugin-alertmanager/commit/766a456d51c42db186283889433161bfbcf0096a))
+
 ## [1.0.4](https://github.com/christopherfickess/mattermost-plugin-alertmanager/compare/v1.0.3...v1.0.4) (2026-06-30)
 
 
