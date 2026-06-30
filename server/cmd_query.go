@@ -8,10 +8,22 @@ import (
 
 	"github.com/hako/durafmt"
 	"github.com/mattermost/mattermost/server/public/model"
-	"github.com/prometheus/alertmanager/types"
+	"github.com/prometheus/alertmanager/alert"
+	"github.com/prometheus/alertmanager/api/v2/models"
 
 	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
+
+// derefStr returns *p, or "" if p is nil. Used throughout the silence
+// formatting code because the swagger-generated GettableSilence model
+// uses pointer fields for all required string properties (id, comment,
+// createdBy, matcher.name/value, status.state).
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 // Channel-scoping is the load-bearing UX decision in this file. Every
 // query command (status, alerts, silences, expire_silence) filters the
@@ -199,7 +211,7 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 
 // formatAlertLine renders one alert as a one-liner — keeps output dense
 // for channels that might have a lot of alerts firing at once.
-func formatAlertLine(a *types.Alert) string {
+func formatAlertLine(a *alert.Alert) string {
 	status := string(a.Status())
 	severity := ""
 	if v, ok := a.Labels["severity"]; ok {
@@ -241,9 +253,16 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 			))
 			continue
 		}
-		active := make([]types.Silence, 0, len(silences))
+		active := make([]*models.GettableSilence, 0, len(silences))
 		for _, s := range silences {
-			if string(s.Status.State) != "expired" {
+			// Status + State are pointer fields in the v2 model.
+			// Treat a missing Status as "not expired" so a malformed
+			// response doesn't silently drop entries.
+			state := ""
+			if s != nil && s.Status != nil {
+				state = derefStr(s.Status.State)
+			}
+			if state != "expired" {
 				active = append(active, s)
 			}
 		}
@@ -278,20 +297,38 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 // formatSilenceLine renders one silence as a few lines, including the
 // `/alertmanager expire_silence <name> <silence-id>` invocation users
 // would run to expire it.
-func formatSilenceLine(configName string, s types.Silence) string {
+//
+// Every relevant field in models.GettableSilence is a pointer (swagger's
+// "required" convention). derefStr + time conversions guard against
+// malformed responses by treating nil as zero value.
+func formatSilenceLine(configName string, s *models.GettableSilence) string {
+	if s == nil {
+		return ""
+	}
 	var matchers []string
 	for _, m := range s.Matchers {
-		matchers = append(matchers, fmt.Sprintf("`%s=%q`", m.Name, m.Value))
+		if m == nil {
+			continue
+		}
+		matchers = append(matchers, fmt.Sprintf("`%s=%q`", derefStr(m.Name), derefStr(m.Value)))
 	}
-	endsIn := durafmt.Parse(time.Until(s.EndsAt)).LimitFirstN(2).String()
+	var endsAt, startsAt time.Time
+	if s.EndsAt != nil {
+		endsAt = time.Time(*s.EndsAt)
+	}
+	if s.StartsAt != nil {
+		startsAt = time.Time(*s.StartsAt)
+	}
+	endsIn := durafmt.Parse(time.Until(endsAt)).LimitFirstN(2).String()
+	id := derefStr(s.ID)
 	return fmt.Sprintf(
 		"- **ID:** `%s`\n  **By:** %s • **Created:** %s ago • **Ends in:** %s\n  **Matchers:** %s\n  **Comment:** %s\n  **Expire:** `/alertmanager expire_silence %s %s`\n\n",
-		s.ID, s.CreatedBy,
-		durafmt.Parse(time.Since(s.StartsAt)).LimitFirstN(2).String(),
+		id, derefStr(s.CreatedBy),
+		durafmt.Parse(time.Since(startsAt)).LimitFirstN(2).String(),
 		endsIn,
 		strings.Join(matchers, " "),
-		s.Comment,
-		configName, s.ID,
+		derefStr(s.Comment),
+		configName, id,
 	)
 }
 

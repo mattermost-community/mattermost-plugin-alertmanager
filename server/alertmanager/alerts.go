@@ -11,20 +11,25 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/prometheus/alertmanager/types"
+	"github.com/prometheus/alertmanager/alert"
 )
 
 // ListAlerts queries the Alertmanager /api/v2/alerts endpoint. user and
 // password are optional HTTP Basic Auth credentials; pass empty strings when
 // the Alertmanager API is not protected.
-func ListAlerts(alertmanagerURL, user, password string) ([]*types.Alert, error) {
+//
+// Returns []*alert.Alert. Prior versions used types.Alert; that type
+// remains in v0.33 as a deprecated alias for alert.Alert — using the
+// canonical path here silences the SA1019 lint and stays current as
+// the alias eventually gets removed upstream.
+func ListAlerts(alertmanagerURL, user, password string) ([]*alert.Alert, error) {
 	resp, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/alerts", user, password)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var alertResponse []*types.Alert
+	var alertResponse []*alert.Alert
 	if errDec := json.NewDecoder(resp.Body).Decode(&alertResponse); errDec != nil {
 		return nil, errDec
 	}

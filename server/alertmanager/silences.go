@@ -9,25 +9,40 @@ import (
 	"sort"
 	"time"
 
-	"github.com/prometheus/alertmanager/types"
+	"github.com/prometheus/alertmanager/api/v2/models"
 )
+
+// silenceEndsAt extracts EndsAt as a time.Time, with zero value if nil.
+// v2 API uses *strfmt.DateTime (pointer to a time.Time alias); the
+// upstream "Required: true" annotation means non-malicious servers
+// always send it, but a nil check guards against bad responses.
+func silenceEndsAt(s *models.GettableSilence) time.Time {
+	if s == nil || s.EndsAt == nil {
+		return time.Time{}
+	}
+	return time.Time(*s.EndsAt)
+}
 
 // ListSilences queries the Alertmanager /api/v2/silences endpoint and returns
 // silences sorted by EndsAt descending (most recently-ending first).
-func ListSilences(alertmanagerURL, user, password string) ([]types.Silence, error) {
+//
+// Returns []*models.GettableSilence — that's the swagger-generated type for
+// the GET response in prometheus/alertmanager >= v0.31, which replaced the
+// removed types.Silence struct.
+func ListSilences(alertmanagerURL, user, password string) ([]*models.GettableSilence, error) {
 	resp, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/silences", user, password)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var silences []types.Silence
+	var silences []*models.GettableSilence
 	if errDec := json.NewDecoder(resp.Body).Decode(&silences); errDec != nil {
 		return nil, errDec
 	}
 
 	sort.Slice(silences, func(i, j int) bool {
-		return silences[i].EndsAt.After(silences[j].EndsAt)
+		return silenceEndsAt(silences[i]).After(silenceEndsAt(silences[j]))
 	})
 	return silences, nil
 }
@@ -58,9 +73,10 @@ func ExpireSilence(silenceID, alertmanagerURL, user, password string) error {
 }
 
 // Resolved reports whether a silence has already ended.
-func Resolved(s types.Silence) bool {
-	if s.EndsAt.IsZero() {
+func Resolved(s *models.GettableSilence) bool {
+	endsAt := silenceEndsAt(s)
+	if endsAt.IsZero() {
 		return false
 	}
-	return !s.EndsAt.After(time.Now())
+	return !endsAt.After(time.Now())
 }
