@@ -12,10 +12,6 @@ import (
 	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
 )
 
-// Make sure time is referenced from the package even if reconcileOrphans
-// happens to not use it directly (it does, via time.NewTicker).
-var _ = time.Now
-
 // reconcilerInterval is the period at which the plugin re-checks every
 // registered receiver's underlying Mattermost incoming webhook. Five
 // minutes balances "tolerable lag between out-of-band webhook delete

@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	neturl "net/url"
-	"reflect"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -330,11 +328,3 @@ func (p *Plugin) OnConfigurationChange() error {
 	return nil
 }
 
-// Reflect import kept here to silence the unused-import error if Clone gets
-// refactored. setConfiguration uses reflect.ValueOf below.
-var _ = reflect.TypeOf
-
-// Sync import is so that sync.RWMutex lives in this package. The actual
-// mutex field is declared on Plugin in plugin.go; this reference makes the
-// import explicit for code readers landing here first.
-var _ sync.Locker = (*sync.Mutex)(nil)
