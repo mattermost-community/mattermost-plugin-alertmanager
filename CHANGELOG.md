@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.0.5...v1.0.6) (2026-07-06)
+
+
+### Dependencies
+
+* **actions:** bump anchore/scan-action from 5.2.0 to 7.4.0 ([f3ace25](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/f3ace259f01a28ebd1afafc807a6cfac9bc5d735))
+* **actions:** bump actions/upload-artifact from 4.4.3 to 7.0.1 ([35a5da5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/35a5da5f99ef125c3991e54359d59a2c90bec862))
+* **actions:** bump actions/setup-go from 5.5.0 to 6.5.0 ([8693c64](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/8693c64e9ccaaabd1fe673abea21f84c2e2b749c))
+* **actions:** bump googleapis/release-please-action from 4.2.0 to 5.0.0 ([4590003](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/459000386b7e567c28cebbd557b002d55e2d3645))
+* **actions:** bump the actions-minor-patch group with 5 updates ([c0035e0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/c0035e0ee80bf7d250a2718b74816d89299e7022))
+* **go:** bump the go-minor-patch group with 2 updates ([70ff7f0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/70ff7f0dc2d09bfc4064e5925357b8c432eea0ff))
+* bump golang.org/x/net from 0.54.0 to 0.55.0 in /build ([646f9ae](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/646f9ae0773a51e9ec9b213ab7aedfb68905a347))
+
 ## [1.0.5](https://github.com/christopherfickess/mattermost-plugin-alertmanager/compare/v1.0.4...v1.0.5) (2026-06-30)
 
 
