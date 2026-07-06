@@ -58,7 +58,7 @@ jobs:
       # for GitHub code scanning. `make sbom-scan` emits table output
       # only — useful for humans, not for the code scanning API.
       - name: Scan SBOM with Grype (SARIF output)
-        uses: anchore/scan-action@5ed195cc06065322983cae4bb31e2a751feb86fd # v6.7.0
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v6.7.0
         id: grype-scan
         with:
           sbom: dist/sbom/server-sbom.json
