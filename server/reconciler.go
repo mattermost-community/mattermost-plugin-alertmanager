@@ -273,12 +273,11 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 // than yank it on a flaky GetIncomingWebhook call. The next reconcile
 // cycle will revisit.
 //
-// Race against handleAdd / handleRotate: if either runs concurrently,
-// the reconciler's filtered save could overwrite the new entry. The
-// window is small (between getConfiguration here and saveConfigs) and
-// the next cycle picks up the eventual-consistent truth. Acceptable
-// for v1 — alternative is a global write mutex, which complicates
-// every config-mutating path for a rare edge case.
+// reconcileOrphans prunes receivers whose underlying Mattermost incoming
+// webhook was deleted out-of-band, so /alertmanager list stays truthful.
+// The whole read-modify-write runs under configWriteMu (acquired below), so
+// it can no longer clobber a concurrent admin add/rotate — the old
+// small-window race is closed by the lock, not tolerated.
 func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 	// Atomic read-modify-write: hold configWriteMu across the read + save so
 	// the reconciler can't clobber a concurrent admin add/remove (lost

@@ -83,12 +83,6 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return err.Error(), nil
 	}
 
-	// Atomic read-modify-write: hold configWriteMu from here (before the
-	// getConfiguration read further down) through the save, so a concurrent
-	// add/remove/reconcile can't clobber the merged result (lost update).
-	p.configWriteMu.Lock()
-	defer p.configWriteMu.Unlock()
-
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
@@ -144,6 +138,15 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
+
+	// Atomic read-modify-write: acquire configWriteMu here, immediately
+	// before the first getConfiguration read, and hold it through the save
+	// below so a concurrent add/remove/reconcile can't clobber the merged
+	// result (lost update). Deliberately NOT held during arg parsing or the
+	// channel resolve above — those don't touch config state, so keeping the
+	// lock off them minimizes contention.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
 
 	// Skip-check is scoped to the destination channel only. A receiver
 	// named `high-cpu-usage--alert-slo-channel` MUST block creating it
