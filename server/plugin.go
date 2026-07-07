@@ -40,8 +40,16 @@ type Plugin struct {
 
 	// stopReconciler halts the periodic webhook-orphan reconciler
 	// goroutine started in OnActivate. nil if not started or already
-	// stopped.
+	// stopped. Written in OnActivate, read+nil'd in OnDeactivate —
+	// Mattermost guarantees these calls are serialized per plugin
+	// instance, so no additional synchronization is needed.
 	stopReconciler func()
+
+	// configWriteMu serializes config read-modify-write cycles across
+	// concurrent callers (slash commands + background reconciler). The
+	// lock must be held from the initial getConfiguration read through
+	// the saveConfigs call to prevent lost updates. See saveConfigs.
+	configWriteMu sync.Mutex
 
 	// reconcilerStatusLock guards reconcilerLastRun and
 	// reconcilerLastPruned. These are read by the admin inventory
@@ -184,8 +192,12 @@ func (p *Plugin) requireSystemAdmin(userID string) error {
 // commands that operate on a specific channel — team admins can manage
 // their own team's receivers without bottlenecking on the sysadmin.
 //
-// The check is channel-scoped: a team_admin in team A can't mutate
-// receivers in team B's channels. Sysadmins bypass the team check.
+// Access is team-scoped, NOT channel-scoped: a team_admin can manage
+// receivers in any channel of their team, including channels they are
+// not a member of (even private ones). This is intentional — team admins
+// are trusted to administer their team's infrastructure configuration.
+// A team_admin in team A cannot reach team B's channels. Sysadmins
+// bypass the team check entirely.
 func (p *Plugin) requireChannelTeamAdmin(userID, channelID string) error {
 	if p.client == nil {
 		return fmt.Errorf("plugin not fully initialized")

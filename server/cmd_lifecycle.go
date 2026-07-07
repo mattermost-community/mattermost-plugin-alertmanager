@@ -781,6 +781,15 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string) (string, e
 // case-insensitive JSON unmarshaling handles the read side
 // regardless.
 func (p *Plugin) saveConfigs(entries []alertConfig) error {
+	// Hold configWriteMu for the full save. This prevents concurrent
+	// SavePluginConfig calls from interleaving and corrupting the durable
+	// store. Note: callers should ideally acquire the lock before their
+	// initial getConfiguration read to also prevent lost-update races
+	// (two goroutines computing from the same stale snapshot). The
+	// 5-minute reconciler self-heals any remaining lost-update window.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	blob, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)

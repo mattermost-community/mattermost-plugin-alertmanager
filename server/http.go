@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -63,7 +64,7 @@ func (p *Plugin) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	supplied := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if supplied != token {
+	if subtle.ConstantTimeCompare([]byte(supplied), []byte(token)) != 1 {
 		http.Error(w, "unauthorized: bad or missing bearer token", http.StatusUnauthorized)
 		return
 	}
@@ -202,10 +203,6 @@ func (p *Plugin) handleAutocompleteChannels(w http.ResponseWriter, r *http.Reque
 		})
 	}
 	respondAutocompleteItems(w, items)
-
-	// Suppress unused-import linter complaint about userID; it's there for
-	// future per-user filtering and to match the dispatcher signature.
-	_ = userID
 }
 
 // extractTeamSlugFromParsed reads the team slug out of the partial
