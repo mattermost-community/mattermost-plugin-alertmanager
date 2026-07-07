@@ -113,7 +113,12 @@ endif
 # re-deriving the URL on every reference.
 GO_LDFLAGS := -X 'github.com/mattermost/mattermost-plugin-alertmanager.RepoURL=$(PLUGIN_REPO_URL)'
 
-## Builds the server, if it exists, for all supported architectures.
+## Builds the server for Linux (amd64 + arm64). Mattermost servers run on
+## Linux — including every docker dev environment — so the darwin/windows
+## plugin binaries were never actually loaded and only tripled the build
+## time (5 cross-compiles -> 2). If you must run the MM *server* natively
+## on macOS/Windows, add those GOOS/GOARCH lines back here and to
+## plugin.json's executables.
 .PHONY: server
 server:
 ifneq ($(HAS_SERVER),)
@@ -121,17 +126,11 @@ ifneq ($(HAS_SERVER),)
 ifeq ($(MM_DEBUG),)
 	cd server && env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -o dist/plugin-linux-amd64;
 	cd server && env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -o dist/plugin-linux-arm64;
-	cd server && env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -o dist/plugin-darwin-amd64;
-	cd server && env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -o dist/plugin-darwin-arm64;
-	cd server && env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -o dist/plugin-windows-amd64.exe;
 else
 	$(info DEBUG mode is on; to disable, unset MM_DEBUG)
 
 	cd server && env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -gcflags "all=-N -l" -o dist/plugin-linux-amd64;
 	cd server && env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -gcflags "all=-N -l" -o dist/plugin-linux-arm64;
-	cd server && env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -gcflags "all=-N -l" -o dist/plugin-darwin-amd64;
-	cd server && env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -gcflags "all=-N -l" -o dist/plugin-darwin-arm64;
-	cd server && env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -trimpath -gcflags "all=-N -l" -o dist/plugin-windows-amd64.exe;
 endif
 endif
 
