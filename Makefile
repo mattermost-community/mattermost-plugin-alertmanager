@@ -180,6 +180,17 @@ bundle: render-docs
 	    -e 's|__PLUGIN_REPO_URL__|$(PLUGIN_REPO_URL)|g' \
 	    -e 's|__PLUGIN_VERSION__|$(PLUGIN_VERSION)|g' \
 	    $(MANIFEST_FILE) > dist/$(PLUGIN_ID)/$(MANIFEST_FILE)
+	@# Fail the build if any placeholder survived substitution. A bundle
+	@# with raw __PLUGIN_*__ tokens ships broken URLs to System Console
+	@# (renders literally, 404s). This turns that silent, user-facing
+	@# failure into a hard build error. Also catches a NEW placeholder
+	@# added to plugin.json without a matching sed rule above.
+	@if grep -qE '__PLUGIN_[A-Z_]+__' dist/$(PLUGIN_ID)/$(MANIFEST_FILE); then \
+		echo "ERROR: unsubstituted placeholder(s) in bundled plugin.json:"; \
+		grep -oE '__PLUGIN_[A-Z_]+__' dist/$(PLUGIN_ID)/$(MANIFEST_FILE) | sort -u | sed 's/^/  /'; \
+		echo "Add a matching sed rule to the 'bundle' target in the Makefile."; \
+		exit 1; \
+	fi
 	cp README.md dist/$(PLUGIN_ID)/
 	cp LICENSE dist/$(PLUGIN_ID)/
 ifneq ($(wildcard $(ASSETS_DIR)/.),)
