@@ -83,6 +83,12 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return err.Error(), nil
 	}
 
+	// Atomic read-modify-write: hold configWriteMu from here (before the
+	// getConfiguration read further down) through the save, so a concurrent
+	// add/remove/reconcile can't clobber the merged result (lost update).
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
@@ -213,7 +219,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		// the append-aliasing pitfall where reusing the source slice's
 		// capacity would mutate p.getConfiguration().AlertConfigs in place.
 		merged := slices.Concat(p.getConfiguration().AlertConfigs, newEntries)
-		if err := p.saveConfigs(merged); err != nil {
+		if err := p.saveConfigsLocked(merged); err != nil {
 			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
 			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v", err), nil
 		}

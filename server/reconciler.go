@@ -138,6 +138,12 @@ const reminderRepeatInterval = 7 * 24 * time.Hour
 // and we want them to start a fresh clock rather than fire reminders
 // day-one. This is a one-time migration per receiver.
 func (p *Plugin) checkRotationReminders(sysadminID string) error {
+	// Atomic read-modify-write: hold configWriteMu across the read + save.
+	// Called sequentially after reconcileOrphans by runBackgroundReconcile
+	// (which does not hold the lock), so this is the sole acquirer here.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	cfg := p.getConfiguration()
 	if cfg.WebhookRotationDays <= 0 {
 		return nil
@@ -219,7 +225,7 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 	}
 
 	if mutated {
-		if err := p.saveConfigs(updated); err != nil {
+		if err := p.saveConfigsLocked(updated); err != nil {
 			return fmt.Errorf("persist rotation timestamps: %w", err)
 		}
 	}
@@ -274,6 +280,13 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 // for v1 — alternative is a global write mutex, which complicates
 // every config-mutating path for a rare edge case.
 func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
+	// Atomic read-modify-write: hold configWriteMu across the read + save so
+	// the reconciler can't clobber a concurrent admin add/remove (lost
+	// update). Called sequentially by runBackgroundReconcile and by the manual
+	// reconcile command; neither holds the lock, so this is the sole acquirer.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	current := p.getConfiguration().AlertConfigs
 	if len(current) == 0 {
 		return nil, nil
@@ -342,7 +355,7 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		return nil, nil
 	}
 
-	if err := p.saveConfigs(filtered); err != nil {
+	if err := p.saveConfigsLocked(filtered); err != nil {
 		p.API.LogWarn("reconciler: failed to persist after pruning orphans",
 			"pruned", strings.Join(pruned, ","), "err", err.Error())
 		return nil, fmt.Errorf("persist filtered config: %w", err)

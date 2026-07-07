@@ -76,6 +76,11 @@ func (p *Plugin) handleRemove(args *model.CommandArgs) (string, error) {
 // does the Mattermost incoming webhook get deleted. Order is
 // save-then-delete so a failed delete leaves no stale receiver entry.
 func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, error) {
+	// Hold configWriteMu across the whole read-modify-write so the read below
+	// and the save can't interleave with another mutator (lost-update safety).
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	current := p.getConfiguration().AlertConfigs
 	resolved := resolveReceiverName(current, name, args.ChannelId, p)
 	var hookID string
@@ -91,7 +96,7 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 		return fmt.Sprintf("Receiver %q not found.", name), nil
 	}
 
-	if err := p.saveConfigs(filtered); err != nil {
+	if err := p.saveConfigsLocked(filtered); err != nil {
 		return fmt.Sprintf("Failed to persist config: %v", err), nil
 	}
 
@@ -151,6 +156,11 @@ func orphanedWebhookIDs(before, after []alertConfig) []string {
 // pruned so /alertmanager list reflects the truth. Orphan webhooks (if
 // any survive) can be cleaned up via System Console.
 func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, error) {
+	// Atomic read-modify-write: hold configWriteMu from the read below
+	// through the save so concurrent mutators can't cause a lost update.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	scoped := p.configsForCurrentChannel(args)
 	if len(scoped) == 0 {
 		return ":information_source: No receivers bound to this channel — nothing to remove.", nil
@@ -186,7 +196,7 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 		removed = append(removed, c.Name)
 	}
 
-	if err := p.saveConfigs(filtered); err != nil {
+	if err := p.saveConfigsLocked(filtered); err != nil {
 		return fmt.Sprintf("Failed to persist config after bulk delete: %v", err), nil
 	}
 
@@ -232,6 +242,10 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 // so /alertmanager list reflects the new truth. Orphan webhooks (if
 // any survive the delete attempt) can be cleaned up via System Console.
 func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlugs []string, force bool) (string, error) {
+	// Atomic read-modify-write: hold configWriteMu across the read + save.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	// Build a set of base slugs for matching. receiverBaseSlug handles
 	// both legacy unsuffixed names (`high-cpu-usage`) and channel-
 	// suffixed ones (`high-cpu-usage--alert-sre-channel`) — both
@@ -279,7 +293,7 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 		removed = append(removed, c.Name)
 	}
 
-	if err := p.saveConfigs(filtered); err != nil {
+	if err := p.saveConfigsLocked(filtered); err != nil {
 		return fmt.Sprintf("Failed to persist config after set delete: %v", err), nil
 	}
 
@@ -356,6 +370,12 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 // the operator named. The response message lists the full affected set
 // and (for groups) DMs the merged YAML bundle.
 func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (string, error) {
+	// Atomic read-modify-write. handleRotateOverdue calls this in a loop but
+	// does not hold configWriteMu itself, so locking per-call is deadlock-free
+	// and each rotation is an independent atomic update.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	current := p.getConfiguration().AlertConfigs
 	resolved := resolveReceiverName(current, name, args.ChannelId, p)
 	targetIdx := -1
@@ -419,7 +439,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		updated[idx].LastReminderAt = time.Time{}
 	}
 
-	if err := p.saveConfigs(updated); err != nil {
+	if err := p.saveConfigsLocked(updated); err != nil {
 		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
 		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v", err), nil
 	}
@@ -780,15 +800,21 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string) (string, e
 // keeping our save path aligned with its read path. Go's
 // case-insensitive JSON unmarshaling handles the read side
 // regardless.
-func (p *Plugin) saveConfigs(entries []alertConfig) error {
-	// Hold configWriteMu for the full save. This prevents concurrent
-	// SavePluginConfig calls from interleaving and corrupting the durable
-	// store. Note: callers should ideally acquire the lock before their
-	// initial getConfiguration read to also prevent lost-update races
-	// (two goroutines computing from the same stale snapshot). The
-	// 5-minute reconciler self-heals any remaining lost-update window.
-	p.configWriteMu.Lock()
-	defer p.configWriteMu.Unlock()
+// saveConfigsLocked persists the receiver list. The caller MUST hold
+// configWriteMu across its entire read-modify-write (from the initial
+// getConfiguration read through this save) — that's what makes the RMW
+// atomic and prevents lost updates (two callers computing from the same
+// stale snapshot, the second clobbering the first). Locking only inside
+// the save serialized writes but did not close that race.
+func (p *Plugin) saveConfigsLocked(entries []alertConfig) error {
+	// Guard: TryLock succeeds only when the mutex is unlocked, so a success
+	// here means nobody holds it — a caller forgot to lock. Fail loud rather
+	// than silently reopen the race. Never false-positives: if this goroutine
+	// (or any other) holds the lock, TryLock returns false and we proceed.
+	if p.configWriteMu.TryLock() {
+		p.configWriteMu.Unlock()
+		panic("saveConfigsLocked called without configWriteMu held — lock configWriteMu across the full read-modify-write")
+	}
 
 	blob, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
