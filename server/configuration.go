@@ -327,4 +327,3 @@ func (p *Plugin) OnConfigurationChange() error {
 	p.updateAlertmanagerHTTPClient(raw.AlertManagerCABundle)
 	return nil
 }
-
