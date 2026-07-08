@@ -139,6 +139,15 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
 
+	// Atomic read-modify-write: acquire configWriteMu here, immediately
+	// before the first getConfiguration read, and hold it through the save
+	// below so a concurrent add/remove/reconcile can't clobber the merged
+	// result (lost update). Deliberately NOT held during arg parsing or the
+	// channel resolve above — those don't touch config state, so keeping the
+	// lock off them minimizes contention.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
 	// Skip-check is scoped to the destination channel only. A receiver
 	// named `high-cpu-usage--alert-slo-channel` MUST block creating it
 	// again, but `high-cpu-usage--alert-sre-channel` in another channel
@@ -213,7 +222,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		// the append-aliasing pitfall where reusing the source slice's
 		// capacity would mutate p.getConfiguration().AlertConfigs in place.
 		merged := slices.Concat(p.getConfiguration().AlertConfigs, newEntries)
-		if err := p.saveConfigs(merged); err != nil {
+		if err := p.saveConfigsLocked(merged); err != nil {
 			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
 			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v", err), nil
 		}
