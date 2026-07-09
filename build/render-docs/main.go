@@ -256,6 +256,8 @@ the plugin is installed.
 
 ## Where to go
 
+- **[Quickstart](quickstart.html)** — fresh install to a first real alert
+  landing in a channel, in eight tagged steps.
 - **[Configuration](configuration.html)** — JSON schema, naming
   convention, multi-tenant patterns, validation behavior, multiple
   Alertmanagers.
@@ -427,8 +429,59 @@ func renderSection(section siteSection) (int, error) {
 		return 0, fmt.Errorf("write styles.css: %w", err)
 	}
 
+	// Mirror any images/ subdir so `![](images/foo.png)` tags resolve in the
+	// rendered site. render-docs owns the whole site, so it copies the images
+	// itself rather than leaving it as a manual step authors forget.
+	imgCount, err := copyImages(section.SrcDir, section.OutDir)
+	if err != nil {
+		return 0, fmt.Errorf("copy images: %w", err)
+	}
+	if imgCount > 0 {
+		fmt.Printf("copied %d images to %s/images\n", imgCount, section.OutDir)
+	}
+
 	fmt.Printf("rendered %d topic pages + index to %s\n", len(pages), section.OutDir)
 	return len(pages), nil
+}
+
+// copyImages mirrors an optional images/ subdir from the section's source
+// dir into its output dir. Markdown image tags use relative paths like
+// `images/foo.png`, which resolve to <outDir>/images/foo.png once rendered —
+// Mattermost then serves them at /plugins/<id>/public/help/images/foo.png.
+//
+// A missing images/ dir is not an error: most doc sets have no images, and
+// this keeps the tool a no-op for them. The copy is a flat, one-level mirror
+// (no nested trees) because the docs convention is a single flat images/ dir.
+func copyImages(srcDir, outDir string) (int, error) {
+	srcImages := filepath.Join(srcDir, "images")
+	entries, err := os.ReadDir(srcImages)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil // no images/ subdir — nothing to mirror
+		}
+		return 0, fmt.Errorf("read %s: %w", srcImages, err)
+	}
+
+	outImages := filepath.Join(outDir, "images")
+	if err := os.MkdirAll(outImages, 0755); err != nil {
+		return 0, fmt.Errorf("mkdir %s: %w", outImages, err)
+	}
+
+	copied := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue // flat images/ dir only — skip any nested subdirs
+		}
+		data, err := os.ReadFile(filepath.Join(srcImages, e.Name()))
+		if err != nil {
+			return copied, fmt.Errorf("read image %s: %w", e.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(outImages, e.Name()), data, 0644); err != nil {
+			return copied, fmt.Errorf("write image %s: %w", e.Name(), err)
+		}
+		copied++
+	}
+	return copied, nil
 }
 
 // writePage renders a single page using the nav built from `pages` and
