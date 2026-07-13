@@ -66,6 +66,19 @@ jobs:
           severity-cutoff: high
           output-format: sarif
 
+      # Grype's SBOM-mode SARIF emits results whose artifactLocation.uri is
+      # an EMPTY string (""). GitHub Code Scanning rejects the upload with
+      # "locationFromSarifResult: expected artifact location". Anchor each
+      # finding to go.sum — the committed source of these go-module CVEs —
+      # so the SARIF is accepted and findings render in the Security tab.
+      # (jq is preinstalled on GitHub-hosted ubuntu runners.)
+      - name: Anchor Grype SARIF findings (Code Scanning requires a location)
+        if: always() && steps.grype-scan.outputs.sarif != ''
+        run: |
+          f="${{ steps.grype-scan.outputs.sarif }}"
+          jq '(.runs[]?.results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if (. == "" or . == null) then "go.sum" else . end)' "$f" > "$f.fixed"
+          mv "$f.fixed" "$f"
+
       # Upload is required, not best-effort. If Code Scanning isn't
       # enabled on this repo, the step fails and the workflow goes red
       # — by design. Enable Code Scanning in repo settings (public:
