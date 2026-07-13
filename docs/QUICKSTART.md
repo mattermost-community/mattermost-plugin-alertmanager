@@ -102,7 +102,7 @@ In the channel where you want alerts, run:
 /alertmanager add <team> <channel> <alertmanager-url> <target>
 ```
 - `<target>` is a **runbook set** (`all`, `compute`, `application`, `database`,
-  `storage`, `networking`, `observability`) or a **single runbook slug**
+  `storage`, `networking`, `observability`, `security`) or a **single runbook slug**
   (e.g. `pod-crashloopbackoff`).
 - Add a trailing `on` to opt these receivers into rotation reminders.
 

@@ -239,8 +239,10 @@ Each shipped runbook documents the labels its Quick diagnostics
 section expects in a "Required Prometheus labels" footer. Most
 expect at least `namespace` and `pod` (for compute, application,
 storage runbooks) plus the runbook-specific label like `instance` /
-`job` / `service`. See the corresponding `runbooks/*.md` file for
-the exact list.
+`job` / `service`. Security runbooks differ — several use apiserver /
+Falco labels (e.g. `k8s_ns_name`, `job`) instead. See the
+corresponding `runbooks/*.md` file, or run `/alertmanager docs
+requirements` for the full per-alert metric / label / tooling matrix.
 
 If a label is missing on an incoming alert, the template falls back
 to leaving the placeholder text in place — operators see

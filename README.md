@@ -66,9 +66,9 @@ The diagnostic content above is parsed from the embedded runbook file
 [`runbooks/high-cpu-usage.md`](runbooks/high-cpu-usage.md) at YAML-render
 time. Placeholders like `<namespace>` and `<pod>` are substituted by
 Alertmanager at alert delivery time using the alert's actual labels.
-Each of the 20 shipped runbooks (compute / application / database /
-storage / networking / observability) follows the same WHERE / WHAT /
-READ structure.
+Each of the 30 shipped runbooks (compute / application / database /
+storage / networking / observability / security) follows the same
+WHERE / WHAT / READ structure.
 
 ## Two-minute setup
 
@@ -147,7 +147,7 @@ Alertmanager templates the post body — including the inlined Quick
 diagnostics from the runbook — and POSTs to the Mattermost webhook
 URL. The plugin doesn't intercept alert payloads at runtime; it
 only owns the YAML generation, webhook lifecycle, and the inventory
-page. The 20 runbook markdown files ship embedded in the plugin
+page. The 30 runbook markdown files ship embedded in the plugin
 binary via Go's `embed.FS`.
 
 For deeper context: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
