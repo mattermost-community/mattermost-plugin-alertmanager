@@ -27,6 +27,9 @@ var scaffoldSets = map[string][]string{
 		"pod-not-ready",
 		"deployment-replicas-unavailable",
 		"node-not-ready",
+		"cpu-throttling-high",
+		"image-pull-backoff",
+		"pods-unschedulable",
 	},
 	"application": {
 		"high-http-error-rate",
@@ -38,6 +41,7 @@ var scaffoldSets = map[string][]string{
 		"database-connectivity-loss",
 		"database-replication-lag",
 		"database-high-latency",
+		"postgres-connections-near-max",
 	},
 	"storage": {
 		"persistent-volume-full",
@@ -51,6 +55,14 @@ var scaffoldSets = map[string][]string{
 	"observability": {
 		"prometheus-scrape-target-down",
 		"alertmanager-notification-failure",
+	},
+	"security": {
+		"unexpected-container-image",
+		"apiserver-auth-failure-spike",
+		"privileged-container-started",
+		"interactive-shell-in-container",
+		"rbac-privilege-escalation",
+		"security-tooling-down",
 	},
 }
 

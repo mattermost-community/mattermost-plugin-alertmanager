@@ -20,6 +20,9 @@ const maxDocPostBytes = 14000
 // the embedded filename. Explicit map so we can rename embedded files
 // without breaking the user-facing argument vocabulary.
 var docTopics = map[string]string{
+	"alerts":         "ALERT_CATALOG.md",
+	"alert-catalog":  "ALERT_CATALOG.md",
+	"requirements":   "ALERT_REQUIREMENTS.md",
 	"architecture":   "ARCHITECTURE.md",
 	"configuration":  "CONFIGURATION.md",
 	"development":    "DEVELOPMENT.md",

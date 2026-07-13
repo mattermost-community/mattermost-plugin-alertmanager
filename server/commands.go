@@ -15,10 +15,10 @@ const (
 	helpMsg = "**Alertmanager bridge slash commands** _(channel-scoped — you only see receivers bound to this channel)_\n\n" +
 		"_All commands listed in alphabetical order to match the autocomplete dropdown._\n\n" +
 		"- `/alertmanager about` — plugin build info, configured settings, reconciler health, jump-off links\n" +
-		"- `/alertmanager add <team> <channel> <am-url> [target] [on]` — create receivers for a group set OR an individual runbook slug. Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays).\n" +
+		"- `/alertmanager add <team> <channel> <am-url> [target] [on]` — create receivers for a group set OR an individual runbook slug. Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays).\n" +
 		"- `/alertmanager alerts` — list currently firing alerts (grouped by Alertmanager URL — one section per backend, not per receiver)\n" +
 		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
-		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: architecture, configuration, development, kubernetes, slash_commands)\n" +
+		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: alerts, requirements, architecture, configuration, development, kubernetes, slash_commands)\n" +
 		"- `/alertmanager expire_silence <name> <silence-id>` — expire a silence\n" +
 		"- `/alertmanager export [--diff-against-loaded]` — DM the assembled receivers.yml + routes.yml for this channel; with `--diff-against-loaded` (sysadmin) diff against AM's currently-loaded config\n" +
 		"- `/alertmanager help` — this message\n" +
@@ -76,12 +76,13 @@ func getAutocompleteData() *model.AutocompleteData {
 	add.AddDynamicListArgument("Mattermost channel URL slug — public channels in the chosen team (or type a new name to auto-create)", channelFetchURL, true)
 	add.AddTextArgument("Alertmanager API base URL (no trailing slash)", "[am-url]", "")
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
-		{Item: "all", HelpText: "Every embedded runbook (default — 20 receivers in one shared webhook)"},
+		{Item: "all", HelpText: "Every embedded runbook (default — 30 receivers in one shared webhook)"},
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
-		{Item: "compute", HelpText: "CPU, memory, pod, deployment, node alerts (6) — one shared webhook"},
-		{Item: "database", HelpText: "Connectivity, replication lag, query latency (3) — one shared webhook"},
+		{Item: "compute", HelpText: "CPU, memory, throttling, pod, deployment, node, image-pull, scheduling alerts (9) — one shared webhook"},
+		{Item: "database", HelpText: "Connectivity, replication lag, query latency, connection saturation (4) — one shared webhook"},
 		{Item: "networking", HelpText: "Ingress 5xx, cert expiry, DNS failure (3) — one shared webhook"},
 		{Item: "observability", HelpText: "Prometheus scrape down, Alertmanager notify fail (2) — one shared webhook"},
+		{Item: "security", HelpText: "Unexpected image, API auth spike, privileged container, shell-in-container, RBAC escalation, security tooling down (6) — one shared webhook"},
 		{Item: "storage", HelpText: "PV full, disk fill rate (2) — one shared webhook"},
 	})
 	add.AddStaticListArgument("Optional: enable webhook rotation reminders for these receivers", false, []model.AutocompleteListItem{
@@ -97,6 +98,8 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	docs := model.NewAutocompleteData("docs", "[topic]", "Show embedded documentation in chat")
 	docs.AddStaticListArgument("Pick a topic", false, []model.AutocompleteListItem{
+		{Item: "alerts", HelpText: "Catalog of every alert type + severity + what fires it, by group"},
+		{Item: "requirements", HelpText: "Per-alert requirements: which metric/exporter/tooling each alert needs to fire"},
 		{Item: "architecture", HelpText: "Plugin design: why slack_configs over webhook_configs"},
 		{Item: "configuration", HelpText: "Plugin settings + alertmanager.yml structure"},
 		{Item: "development", HelpText: "Local build, test, deploy workflow"},
@@ -132,6 +135,7 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "database", HelpText: "All database receivers in this channel (requires --force)"},
 		{Item: "networking", HelpText: "All networking receivers in this channel (requires --force)"},
 		{Item: "observability", HelpText: "All observability receivers in this channel (requires --force)"},
+		{Item: "security", HelpText: "All security receivers in this channel (requires --force)"},
 		{Item: "storage", HelpText: "All storage receivers in this channel (requires --force)"},
 	})
 	remove.AddStaticListArgument("Pass `--force` to confirm bulk delete", false, []model.AutocompleteListItem{
@@ -158,6 +162,7 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "database", HelpText: "Database receivers only"},
 		{Item: "networking", HelpText: "Networking receivers only"},
 		{Item: "observability", HelpText: "Observability receivers only"},
+		{Item: "security", HelpText: "Security receivers only"},
 		{Item: "storage", HelpText: "Storage receivers only"},
 	})
 	validate.AddStaticListArgument("Optional mode flag — pick how validate runs", false, []model.AutocompleteListItem{
