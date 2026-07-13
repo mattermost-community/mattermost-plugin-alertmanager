@@ -81,7 +81,7 @@ WHERE / WHAT / READ structure.
    /alertmanager add ops alerts http://alertmanager:9093 all
    ```
 
-   The plugin creates 20 Mattermost incoming webhooks (one per
+   The plugin creates 30 Mattermost incoming webhooks (one per
    runbook) bound to this channel and DMs you the assembled
    `receivers.yml` + `routes.yml`.
 

@@ -72,13 +72,13 @@ routes with `continue: true` so AM doesn't stop at the first match.
 
 ## Worked examples
 
-### First-time setup — all 20 canonical receivers in one channel
+### First-time setup — all 30 canonical receivers in one channel
 
 ```
 /alertmanager add testing alert-slo-channel http://alertmanager:9093
 ```
 
-Creates every embedded runbook (the `all` set — 20 receivers) bound
+Creates every embedded runbook (the `all` set — 30 receivers) bound
 to `~alert-slo-channel` **behind one shared Mattermost webhook**.
 The summary lands in the channel; the assembled
 `alertmanager-receivers.yml` + `alertmanager-routes.yml` land in

@@ -256,7 +256,7 @@ That walks AM's route tree against your label set without firing a
 real alert.
 
 `samples/prometheus-rules.yaml` ships a complete rule set covering
-all 20 runbooks with the correct label patterns. Use it as a
+all 30 runbooks with the correct label patterns. Use it as a
 starting point.
 
 ## Receiver naming convention

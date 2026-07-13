@@ -81,7 +81,7 @@ route:
     - matchers: [runbook="pod-crashloopbackoff"]
       receiver: pod-crashloopbackoff--alert-slo-channel
       continue: true
-    # ... one route per receiver, 20 total for the standard set
+    # ... one route per receiver, 30 total for the standard set
 ```
 
 `continue: true` on every plugin-generated route is what makes fan-out
