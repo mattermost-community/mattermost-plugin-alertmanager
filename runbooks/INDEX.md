@@ -1,6 +1,6 @@
 # Runbook Library
 
-20 runbooks covering the most common SRE alert categories. Each
+30 runbooks covering the most common SRE and security alert categories. Each
 follows the same structure (see [TEMPLATE.md](TEMPLATE.md)) so the
 on-call experience is consistent across alert types.
 
@@ -14,6 +14,9 @@ on-call experience is consistent across alert types.
 | [Pod Not Ready](pod-not-ready.md) | Readiness probe failing 5+ min | warning → critical if majority of replicas |
 | [Deployment Replicas Unavailable](deployment-replicas-unavailable.md) | Available replicas < spec replicas for 5+ min | critical |
 | [Node Not Ready](node-not-ready.md) | K8s node `Ready=False` or pressure conditions | critical |
+| [CPU Throttling High](cpu-throttling-high.md) | Container throttled >25% of CFS periods | warning |
+| [Pod ImagePullBackOff](image-pull-backoff.md) | Image can't be pulled — pod never starts | critical |
+| [Pods Unschedulable](pods-unschedulable.md) | Pods stuck Pending — scheduler can't place them | warning |
 
 ## Application
 
@@ -31,6 +34,7 @@ on-call experience is consistent across alert types.
 | [Database Connectivity Loss](database-connectivity-loss.md) | App can't reach DB; zero active connections | critical |
 | [Database Replication Lag](database-replication-lag.md) | Replica lag > N seconds for 5+ min | warning → critical at higher thresholds |
 | [Database High Latency](database-high-latency.md) | p95 query time > N ms sustained | warning |
+| [Postgres Connections Near Max](postgres-connections-near-max.md) | In-use connections > 80% of max_connections | warning → critical at 95% |
 
 ## Storage
 
@@ -53,6 +57,21 @@ on-call experience is consistent across alert types.
 |---|---|---|
 | [Prometheus Scrape Target Down](prometheus-scrape-target-down.md) | `up == 0` for a target for 5+ min | warning |
 | [Alertmanager Notification Failure](alertmanager-notification-failure.md) | AM delivery dead-letter rate climbing | critical |
+
+## Security
+
+New in this release. Several depend on tooling beyond stock
+Prometheus/kube-state-metrics — noted in the Requires column. Without
+that tooling the rule is valid but never fires.
+
+| Runbook | When it fires | Severity | Requires |
+|---|---|---|---|
+| [Unexpected Container Image](unexpected-container-image.md) | Pod runs an image outside the registry allowlist | warning | kube-state-metrics |
+| [API Server Auth Failure Spike](apiserver-auth-failure-spike.md) | Spike in 401/403 from the kube-apiserver | warning | apiserver metrics |
+| [Privileged / Root Container Started](privileged-container-started.md) | Privileged / root / hostPath container starts | critical | Kyverno/Gatekeeper |
+| [Interactive Shell in Container](interactive-shell-in-container.md) | Shell spawned inside a running container | warning | Falco |
+| [RBAC Privilege Escalation](rbac-privilege-escalation.md) | cluster-admin binding or wildcard role created | critical | audit logs + Falco |
+| [Security Tooling Down](security-tooling-down.md) | Falco/Kyverno/audit sensor stopped reporting | critical | Falco/Kyverno scrape targets |
 
 ## How these get referenced
 

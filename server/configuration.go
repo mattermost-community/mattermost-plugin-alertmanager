@@ -19,9 +19,16 @@ import (
 // Mattermost webhook URL when rendered into alertmanager.yml. See
 // plugin.json settings_schema for the full rationale. Empty = fall back
 // to SiteURL.
+//
+// WebhookHostPreset is the System Console dropdown of known-good hosts for
+// common setups (Docker Desktop, default-namespace K8s). It and WebhookHost
+// are collapsed into a single effective value by resolveWebhookHost — a
+// free-text WebhookHost always wins, so existing installs and custom URLs
+// are unaffected.
 type rawConfiguration struct {
 	AlertConfigsJSON      string
 	WebhookHost           string
+	WebhookHostPreset     string
 	AssembledYAMLTTLHours int
 	AlertManagerCABundle  string
 	MetricsToken          string
@@ -125,14 +132,18 @@ type alertConfig struct {
 }
 
 // Names are user-facing identifiers — URL-safe so they can appear in slash
-// command args and YAML output without escaping concerns.
-var alertConfigNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// command args and YAML output without escaping concerns. The 190-char cap
+// (up from 64) accommodates the team-qualified form <slug>--<team>-<channel>:
+// a long runbook slug (~33) plus a 64-char team slug plus a 64-char channel
+// slug plus separators tops out around 164, so 190 leaves headroom without an
+// unbounded name. Alertmanager and the rendered YAML impose no tighter limit.
+var alertConfigNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,189}$`)
 
 // IsValid enforces per-entry invariants. Name validation runs first so
 // downstream errors can reference it.
 func (ac *alertConfig) IsValid() error {
 	if !alertConfigNameRegex.MatchString(ac.Name) {
-		return fmt.Errorf("invalid name %q: must be 1-64 chars, start with [a-z0-9], remainder [a-z0-9_-]", ac.Name)
+		return fmt.Errorf("invalid name %q: must be 1-190 chars, start with [a-z0-9], remainder [a-z0-9_-]", ac.Name)
 	}
 	if ac.Team == "" {
 		return errors.New("must set team")
@@ -211,6 +222,23 @@ func validateWebhookHost(raw string) error {
 		return fmt.Errorf("WebhookHost cannot contain query string or fragment")
 	}
 	return nil
+}
+
+// resolveWebhookHost collapses the two System Console fields that can set the
+// global webhook host into the single effective value the rest of the plugin
+// uses (stored in configuration.WebhookHost, read by renderReceiverAPIURL).
+// Precedence, most specific first:
+//  1. WebhookHost (free text) — a value here always wins, so an existing
+//     install's setting keeps working and a custom URL (e.g. a K8s service
+//     DNS with a non-default namespace) overrides any preset.
+//  2. WebhookHostPreset (dropdown) — a known-good constant for a common
+//     setup (Docker Desktop, default-namespace K8s).
+//  3. "" — neither set; callers fall back to SiteURL.
+func resolveWebhookHost(custom, preset string) string {
+	if c := strings.TrimSpace(custom); c != "" {
+		return c
+	}
+	return strings.TrimSpace(preset)
 }
 
 // parseAlertConfigs decodes and validates the JSON blob. Surfaces byte
@@ -296,7 +324,11 @@ func (p *Plugin) OnConfigurationChange() error {
 		return fmt.Errorf("load plugin configuration: %w", err)
 	}
 
-	if err := validateWebhookHost(raw.WebhookHost); err != nil {
+	// Collapse the preset dropdown + free-text field into one effective host,
+	// then validate that — a preset is known-good, but a free-text override
+	// still needs the sanity check.
+	effectiveHost := resolveWebhookHost(raw.WebhookHost, raw.WebhookHostPreset)
+	if err := validateWebhookHost(effectiveHost); err != nil {
 		return err
 	}
 
@@ -320,7 +352,7 @@ func (p *Plugin) OnConfigurationChange() error {
 		}
 	}
 
-	p.setConfiguration(newConfiguration(entries, raw.WebhookHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
+	p.setConfiguration(newConfiguration(entries, effectiveHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
 	// Refresh the alertmanager package's HTTP client to use the new
 	// CA bundle (if set). Applied on every config change so admins
 	// can rotate certificates without a plugin restart.

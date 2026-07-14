@@ -88,9 +88,9 @@ Useful surrounding targets: `make disable`, `make enable`, `make reset`, `make c
 Once the plugin is loaded:
 
 1. **Plugin alive:** `/alertmanager about` returns version info.
-2. **Add the canonical set:** `/alertmanager add testing alerts-smoke http://localhost:9093`. Plugin creates 20 receivers, DMs you the assembled YAML files.
+2. **Add the canonical set:** `/alertmanager add testing alerts-smoke http://localhost:9093`. Plugin creates 30 receivers, DMs you the assembled YAML files.
 3. **Verify webhooks created:** Open System Console → Integrations → Incoming Webhooks → see entries named `Alertmanager: <slug>--alerts-smoke`.
-4. **List receivers in the channel:** `/alertmanager list` from `~alerts-smoke`. Should show all 20 in a table.
+4. **List receivers in the channel:** `/alertmanager list` from `~alerts-smoke`. Should show all 30 in a table.
 5. **Detail card for one:** `/alertmanager config high-cpu-usage` from `~alerts-smoke`. Should show metadata + slack_configs YAML.
 6. **Test the post path:**
    ```bash
@@ -101,7 +101,7 @@ Once the plugin is loaded:
    ```
    Post lands in `~alerts-smoke` as `@alertmanagerbot`.
 7. **Re-export:** `/alertmanager export` should produce the same receivers + routes YAML as the original add.
-8. **Bulk cleanup:** `/alertmanager remove all --force` deletes all 20 receivers and their webhooks.
+8. **Bulk cleanup:** `/alertmanager remove all --force` deletes all 30 receivers and their webhooks.
 
 ## Verifying persisted state
 

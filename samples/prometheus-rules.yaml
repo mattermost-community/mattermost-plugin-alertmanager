@@ -1,5 +1,5 @@
-# Sample Prometheus alert rules covering all 20 canonical runbooks
-# shipped by the mattermost-plugin-alertmanager plugin.
+# Sample Prometheus alert rules covering all 30 canonical runbooks
+# (including the security category) shipped by the mattermost-plugin-alertmanager plugin.
 #
 # WHERE THIS FILE LIVES
 # ---------------------
@@ -191,6 +191,73 @@ groups:
           summary: "Node {{ $labels.node }} not Ready for 5m"
           description: "A NotReady node is a candidate for cordon + drain. Investigate kubelet, networking, and disk pressure."
 
+      # CPUThrottlingHigh — labels required: namespace, pod, container.
+      # CFS throttling as a fraction of scheduler periods. Catches
+      # latency from hitting the CPU *limit* even when average usage
+      # looks modest — invisible to HighCPUUsage.
+      - alert: CPUThrottlingHigh
+        expr: |
+          sum by (namespace, pod, container) (rate(container_cpu_cfs_throttled_periods_total[5m]))
+          /
+          sum by (namespace, pod, container) (rate(container_cpu_cfs_periods_total[5m])) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+          category: compute
+          runbook: cpu-throttling-high
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) CPU-throttled > 25% for 10m"
+          description: "Throttled by the CFS scheduler — raise the CPU limit or the request/limit ratio."
+
+      # ContainerOOMKilled — labels required: namespace, pod, container.
+      # Distinct from a crashloop: the kernel OOM-killer reaped the
+      # container for exceeding its memory limit. Reuses the
+      # high-memory-usage runbook (same remediation).
+      - alert: ContainerOOMKilled
+        expr: |
+          increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: compute
+          runbook: high-memory-usage
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) was OOMKilled"
+          description: "Container hit its memory limit and was killed. Raise the limit or fix the leak."
+
+      # PodImagePullBackOff — labels required: namespace, pod.
+      # Container can't pull its image (bad tag, missing/expired pull
+      # secret, registry issue). The pod never starts — vs a crashloop
+      # where it starts then dies.
+      - alert: PodImagePullBackOff
+        expr: |
+          max by (namespace, pod) (
+            kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"}
+          ) > 0
+        for: 5m
+        labels:
+          severity: critical
+          category: compute
+          runbook: image-pull-backoff
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} cannot pull its image"
+          description: "Bad tag, missing/expired imagePullSecret, or registry outage — the rollout is blocked."
+
+      # PodsUnschedulable — labels required: namespace, pod.
+      # Scheduler can't place the pod: capacity, taints, affinity, or an
+      # unbound PVC. Requested capacity that never arrives.
+      - alert: PodsUnschedulable
+        expr: |
+          max by (namespace, pod) (kube_pod_status_unschedulable) > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: compute
+          runbook: pods-unschedulable
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} is unschedulable for 10m"
+          description: "No node fits — check requests vs capacity, node selectors/affinity, taints, and PVC binding."
+
   # =========================================================
   # APPLICATION — request-path SLO indicators.
   # =========================================================
@@ -338,6 +405,21 @@ groups:
           summary: "Postgres {{ $labels.instance }} p95 query time > 500ms for 10m"
           description: "Slow queries usually mean missing indexes, table bloat, or a noisy-neighbor workload."
 
+      # PostgresConnectionsNearMax — cluster-level (aggregate, no labels).
+      # In-use connections as a fraction of max_connections. New clients
+      # get refused at 100% — Mattermost writes fail. Critical at 95%.
+      - alert: PostgresConnectionsNearMax
+        expr: |
+          sum(pg_stat_activity_count) / on() pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+          runbook: postgres-connections-near-max
+        annotations:
+          summary: "Postgres connections > 80% of max_connections"
+          description: "Approaching the connection ceiling. Add a pooler (PgBouncer) or raise max_connections with RAM to back it."
+
   # =========================================================
   # STORAGE — volume fill, disk fill rate.
   # =========================================================
@@ -469,3 +551,115 @@ groups:
         annotations:
           summary: "Alertmanager notification failures for receiver {{ $labels.receiver }}"
           description: "Alertmanager cannot deliver. If THIS fires, the whole alerting pipeline is degraded — investigate the receiver target (Mattermost webhook, PagerDuty, etc.)."
+
+  # =========================================================
+  # SECURITY — supply-chain, auth, runtime, and policy signals.
+  # Several of these depend on tooling BEYOND the stack above and
+  # are valid-but-silent until it's present:
+  #   - PrivilegedContainerStarted  -> Kyverno / Gatekeeper policy metrics
+  #   - InteractiveShellInContainer -> Falco (falco_events)
+  #   - RBACPrivilegeEscalation     -> Falco k8s-audit plugin
+  #   - SecurityToolingDown         -> those sensors' own /metrics targets
+  # Adjust the allowlist regex and job names to YOUR environment.
+  # =========================================================
+  - name: security
+    interval: 30s
+    rules:
+      # UnexpectedContainerImage — labels required: namespace, pod.
+      # Any running container whose image is OUTSIDE the approved
+      # registry allowlist. The regex below is an example — replace it
+      # with your own registries before trusting this rule.
+      - alert: UnexpectedContainerImage
+        expr: |
+          count by (namespace, pod, container, image) (
+            kube_pod_container_info{image!~"^(mattermost/|registry\\.mattermost\\.com/|ghcr\\.io/mattermost/).*"}
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+          category: security
+          runbook: unexpected-container-image
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} runs unapproved image {{ $labels.image }}"
+          description: "Image from outside the approved registry allowlist — possible supply-chain issue or rogue workload."
+
+      # APIServerAuthFailureSpike — cluster-level (no per-pod labels).
+      # A surge of 401/403 at the API server: credential abuse, a
+      # stolen/expired token, or a broken RBAC change hammering the API.
+      - alert: APIServerAuthFailureSpike
+        expr: |
+          sum(rate(apiserver_request_total{code=~"401|403"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          category: security
+          runbook: apiserver-auth-failure-spike
+        annotations:
+          summary: "kube-apiserver auth failures (401/403) elevated for 10m"
+          description: "Sustained authn/authz denials — investigate the source identity and any recent RBAC changes."
+
+      # PrivilegedContainerStarted — requires Kyverno or Gatekeeper.
+      # Stock kube-state-metrics can't see securityContext.privileged;
+      # this keys off a policy engine's violation counter instead.
+      - alert: PrivilegedContainerStarted
+        expr: |
+          sum by (namespace, policy, rule) (
+            increase(kyverno_policy_results_total{rule=~".*privileged.*|.*run-as-non-root.*", policy_result="fail"}[10m])
+          ) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: security
+          runbook: privileged-container-started
+        annotations:
+          summary: "Privileged/root container policy violation in {{ $labels.namespace }}"
+          description: "A container started privileged / root / hostPath — container-to-node escape risk."
+
+      # InteractiveShellInContainer — requires Falco (falco_events).
+      # Falco's built-in "Terminal shell in container" rule. Label names
+      # (k8s_ns_name / k8s_pod_name) follow Falco's metric conventions.
+      - alert: InteractiveShellInContainer
+        expr: |
+          sum by (k8s_ns_name, k8s_pod_name) (
+            rate(falco_events{rule="Terminal shell in container"}[5m])
+          ) > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: security
+          runbook: interactive-shell-in-container
+        annotations:
+          summary: "Shell spawned in {{ $labels.k8s_ns_name }}/{{ $labels.k8s_pod_name }}"
+          description: "Interactive shell inside a running container — hands-on-keyboard activity worth confirming."
+
+      # RBACPrivilegeEscalation — requires Kubernetes audit logs via Falco.
+      # High-privilege RBAC changes: cluster-admin bindings, wildcard
+      # roles. A classic post-compromise persistence step.
+      - alert: RBACPrivilegeEscalation
+        expr: |
+          sum by (k8s_ns_name) (
+            rate(falco_events{rule=~"Create ClusterRoleBinding.*|Attach to cluster-admin.*|K8s Role.*wildcard.*"}[5m])
+          ) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: security
+          runbook: rbac-privilege-escalation
+        annotations:
+          summary: "High-privilege RBAC change detected"
+          description: "cluster-admin binding or wildcard role created/modified — treat as a compromise indicator until cleared."
+
+      # SecurityToolingDown — the meta-alert. If Falco / Kyverno / Gatekeeper
+      # stop reporting, every tooling-dependent rule above goes silently
+      # blind. This is the rule that tells you the others can't fire.
+      - alert: SecurityToolingDown
+        expr: |
+          up{job=~"falco|kyverno.*|gatekeeper.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: security
+          runbook: security-tooling-down
+        annotations:
+          summary: "Security sensor {{ $labels.job }}/{{ $labels.instance }} is down for 5m"
+          description: "A runtime/policy/audit sensor stopped reporting — tooling-dependent security alerts are now blind."

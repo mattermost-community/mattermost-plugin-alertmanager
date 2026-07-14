@@ -52,10 +52,21 @@ func (p *Plugin) configsForCurrentChannel(args *model.CommandArgs) []alertConfig
 		return nil
 	}
 
+	// Team-scope as well as channel-scope: channel names are unique only per
+	// team (`town-square` exists in every team), so matching on channel name
+	// alone would leak — and let commands like `remove all` act on — another
+	// team's receivers that happen to share this channel's name.
+	team, appErr := p.API.GetTeam(channel.TeamId)
+	if appErr != nil {
+		p.API.LogWarn("could not resolve current team for scoping",
+			"teamID", channel.TeamId, "err", appErr.Error())
+		return nil
+	}
+
 	all := p.getConfiguration().AlertConfigs
 	matched := make([]alertConfig, 0, len(all))
 	for _, c := range all {
-		if c.Channel == channel.Name {
+		if c.Team == team.Name && c.Channel == channel.Name {
 			matched = append(matched, c)
 		}
 	}
@@ -80,7 +91,7 @@ func emptyScopeMessage(verb string) string {
 // each URL in the input so output is deterministic across calls.
 //
 // Why this matters: in the common case where one channel hosts N
-// receivers all pointing at the same Alertmanager (e.g. all 20 canonical
+// receivers all pointing at the same Alertmanager (e.g. all 30 canonical
 // runbook receivers in #alerts), the older per-receiver loop hit AM N
 // times and printed N copies of the same "firing alerts" or "loaded
 // silences" block. Querying once per distinct AM URL collapses that to

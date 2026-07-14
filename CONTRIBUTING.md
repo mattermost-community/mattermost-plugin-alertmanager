@@ -16,8 +16,8 @@ The contribution surface is small on purpose.
 │   ├── reconciler.go      Cluster-leader background job
 │   └── *_test.go          Unit tests
 ├── docs/                  Markdown sources (rendered to HTML at bundle time)
-├── runbooks/              The 20 canonical SRE runbook docs
-├── samples/               Sample Prometheus rules for the 20 runbooks
+├── runbooks/              The 30 canonical SRE runbook docs
+├── samples/               Sample Prometheus rules for the 30 runbooks
 ├── public/                Static assets bundled into the plugin tarball
 └── build/                 Build tooling (manifest, render-docs)
 ```

@@ -14,14 +14,14 @@
         }
     },
     "settings_schema": {
-        "header": "## Alertmanager Plugin\n\nBrings Prometheus Alertmanager alerts into Mattermost via native incoming webhooks.\n\n- 📚 [Plugin documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [SRE Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nConfigure the settings below if needed, then run `/alertmanager help` in any channel for the full command list.\n\n---\n*Plugin version: `__PLUGIN_VERSION__` — [release notes](__PLUGIN_RELEASE_URL__)*",
-        "footer": "### Most-used commands\n\n| Command | Use it when |\n|---|---|\n| `/alertmanager add <team> <channel> <am-url>` | First-time setup — creates the 20 canonical receivers in the named channel and DMs you the assembled `receivers:` block |\n| `/alertmanager list` | See what receivers are bound to the current channel |\n| `/alertmanager config <name>` | View one receiver's `slack_configs` YAML block + metadata |\n| `/alertmanager export` | DM yourself a fresh `receivers.yml` for the current channel (use after template changes or to back up state) |\n\nRun `/alertmanager help` in chat for the full list. Created webhooks appear at System Console → Integrations → Incoming Webhooks as `Alertmanager: <name>`.",
+        "header": "## Alertmanager Plugin\n\nPrometheus Alertmanager alerts in Mattermost, with the runbook attached.\n\n- 📚 [Documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📈 [Sample Prometheus rules](/plugins/com.mattermost.alertmanager/public/help/prometheus-rules.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nRun `/alertmanager help` in any channel for commands. Version `__PLUGIN_VERSION__` — [release notes](__PLUGIN_RELEASE_URL__).",
+        "footer": "### Most-used commands\n\n| Command | When |\n|---|---|\n| `/alertmanager add <team> <channel> <am-url>` | First-time setup — creates the 30 canonical receivers in a channel |\n| `/alertmanager rules` | Get the sample Prometheus rules (view or download) |\n| `/alertmanager list` | See receivers bound to this channel |\n\nRun `/alertmanager help` in chat for the full command list.",
         "settings": [
             {
                 "key": "AssembledYAMLTTLHours",
                 "display_name": "Auto-delete DM'd YAML files after (hours)",
                 "type": "number",
-                "help_text": "How many hours to keep the assembled receivers.yml + routes.yml files in the bot's DM with the calling sysadmin before auto-deleting them. These files contain webhook URLs (channel-bound bearer tokens), so a finite retention period limits long-term exposure if a user account is later compromised.\n\nDefaults to 72 hours. Set to 0 to disable auto-delete (files persist forever — not recommended).",
+                "help_text": "Hours to keep the DM'd receivers.yml/routes.yml (they contain webhook tokens) before auto-deleting; 0 disables auto-delete.",
                 "placeholder": "72",
                 "default": 72
             },
@@ -29,7 +29,7 @@
                 "key": "AlertManagerCABundle",
                 "display_name": "Alertmanager CA bundle (PEM)",
                 "type": "longtext",
-                "help_text": "Optional. Paste PEM-encoded CA certificates here to trust self-signed or internal CAs when the plugin queries Alertmanager (used by `/alertmanager status`, `alerts`, `silences`, `expire_silence`). Multiple certs OK — concatenate them. Leave empty to trust only the system CAs.\n\nThis only affects the plugin's outbound calls TO Alertmanager. The webhook URLs Alertmanager POSTs to are Mattermost-side and use whatever TLS Mattermost is configured with.",
+                "help_text": "Optional PEM CA bundle so the plugin trusts self-signed or internal Alertmanager certs on its outbound calls; empty uses the system CAs.",
                 "placeholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
                 "default": ""
             },
@@ -37,23 +37,44 @@
                 "key": "MetricsToken",
                 "display_name": "Metrics endpoint bearer token",
                 "type": "text",
-                "help_text": "Optional. When set, the plugin exposes Prometheus-format metrics at `/plugins/com.mattermost.alertmanager/metrics`. Prometheus scrapes the endpoint using this token in the `Authorization: Bearer <token>` header. Leave empty to disable the metrics endpoint entirely (returns 404).\n\nGenerate a random token (e.g., `openssl rand -hex 32`) and configure Prometheus to use it in its scrape_configs.",
+                "help_text": "Optional bearer token that turns on the Prometheus metrics endpoint at `/plugins/com.mattermost.alertmanager/metrics`; empty disables it (404).",
                 "placeholder": "(random 64-character hex string)",
                 "default": ""
             },
             {
+                "key": "WebhookHostPreset",
+                "display_name": "Webhook host — preset",
+                "type": "dropdown",
+                "help_text": "Quick-fill for how Alertmanager reaches Mattermost to POST alerts. Pick a common setup, or leave 'None' and type a custom value below (a custom value overrides this preset).",
+                "default": "",
+                "options": [
+                    {
+                        "display_name": "None — use the custom field below (blank there = Mattermost SiteURL)",
+                        "value": ""
+                    },
+                    {
+                        "display_name": "Docker Desktop / Compose — host.docker.internal:8065",
+                        "value": "http://host.docker.internal:8065"
+                    },
+                    {
+                        "display_name": "Kubernetes service DNS — namespace 'mattermost' (edit custom field if yours differs)",
+                        "value": "http://mattermost.mattermost.svc.cluster.local:8065"
+                    }
+                ]
+            },
+            {
                 "key": "WebhookHost",
-                "display_name": "Webhook host override (api_url base)",
+                "display_name": "Webhook host — custom (overrides preset)",
                 "type": "text",
-                "help_text": "Optional. Overrides the host:port portion of the Mattermost webhook URL that gets rendered into alertmanager.yml's api_url field. Leave empty to use the Mattermost SiteURL.\n\nSet this when Alertmanager reaches Mattermost over a different network path than end users:\n- **Docker compose**: http://host.docker.internal:8065 (AM container can't reach localhost)\n- **Kubernetes**: http://mattermost.<namespace>.svc.cluster.local:8065 (cluster-internal service DNS; avoids Ingress round-trip)\n- **Bare metal / shared host**: leave empty\n\nThe runbook URLs in the slack_configs text template continue using SiteURL because those are clicked by users in browsers.",
-                "placeholder": "http://mattermost.mattermost.svc.cluster.local:8065",
+                "help_text": "Optional custom host:port for the `api_url` written into alertmanager.yml; overrides the preset above. Use for a non-default K8s namespace or a bare-metal FQDN. Blank = use the preset (or SiteURL if that's None too).",
+                "placeholder": "http://mattermost.<your-namespace>.svc.cluster.local:8065",
                 "default": ""
             },
             {
                 "key": "WebhookRotationDays",
                 "display_name": "Webhook rotation reminder period (days)",
                 "type": "number",
-                "help_text": "Optional. When set to a value > 0, the plugin DMs sysadmins when a receiver's webhook hasn't been rotated for this many days. The DM includes the exact `/alertmanager rotate all --overdue` command to run in the affected channel.\n\nIMPORTANT: this is a REMINDER only — the plugin does NOT automatically rotate webhooks. Webhook delivery continues to work until an admin runs the rotation command. After rotation, the admin must paste the new YAML into alertmanager.yml (Alertmanager has no write API; the plugin can't push the new URL to AM directly).\n\nCommon values:\n- 90 (quarterly) — recommended baseline for security hygiene\n- 180 (semi-annual)\n- 365 (annual)\n\nLower than 30 generates noise unless you have a specific secret-rotation policy. Default 0 = feature disabled.\n\nReminders repeat at most once every 7 days per receiver until the rotation happens.",
+                "help_text": "Days before the plugin DMs sysadmins to rotate a receiver's webhook (reminder only — no auto-rotation); 0 disables, 90 is a good baseline.",
                 "placeholder": "0",
                 "default": 0
             }

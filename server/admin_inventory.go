@@ -279,10 +279,21 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 	simType := strings.TrimSpace(r.URL.Query().Get("simulate_type"))
 	simValue := strings.TrimSpace(r.URL.Query().Get("simulate_value"))
 	simChannel := strings.TrimSpace(r.URL.Query().Get("simulate_channel"))
+	simTeam := strings.TrimSpace(r.URL.Query().Get("simulate_team"))
 	simSeverity := strings.TrimSpace(r.URL.Query().Get("simulate_severity"))
 	simExtra := strings.TrimSpace(r.URL.Query().Get("simulate_extra"))
 
-	formSubmitted := simMode != "" || simType != "" || simValue != "" || simChannel != "" || simSeverity != "" || simExtra != ""
+	// Severity is a knob only for end-to-end (it sets the severity the
+	// synthetic alert fires at). Webhook-test ignores it, and simulate routes
+	// on the `runbook` label, not severity — a severity-only simulate just
+	// falls through to the default route and confuses people. So drop the
+	// dedicated severity outside end-to-end; an admin who genuinely has
+	// severity-based routes still simulates them via the extra-labels box.
+	if simMode != "end-to-end" {
+		simSeverity = ""
+	}
+
+	formSubmitted := simMode != "" || simType != "" || simValue != "" || simChannel != "" || simTeam != "" || simSeverity != "" || simExtra != ""
 
 	var simResult inventorySimResult
 	var simMatrix []inventorySimResult
@@ -291,7 +302,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 	if formSubmitted {
 		// Decode (type, value) into a list of slugs.
 		targetSlugs := decodeTargetSelection(simType, simValue)
-		filteredConfigs := filterConfigsByChannel(configs, simChannel)
+		filteredConfigs := filterConfigsByChannel(configs, simTeam, simChannel)
 
 		switch simMode {
 		case "webhook-test":
@@ -324,6 +335,34 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		channelOptions = append(channelOptions, c)
 	}
 	sort.Strings(channelOptions)
+
+	// Teams that have receivers — the by-team scope dropdown. Channel names
+	// repeat across teams, so scoping by team disambiguates the channel
+	// dropdown and targets webhook-test/end-to-end at the right team.
+	teamOptions := make([]string, 0, len(teamCounts))
+	for t := range teamCounts {
+		teamOptions = append(teamOptions, t)
+	}
+	sort.Strings(teamOptions)
+
+	// team → its channels, for the JS cascade (pick a team → narrow channels).
+	teamChannelSet := make(map[string]map[string]bool)
+	for _, c := range configs {
+		if teamChannelSet[c.Team] == nil {
+			teamChannelSet[c.Team] = make(map[string]bool)
+		}
+		teamChannelSet[c.Team][c.Channel] = true
+	}
+	teamChannels := make(map[string][]string, len(teamChannelSet))
+	for t, chset := range teamChannelSet {
+		chs := make([]string, 0, len(chset))
+		for ch := range chset {
+			chs = append(chs, ch)
+		}
+		sort.Strings(chs)
+		teamChannels[t] = chs
+	}
+	teamChannelsJSON, _ := json.Marshal(teamChannels)
 
 	// Enumerate group names from scaffoldSets (excluding the "all"
 	// alias so we don't confuse it with the matrix-mode target type).
@@ -366,6 +405,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		SimulateType       string
 		SimulateValue      string
 		SimulateChannel    string
+		SimulateTeam       string
 		SimulateSeverity   string
 		SimulateExtra      string
 		SimulateResult     inventorySimResult
@@ -374,9 +414,11 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		RunbookSlugs       []string
 		ChannelOptions     []string
 		GroupOptions       []string
+		TeamOptions        []string
 		TargetChannelsJSON template.JS
 		GroupOptionsJSON   template.JS
 		RunbookSlugsJSON   template.JS
+		TeamChannelsJSON   template.JS
 	}{
 		Total:             len(configs),
 		Channels:          countDistinctChannels(configs),
@@ -391,6 +433,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		SimulateType:      simType,
 		SimulateValue:     simValue,
 		SimulateChannel:   simChannel,
+		SimulateTeam:      simTeam,
 		SimulateSeverity:  simSeverity,
 		SimulateExtra:     simExtra,
 		SimulateResult:    simResult,
@@ -399,6 +442,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		RunbookSlugs:      runbookSlugs(),
 		ChannelOptions:    channelOptions,
 		GroupOptions:      groupOptions,
+		TeamOptions:       teamOptions,
 		// G203 false positives: targetChannelsJSON/groupsJSON/slugsJSON are
 		// already json.Marshal output of server-controlled data (channel
 		// list, group options, embedded runbook slugs — never user input).
@@ -410,6 +454,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		TargetChannelsJSON: template.JS(targetChannelsJSON), //nolint:gosec // G203: pre-escaped by json.Marshal (HTML escape default)
 		GroupOptionsJSON:   template.JS(groupsJSON),         //nolint:gosec // G203: pre-escaped by json.Marshal (HTML escape default)
 		RunbookSlugsJSON:   template.JS(slugsJSON),          //nolint:gosec // G203: pre-escaped by json.Marshal (HTML escape default)
+		TeamChannelsJSON:   template.JS(teamChannelsJSON),   //nolint:gosec // G203: pre-escaped by json.Marshal (HTML escape default)
 		// Relative URL: browser resolves against the current URL,
 		// which is /plugins/<id>/admin/inventory. Using `?format=csv`
 		// gives the right target. Earlier bug: using r.URL.Path
@@ -584,7 +629,7 @@ func sortedKeys(m map[string]bool) []string {
 // decodeTargetSelection turns the (Type, Value) dropdown pair into
 // a flat list of runbook slugs:
 //
-//	type=all                → all 20 slugs (value ignored)
+//	type=all                → all 30 slugs (value ignored)
 //	type=group, value=X     → scaffoldSets[X]
 //	type=individual, value=X → [X]
 //	anything else           → nil (caller falls back to label-only sim)
@@ -614,23 +659,29 @@ func decodeTargetSelection(typ, value string) []string {
 	return nil
 }
 
-// filterConfigsByChannel scopes the receiver list to those bound to
-// a specific channel. Empty channel = no filtering.
-func filterConfigsByChannel(configs []alertConfig, channel string) []alertConfig {
-	if channel == "" {
+// filterConfigsByChannel scopes the receiver list by team and/or channel.
+// Both empty = no filtering. Team matters because channel names repeat across
+// teams (`town-square` is in every team) — filtering on channel name alone
+// would target the wrong team's receivers for webhook-test / end-to-end.
+func filterConfigsByChannel(configs []alertConfig, team, channel string) []alertConfig {
+	if team == "" && channel == "" {
 		return configs
 	}
 	out := make([]alertConfig, 0, len(configs))
 	for _, c := range configs {
-		if c.Channel == channel {
-			out = append(out, c)
+		if team != "" && c.Team != team {
+			continue
 		}
+		if channel != "" && c.Channel != channel {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
 }
 
 // runInventorySimulationMatrixForSlugs runs a simulation per slug
-// from the supplied list (instead of all 20). Used when the admin
+// from the supplied list (instead of all 30). Used when the admin
 // picks a Group target — we get a coverage table scoped to just
 // that group.
 func (p *Plugin) runInventorySimulationMatrixForSlugs(slugs []string, severity, extra string, configs []alertConfig, amStatus map[string]amReachabilityEntry) []inventorySimResult {
@@ -1076,13 +1127,20 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
                     </select>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <span style="font-size: 11px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.04em;">Team</span>
+                    <select name="simulate_team" style="padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; min-width: 160px;">
+                        <option value="">(any team)</option>
+                        {{range .TeamOptions}}<option value="{{.}}" {{if eq . $.SimulateTeam}}selected{{end}}>{{.}}</option>{{end}}
+                    </select>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
                     <span style="font-size: 11px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.04em;">Channel</span>
                     <select name="simulate_channel" style="padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; min-width: 200px;">
                         <option value="">(any channel)</option>
                         {{range .ChannelOptions}}<option value="{{.}}" {{if eq . $.SimulateChannel}}selected{{end}}>{{.}}</option>{{end}}
                     </select>
                 </div>
-                <div style="display: flex; flex-direction: column; gap: 4px;">
+                <div id="sim-severity-field" style="display: flex; flex-direction: column; gap: 4px;">
                     <span style="font-size: 11px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.04em;">Severity</span>
                     <select name="simulate_severity" style="padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;">
                         <option value="">(none)</option>
@@ -1093,7 +1151,7 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
                     </select>
                 </div>
             </div>
-            <input type="text" name="simulate_extra" value="{{.SimulateExtra}}" placeholder="Additional labels (optional): namespace=billing pod=api-7d9 service=checkout" style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; font-family: SFMono-Regular, Menlo, Monaco, monospace;">
+            <input type="text" name="simulate_extra" value="{{.SimulateExtra}}" placeholder="Additional labels (optional): severity=critical namespace=billing pod=api-7d9 service=checkout" style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; font-family: SFMono-Regular, Menlo, Monaco, monospace;">
             <div>
                 <button type="submit" style="padding: 8px 16px; background: #1d3a8c; color: white; border: none; border-radius: 4px; font-size: 13px; cursor: pointer;">Run</button>
                 <a href="?group={{.GroupMode}}" style="margin-left: 8px; padding: 8px 12px; font-size: 13px; color: #666; text-decoration: none;">Reset</a>
@@ -1299,15 +1357,18 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
         // ?simulate_type=...&simulate_value=...&simulate_channel=...)
         // loads with the picks intact.
         const targetChannels = {{.TargetChannelsJSON}};
+        const teamChannels = {{.TeamChannelsJSON}};
         const allGroups = {{.GroupOptionsJSON}};
         const allSlugs = {{.RunbookSlugsJSON}};
         const initialType = {{.SimulateType | printf "%q"}};
         const initialValue = {{.SimulateValue | printf "%q"}};
         const initialChannel = {{.SimulateChannel | printf "%q"}};
+        const initialTeam = {{.SimulateTeam | printf "%q"}};
 
         const typeSel = document.querySelector('select[name="simulate_type"]');
         const valueSel = document.querySelector('select[name="simulate_value"]');
         const channelSel = document.querySelector('select[name="simulate_channel"]');
+        const teamSel = document.querySelector('select[name="simulate_team"]');
 
         function refreshValueOptions() {
             if (!typeSel || !valueSel) return;
@@ -1350,7 +1411,14 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
         function refreshChannelOptions() {
             if (!channelSel) return;
             const key = computeTargetKey();
-            const channels = (targetChannels[key] || targetChannels[""] || []);
+            let channels = (targetChannels[key] || targetChannels[""] || []);
+            // Narrow to the selected team's channels — channel names repeat
+            // across teams, so without this the dropdown mixes them.
+            const team = teamSel ? teamSel.value : "";
+            if (team && teamChannels[team]) {
+                const allowed = teamChannels[team];
+                channels = channels.filter(function(c) { return allowed.indexOf(c) !== -1; });
+            }
             const desired = channelSel.value || initialChannel;
             let opts = '<option value="">(any channel)</option>';
             for (const c of channels) {
@@ -1366,11 +1434,32 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
                 refreshChannelOptions();
             });
             valueSel.addEventListener('change', refreshChannelOptions);
+            if (teamSel) teamSel.addEventListener('change', refreshChannelOptions);
             // Initial render — restore server-rendered values, then
             // populate downstream dropdowns based on them.
             if (initialType) typeSel.value = initialType;
+            if (teamSel && initialTeam) teamSel.value = initialTeam;
             refreshValueOptions();
             refreshChannelOptions();
+        }
+
+        // Severity is an end-to-end-only knob (see server comment). Show the
+        // field only in that mode; disable it otherwise so it never submits —
+        // a severity in simulate/webhook-test is misleading (routes key on the
+        // runbook label). Admins who really want severity in a simulate put it
+        // in the extra-labels box.
+        const modeSel = document.querySelector('select[name="simulate_mode"]');
+        const sevField = document.getElementById('sim-severity-field');
+        const sevSel = document.querySelector('select[name="simulate_severity"]');
+        function refreshSeverityVisibility() {
+            if (!modeSel || !sevField || !sevSel) return;
+            const show = modeSel.value === 'end-to-end';
+            sevField.style.display = show ? '' : 'none';
+            sevSel.disabled = !show;
+        }
+        if (modeSel) {
+            modeSel.addEventListener('change', refreshSeverityVisibility);
+            refreshSeverityVisibility();
         }
     </script>
 </body>

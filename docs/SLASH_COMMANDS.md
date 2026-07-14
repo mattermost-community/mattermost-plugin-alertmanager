@@ -12,7 +12,7 @@ the channel where you ran the command.
 | `add` | `<team> <channel> <am-url> [target] [on]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml`. Trailing `on` opts in to rotation reminders. | sysadmin / team_admin |
 | `alerts` | _(none)_ | Currently firing alerts, grouped by Alertmanager URL | any user |
 | `config` | `<name>` | Detail card + `slack_configs` YAML for one receiver | sysadmin / team_admin |
-| `docs` | `[topic]` | List or print embedded docs (architecture / configuration / development / kubernetes / rotation / slash_commands) | any user |
+| `docs` | `[topic]` | List or print embedded docs (alerts / architecture / configuration / development / kubernetes / requirements / rotation / slash_commands) | any user |
 | `expire_silence` | `<name> <silence-id>` | Expire an active Alertmanager silence | any user |
 | `export` | `[--diff-against-loaded]` | DM a fresh `receivers.yml` + `routes.yml` for this channel. With `--diff-against-loaded`, diff against AM's loaded config + schema-validate. | sysadmin / team_admin |
 | `help` | _(none)_ | Slash-command reference | any user |
@@ -31,10 +31,12 @@ in the channel.
 
 ## How receiver names work
 
-The plugin names receivers `<runbook-slug>--<channel-slug>`, e.g.
-`high-cpu-usage--alert-slo-channel`. The `--` separator is the
-boundary between the runbook (what the alert is about) and the
-channel (where it's delivered).
+The plugin names receivers `<runbook-slug>--<team-slug>-<channel-slug>`,
+e.g. `high-cpu-usage--sre-alert-slo-channel`. The `--` after the
+runbook slug is the boundary between the runbook (what the alert is
+about) and where it's delivered (team + channel). Team is included
+because channel names repeat across teams (`town-square` is in every
+team), so it's needed to keep receiver names globally unique.
 
 When invoking commands from chat, you can use either form:
 
@@ -72,13 +74,13 @@ routes with `continue: true` so AM doesn't stop at the first match.
 
 ## Worked examples
 
-### First-time setup — all 20 canonical receivers in one channel
+### First-time setup — all 30 canonical receivers in one channel
 
 ```
 /alertmanager add testing alert-slo-channel http://alertmanager:9093
 ```
 
-Creates every embedded runbook (the `all` set — 20 receivers) bound
+Creates every embedded runbook (the `all` set — 30 receivers) bound
 to `~alert-slo-channel` **behind one shared Mattermost webhook**.
 The summary lands in the channel; the assembled
 `alertmanager-receivers.yml` + `alertmanager-routes.yml` land in
@@ -93,8 +95,8 @@ To create just one category:
 ```
 
 Available group sets: `all` (default), `application`, `compute`,
-`database`, `networking`, `observability`, `storage`. Each set add
-creates one shared webhook named `Alertmanager: <set>--<channel>`.
+`database`, `networking`, `observability`, `security`, `storage`. Each
+set add creates one shared webhook named `Alertmanager: <set>--<channel>`.
 
 ### Add one specific runbook (individual)
 
@@ -319,9 +321,9 @@ dry-run preview of what would be deleted, then re-run with `--force`
 to confirm. Single-receiver remove doesn't require `--force` because
 the name is explicit (low blast radius).
 
-The `remove` autocomplete dropdown shows `all` plus the six category
+The `remove` autocomplete dropdown shows `all` plus the seven category
 sets (compute, application, database, storage, networking,
-observability) — pick one or type a receiver name freely.
+observability, security) — pick one or type a receiver name freely.
 
 ### Find orphaned receivers
 
@@ -343,8 +345,9 @@ Reports how many orphans (if any) it removed.
 /alertmanager docs rotation
 ```
 
-Available topics: `architecture`, `configuration`, `development`,
-`kubernetes`, `rotation`, `slash_commands`. Content is rendered
+Available topics: `alerts`, `architecture`, `configuration`,
+`development`, `kubernetes`, `requirements`, `rotation`,
+`slash_commands`. Content is rendered
 inline in chat — for the full version, hit
 `/plugins/com.mattermost.alertmanager/public/help/home.html` in a
 browser.

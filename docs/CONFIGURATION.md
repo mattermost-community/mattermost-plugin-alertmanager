@@ -137,7 +137,7 @@ When you run `/alertmanager add <team> <channel> <am-url> [set] [on]`:
    create one Mattermost incoming webhook per receiver in the chosen
    set, revokes the PAT.
 3. Stores each receiver in plugin config, named
-   `<runbook-slug>--<channel-slug>`. Stamps `LastRotatedAt = now`.
+   `<runbook-slug>--<team-slug>-<channel-slug>`. Stamps `LastRotatedAt = now`.
    If `on` was passed, sets `RotationRemindersEnabled = true`.
 4. Renders two YAML fragments and DMs them to the calling user:
    - `alertmanager-receivers.yml` — paste under `receivers:`
@@ -239,8 +239,10 @@ Each shipped runbook documents the labels its Quick diagnostics
 section expects in a "Required Prometheus labels" footer. Most
 expect at least `namespace` and `pod` (for compute, application,
 storage runbooks) plus the runbook-specific label like `instance` /
-`job` / `service`. See the corresponding `runbooks/*.md` file for
-the exact list.
+`job` / `service`. Security runbooks differ — several use apiserver /
+Falco labels (e.g. `k8s_ns_name`, `job`) instead. See the
+corresponding `runbooks/*.md` file, or run `/alertmanager docs
+requirements` for the full per-alert metric / label / tooling matrix.
 
 If a label is missing on an incoming alert, the template falls back
 to leaving the placeholder text in place — operators see
@@ -254,25 +256,30 @@ That walks AM's route tree against your label set without firing a
 real alert.
 
 `samples/prometheus-rules.yaml` ships a complete rule set covering
-all 20 runbooks with the correct label patterns. Use it as a
+all 30 runbooks with the correct label patterns. Use it as a
 starting point.
 
 ## Receiver naming convention
 
-The plugin names every receiver `<runbook-slug>--<channel-slug>`:
+The plugin names every receiver `<runbook-slug>--<team-slug>-<channel-slug>`:
 
 ```
-high-cpu-usage--alert-slo-channel
-high-cpu-usage--oncall-critical
-database-connectivity-loss--dba-team-channel
+high-cpu-usage--sre-alert-slo-channel
+high-cpu-usage--sre-oncall-critical
+database-connectivity-loss--platform-dba-team-channel
 ```
 
-The `--` separator is unambiguous — Mattermost channel slugs and
-runbook filenames use single hyphens, never doubles.
+The team slug is part of the name because channel names are unique
+only *per team* — `town-square` exists in every team. Without it,
+the same runbook delivered to same-named channels in different teams
+would collide (Alertmanager requires globally-unique receiver names).
 
-The suffix guarantees uniqueness when the same runbook is delivered
-to multiple channels. Routes are auto-generated to fan out alerts
-to all receivers that share a base slug — see fan-out below.
+The `--` after the runbook slug is the parse boundary — runbook
+filenames never contain doubles, so the runbook slug is always
+recoverable. The `<team>-<channel>` tail uses a single hyphen and is
+identity/display only (team and channel are also stored as separate
+fields); global uniqueness is enforced by the plugin rejecting
+duplicate names on save, not by the separator.
 
 ## Fan-out: one alert, multiple channels
 

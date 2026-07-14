@@ -31,3 +31,22 @@ jobs:
 
       - name: Run unit tests
         run: go test -race -count=1 ./...
+
+  # Validates the shipped sample rules (samples/prometheus-rules.yaml) with
+  # promtool. Users copy this file into their own Prometheus, so a broken
+  # PromQL expr or malformed YAML must never merge. promtool ships inside the
+  # prom/prometheus image (its entrypoint is /bin/prometheus, hence the
+  # --entrypoint override); the tag is pinned to match the version the
+  # deploy-local verify-rules.sh gate uses.
+  validate-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: promtool check rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "${{ github.workspace }}/samples":/w -w /w \
+            prom/prometheus:v3.5.0 \
+            check rules /w/prometheus-rules.yaml
