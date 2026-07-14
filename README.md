@@ -1,12 +1,12 @@
 # Mattermost Alertmanager Plugin
 
-[![Lint](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/lint.yml)
-[![Test](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/test.yml)
-[![Build](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/build.yml)
-[![Security](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/actions/workflows/security.yml)
-[![Latest release](https://img.shields.io/github/v/release/christopherfickess/mattermost-plugin-alertmanager?sort=semver)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/releases/latest)
-[![Go version](https://img.shields.io/github/go-mod/go-version/christopherfickess/mattermost-plugin-alertmanager)](https://github.com/christopherfickess/mattermost-plugin-alertmanager/blob/main/go.mod)
-[![License](https://img.shields.io/github/license/christopherfickess/mattermost-plugin-alertmanager)](./LICENSE)
+[![Lint](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/lint.yml)
+[![Test](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/test.yml)
+[![Build](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/build.yml)
+[![Security](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/mattermost-community/mattermost-plugin-alertmanager/actions/workflows/security.yml)
+[![Latest release](https://img.shields.io/github/v/release/mattermost-community/mattermost-plugin-alertmanager?sort=semver)](https://github.com/mattermost-community/mattermost-plugin-alertmanager/releases/latest)
+[![Go version](https://img.shields.io/github/go-mod/go-version/mattermost-community/mattermost-plugin-alertmanager)](https://github.com/mattermost-community/mattermost-plugin-alertmanager/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/mattermost-community/mattermost-plugin-alertmanager)](./LICENSE)
 
 **When `PostgresReplicationLagHigh` fires into your channel at 3am,
 the runbook's first three diagnostic commands appear inline with the
@@ -118,6 +118,14 @@ only) provides an org-wide view including AM reachability badges,
 inverse drift detection (receivers in AM that the plugin doesn't
 track), and a route simulator form.
 
+## Docs & help — finding your way around
+
+Everything is discoverable from chat and the repo:
+
+- **In chat:** `/alertmanager help` (command reference) and `/alertmanager docs <topic>` — embedded docs rendered inline. Topics: `alerts` (full alert catalog by group), `requirements` (per-alert metric / exporter / tooling), `slash_commands`, `architecture`, `configuration`, `kubernetes`, `rotation`.
+- **Runbook library:** [`runbooks/INDEX.md`](runbooks/INDEX.md) — all 30 runbooks by category; each renders to a page linked from its alert.
+- **Setup & ops docs:** [`docs/QUICKSTART.md`](docs/QUICKSTART.md) (first alert end-to-end), [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (settings + Prometheus wiring), [`docs/KUBERNETES.md`](docs/KUBERNETES.md) (HA deploy), [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) (build/test/deploy), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ## Key features for daily use
 
 - **Inline diagnostics** — every alert post includes 3 runbook-specific
@@ -159,12 +167,14 @@ settings.
 ## Building from source
 
 ```bash
+make test          # run the Go test suite — no server needed, sub-second
 make dist          # cross-compile all platforms + assemble tarball
 make dist-host     # current host's arch only (faster for dev iter)
 make deploy-local  # build + upload to localhost:8065
 ```
 
 Requires export `MM_ADMIN_TOKEN` and `MM_SERVICESETTINGS_SITEURL` for deploy targets.
+Full build / test / deploy / iterate workflow: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Contributing
 
