@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.0.6...v1.1.0) (2026-07-14)
+
+
+### Features
+
+* expand the alert catalog to 30 runbooks with a new security category
+* complete the sample Prometheus rules to 31 rules covering all 30 runbooks, and validate them in CI with `promtool check rules`
+* ship the sample rules in-plugin — a browsable HTML page plus raw download — surfaced via a new `/alertmanager rules` command and a System Console link
+* add a WebhookHost preset dropdown (Docker Desktop / Kubernetes / custom) and three hover-able `am-url` autocomplete suggestions on `/alertmanager add`
+* admin route-tester: show the severity field only in end-to-end mode, and add a by-team scope dropdown that cascades the channel list
+* trim System Console settings help text to one sentence each
+
+
+### Bug Fixes
+
+* team-qualify receiver names (`<slug>--<team>-<channel>`) so same-named channels in different teams no longer collide or misroute
+
+
 ## [1.0.6](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.0.5...v1.0.6) (2026-07-06)
 
 
