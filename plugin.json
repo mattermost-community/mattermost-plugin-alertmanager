@@ -42,11 +42,32 @@
                 "default": ""
             },
             {
+                "key": "WebhookHostPreset",
+                "display_name": "Webhook host — preset",
+                "type": "dropdown",
+                "help_text": "Quick-fill for how Alertmanager reaches Mattermost to POST alerts. Pick a common setup, or leave 'None' and type a custom value below (a custom value overrides this preset).",
+                "default": "",
+                "options": [
+                    {
+                        "display_name": "None — use the custom field below (blank there = Mattermost SiteURL)",
+                        "value": ""
+                    },
+                    {
+                        "display_name": "Docker Desktop / Compose — host.docker.internal:8065",
+                        "value": "http://host.docker.internal:8065"
+                    },
+                    {
+                        "display_name": "Kubernetes service DNS — namespace 'mattermost' (edit custom field if yours differs)",
+                        "value": "http://mattermost.mattermost.svc.cluster.local:8065"
+                    }
+                ]
+            },
+            {
                 "key": "WebhookHost",
-                "display_name": "Webhook host override (api_url base)",
+                "display_name": "Webhook host — custom (overrides preset)",
                 "type": "text",
-                "help_text": "Optional host:port for the `api_url` written into alertmanager.yml, for when Alertmanager reaches Mattermost on a different network path than users (see placeholder); empty uses the SiteURL.",
-                "placeholder": "http://mattermost.mattermost.svc.cluster.local:8065",
+                "help_text": "Optional custom host:port for the `api_url` written into alertmanager.yml; overrides the preset above. Use for a non-default K8s namespace or a bare-metal FQDN. Blank = use the preset (or SiteURL if that's None too).",
+                "placeholder": "http://mattermost.<your-namespace>.svc.cluster.local:8065",
                 "default": ""
             },
             {

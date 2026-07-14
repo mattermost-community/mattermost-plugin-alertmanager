@@ -19,9 +19,16 @@ import (
 // Mattermost webhook URL when rendered into alertmanager.yml. See
 // plugin.json settings_schema for the full rationale. Empty = fall back
 // to SiteURL.
+//
+// WebhookHostPreset is the System Console dropdown of known-good hosts for
+// common setups (Docker Desktop, default-namespace K8s). It and WebhookHost
+// are collapsed into a single effective value by resolveWebhookHost — a
+// free-text WebhookHost always wins, so existing installs and custom URLs
+// are unaffected.
 type rawConfiguration struct {
 	AlertConfigsJSON      string
 	WebhookHost           string
+	WebhookHostPreset     string
 	AssembledYAMLTTLHours int
 	AlertManagerCABundle  string
 	MetricsToken          string
@@ -213,6 +220,23 @@ func validateWebhookHost(raw string) error {
 	return nil
 }
 
+// resolveWebhookHost collapses the two System Console fields that can set the
+// global webhook host into the single effective value the rest of the plugin
+// uses (stored in configuration.WebhookHost, read by renderReceiverAPIURL).
+// Precedence, most specific first:
+//  1. WebhookHost (free text) — a value here always wins, so an existing
+//     install's setting keeps working and a custom URL (e.g. a K8s service
+//     DNS with a non-default namespace) overrides any preset.
+//  2. WebhookHostPreset (dropdown) — a known-good constant for a common
+//     setup (Docker Desktop, default-namespace K8s).
+//  3. "" — neither set; callers fall back to SiteURL.
+func resolveWebhookHost(custom, preset string) string {
+	if c := strings.TrimSpace(custom); c != "" {
+		return c
+	}
+	return strings.TrimSpace(preset)
+}
+
 // parseAlertConfigs decodes and validates the JSON blob. Surfaces byte
 // offsets on syntax errors and entry indices on validation errors so an
 // admin staring at a multi-screen JSON blob can find the typo.
@@ -296,7 +320,11 @@ func (p *Plugin) OnConfigurationChange() error {
 		return fmt.Errorf("load plugin configuration: %w", err)
 	}
 
-	if err := validateWebhookHost(raw.WebhookHost); err != nil {
+	// Collapse the preset dropdown + free-text field into one effective host,
+	// then validate that — a preset is known-good, but a free-text override
+	// still needs the sanity check.
+	effectiveHost := resolveWebhookHost(raw.WebhookHost, raw.WebhookHostPreset)
+	if err := validateWebhookHost(effectiveHost); err != nil {
 		return err
 	}
 
@@ -320,7 +348,7 @@ func (p *Plugin) OnConfigurationChange() error {
 		}
 	}
 
-	p.setConfiguration(newConfiguration(entries, raw.WebhookHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
+	p.setConfiguration(newConfiguration(entries, effectiveHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
 	// Refresh the alertmanager package's HTTP client to use the new
 	// CA bundle (if set). Applied on every config change so admins
 	// can rotate certificates without a plugin restart.

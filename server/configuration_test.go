@@ -47,6 +47,34 @@ func TestValidateWebhookHost(t *testing.T) {
 	}
 }
 
+// TestResolveWebhookHost pins the precedence between the WebhookHost free-text
+// field and the WebhookHostPreset dropdown. The custom-wins rule is what keeps
+// existing installs (which only ever had the text field) behaving identically
+// after the dropdown was added — a regression here would silently repoint every
+// webhook URL.
+func TestResolveWebhookHost(t *testing.T) {
+	cases := []struct {
+		name   string
+		custom string
+		preset string
+		want   string
+	}{
+		{"both empty falls through to SiteURL", "", "", ""},
+		{"preset only", "", "http://host.docker.internal:8065", "http://host.docker.internal:8065"},
+		{"custom only", "https://mm.example.com", "", "https://mm.example.com"},
+		{"custom wins over preset", "https://mm.example.com", "http://host.docker.internal:8065", "https://mm.example.com"},
+		{"whitespace custom is ignored, preset used", "   ", "http://host.docker.internal:8065", "http://host.docker.internal:8065"},
+		{"custom is trimmed", "  https://mm.example.com  ", "", "https://mm.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveWebhookHost(tc.custom, tc.preset); got != tc.want {
+				t.Fatalf("resolveWebhookHost(%q, %q) = %q, want %q", tc.custom, tc.preset, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAlertConfigIsValid covers the per-entry invariant rules. Each
 // branch in IsValid corresponds to a misconfiguration mode an admin
 // could ship by hand-editing the JSON blob in System Console — these

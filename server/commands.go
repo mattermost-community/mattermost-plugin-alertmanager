@@ -75,7 +75,7 @@ func getAutocompleteData() *model.AutocompleteData {
 	add := model.NewAutocompleteData("add", "[team] [channel] [am-url] [target] [on]", "Create receivers for a group set OR individual runbook slug. One shared webhook per group; individual slugs get their own. Trailing `on` opts in to rotation reminders. (sysadmin/team_admin)")
 	add.AddDynamicListArgument("Mattermost team URL slug — tab through your teams", teamFetchURL, true)
 	add.AddDynamicListArgument("Mattermost channel URL slug — public channels in the chosen team (or type a new name to auto-create)", channelFetchURL, true)
-	add.AddTextArgument("Alertmanager API base URL (no trailing slash)", "[am-url]", "")
+	add.AddTextArgument("Alertmanager base URL reachable FROM the Mattermost server, no trailing slash. Containerized MM (Docker Desktop): http://host.docker.internal:9093 — NOT localhost, that's the MM container itself. Same Docker network: http://<am-service>:9093.", "[am-url]", "")
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
 		{Item: "all", HelpText: "Every embedded runbook (default — 30 receivers in one shared webhook)"},
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
