@@ -18,7 +18,7 @@ but the runbook-at-fire-time experience is why your on-call wants it.
 
 ## What an alert looks like in chat
 
-```
+````
 [WARNING:HighCPUUsage] (namespace=billing, pod=api-7d9-2xfgs)
 
 **Alert:** HighCPUUsage - warning
@@ -60,7 +60,7 @@ rate(container_cpu_cfs_throttled_seconds_total[5m])
 #   CPU alert started after, you've found the cause...
 kubectl rollout history deployment -n billing --limit 5
 ```
-```
+````
 
 The diagnostic content above is parsed from the embedded runbook file
 [`runbooks/high-cpu-usage.md`](runbooks/high-cpu-usage.md) at YAML-render
