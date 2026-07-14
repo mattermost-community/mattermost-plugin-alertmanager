@@ -92,7 +92,7 @@ func TestRunbookPlaceholdersAllowlisted(t *testing.T) {
 	for _, slug := range runbookSlugsFromFS(t) {
 		blocks := loadQuickDiagnosticsForSlug(slug)
 		for _, blk := range blocks {
-			for _, line := range strings.Split(blk.Code, "\n") {
+			for line := range strings.SplitSeq(blk.Code, "\n") {
 				// Mirror substituteLabelPlaceholders: comment lines are
 				// skipped (they reference labels in prose, not commands).
 				trim := strings.TrimLeft(line, " \t")
