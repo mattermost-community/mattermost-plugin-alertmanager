@@ -63,6 +63,7 @@ type siteSection struct {
 	SiteName    string
 	LandingBody string
 	SkipFiles   map[string]bool // filenames to skip (e.g., INDEX.md, TEMPLATE.md)
+	ExtraPages  []page          // pre-rendered pages with no .md source (e.g. the sample-rules page)
 }
 
 var sections = []siteSection{
@@ -84,11 +85,12 @@ var sections = []siteSection{
 }
 
 type page struct {
-	Slug    string // filename without extension, lowercased — drives the link
-	Title   string // taken from the first H1 of the markdown
-	HTML    template.HTML
-	Active  bool // set per-render so the nav link gets the .active class
-	Source  string // original filename (e.g., MIGRATION.md) for footer reference
+	Slug      string // filename without extension, lowercased — drives the link
+	Title     string // taken from the first H1 of the markdown
+	HTML      template.HTML
+	Active    bool   // set per-render so the nav link gets the .active class
+	Source    string // original filename (e.g., MIGRATION.md) for footer reference
+	Generated bool   // true when HTML is pre-built (no .md source to read)
 }
 
 // pageTemplate wraps each rendered doc in a shared shell. Inlining the
@@ -283,7 +285,7 @@ site, so reading either form gets you to the same place.
 // runbookIndexBody is the landing page for the runbook library.
 const runbookIndexBody = `# SRE Runbooks
 
-20 runbooks covering the most common alert categories an SRE
+30 runbooks covering the most common alert categories an SRE
 encounters. Each follows the same structure: severity → what this
 means → diagnostic steps → common causes & fixes → escalation →
 post-incident.
@@ -295,15 +297,16 @@ you land on the runbook, you work the alert.
 
 ## Categories
 
-**Compute & containers** — High CPU Usage, High Memory Usage, Pod
-CrashLoopBackOff, Pod Not Ready, Deployment Replicas Unavailable, Node
-Not Ready.
+**Compute & containers** — High CPU Usage, High Memory Usage, CPU
+Throttling High, Pod CrashLoopBackOff, Pod Not Ready, Image Pull
+BackOff, Pods Unschedulable, Deployment Replicas Unavailable, Node Not
+Ready.
 
 **Application** — High HTTP 5xx Error Rate, High API Latency, Service
 Endpoint Down, Request Rate Anomaly.
 
 **Database** — Database Connectivity Loss, Database Replication Lag,
-Database High Latency.
+Database High Latency, Postgres Connections Near Max.
 
 **Storage** — Persistent Volume Full, Disk Fill Rate High.
 
@@ -312,6 +315,10 @@ Resolution Failure.
 
 **Observability** — Prometheus Scrape Target Down, Alertmanager
 Notification Failure.
+
+**Security** — Unexpected Container Image, API Server Auth Failure
+Spike, Privileged Container Started, Interactive Shell in Container,
+RBAC Privilege Escalation, Security Tooling Down.
 
 Use the sidebar on the left to navigate. Use the search box up top to
 jump straight to a runbook by name or by error string.
@@ -325,8 +332,24 @@ commands with real namespaces, not ` + "`<NAMESPACE>`" + `
 placeholders. The on-call wants to copy-paste.
 `
 
+// rulesSrcPath / rulesOutYAML — the shipped sample rules and where the raw
+// copy lands in the help site. Relative to build/render-docs/'s working dir.
+const (
+	rulesSrcPath = "../../samples/prometheus-rules.yaml"
+	rulesOutYAML = "../../public/help/prometheus-rules.yaml"
+)
 
 func main() {
+	// Attach the generated "Sample Prometheus rules" page to the help site
+	// (sections[0]). Built live from the sample yaml so the rendered page
+	// can't drift from the file users actually download.
+	rulesPage, err := buildRulesPage()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "render-docs:", err)
+		os.Exit(1)
+	}
+	sections[0].ExtraPages = append(sections[0].ExtraPages, rulesPage)
+
 	totalPages := 0
 	for _, s := range sections {
 		n, err := renderSection(s)
@@ -336,7 +359,51 @@ func main() {
 		}
 		totalPages += n
 	}
-	fmt.Printf("rendered %d total pages across %d sites\n", totalPages, len(sections))
+
+	// Ship the raw yaml next to the rendered page so the download link (and
+	// any curl) resolves to the real file. Done after render so the help
+	// OutDir already exists.
+	if err := copyRawRules(); err != nil {
+		fmt.Fprintln(os.Stderr, "render-docs:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("rendered %d total pages across %d sites (+ raw prometheus-rules.yaml)\n", totalPages, len(sections))
+}
+
+// buildRulesPage renders the shipped sample Prometheus rules into a help-site
+// page — the yaml verbatim (HTML-escaped) in a code block, with an intro and a
+// download link. Single source of truth: the same samples/prometheus-rules.yaml
+// users download, so there's no markdown copy to drift out of sync.
+func buildRulesPage() (page, error) {
+	raw, err := os.ReadFile(rulesSrcPath)
+	if err != nil {
+		return page{}, fmt.Errorf("read %s: %w", rulesSrcPath, err)
+	}
+	intro := `<p>Sample Prometheus alerting rules shipped with the plugin — one working rule for every runbook (31 rules across 30 runbooks). Copy them into your Prometheus, tune the thresholds, and alerts route straight to the matching runbook in chat.</p>` +
+		`<p><a href="prometheus-rules.yaml" download><strong>⬇ Download prometheus-rules.yaml</strong></a> — add it to your Prometheus <code>rule_files:</code> glob, or wrap the <code>groups:</code> block in a <code>PrometheusRule</code> CRD if you run the Prometheus Operator.</p>` +
+		`<blockquote>Every threshold and <code>for:</code> duration below is a demo-cluster placeholder — tune to your traffic and SLOs before trusting them in production. The <code>runbook:</code> label on each rule is the join key that routes it to a runbook.</blockquote>`
+	body := intro + "<pre><code>" + template.HTMLEscapeString(string(raw)) + "</code></pre>"
+	return page{
+		Slug:      "prometheus-rules",
+		Title:     "Sample Prometheus rules",
+		HTML:      template.HTML(body),
+		Source:    "samples/prometheus-rules.yaml",
+		Generated: true,
+	}, nil
+}
+
+// copyRawRules writes the sample rules verbatim into the help site so the
+// page's download link and any `curl` resolve to the actual file.
+func copyRawRules() error {
+	raw, err := os.ReadFile(rulesSrcPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", rulesSrcPath, err)
+	}
+	if err := os.WriteFile(rulesOutYAML, raw, 0644); err != nil {
+		return fmt.Errorf("write %s: %w", rulesOutYAML, err)
+	}
+	return nil
 }
 
 // renderSection processes one site's markdown → HTML transform. Reads
@@ -382,6 +449,10 @@ func renderSection(section siteSection) (int, error) {
 		})
 	}
 
+	// Pre-rendered pages (no .md source, e.g. the sample-rules page) join
+	// the nav alongside the discovered markdown pages.
+	pages = append(pages, section.ExtraPages...)
+
 	// Stable nav order — alphabetical. Predictable across builds.
 	sort.Slice(pages, func(i, j int) bool { return pages[i].Slug < pages[j].Slug })
 
@@ -397,15 +468,19 @@ func renderSection(section siteSection) (int, error) {
 	}
 
 	for i, p := range pages {
-		body, err := os.ReadFile(filepath.Join(section.SrcDir, p.Source))
-		if err != nil {
-			return 0, fmt.Errorf("read %s: %w", p.Source, err)
+		// Generated pages already carry their HTML — there's no markdown
+		// source to read. Everything else renders from its .md file.
+		if !p.Generated {
+			body, err := os.ReadFile(filepath.Join(section.SrcDir, p.Source))
+			if err != nil {
+				return 0, fmt.Errorf("read %s: %w", p.Source, err)
+			}
+			var buf bytes.Buffer
+			if err := md.Convert(body, &buf); err != nil {
+				return 0, fmt.Errorf("render %s: %w", p.Source, err)
+			}
+			p.HTML = template.HTML(rewriteMDLinks(buf.String()))
 		}
-		var buf bytes.Buffer
-		if err := md.Convert(body, &buf); err != nil {
-			return 0, fmt.Errorf("render %s: %w", p.Source, err)
-		}
-		p.HTML = template.HTML(rewriteMDLinks(buf.String()))
 
 		if err := writePage(tmpl, section, pages, p, i, isRunbook); err != nil {
 			return 0, err

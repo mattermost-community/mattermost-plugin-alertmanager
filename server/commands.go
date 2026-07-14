@@ -26,6 +26,7 @@ const (
 		"- `/alertmanager reconcile` — prune receivers whose Mattermost webhook has been deleted out-of-band (sysadmin; runs automatically every 5 min)\n" +
 		"- `/alertmanager remove <name|set|all> [--force]` — delete a receiver, a runbook set, or everything in this channel\n" +
 		"- `/alertmanager rotate <name>` — delete + recreate the webhook (new hook-id, new URL)\n" +
+		"- `/alertmanager rules` — links to the shipped sample Prometheus alerting rules (browsable HTML + downloadable YAML) so you can wire up the Prometheus side without cloning the repo\n" +
 		"- `/alertmanager silences` — list active silences (grouped by Alertmanager URL)\n" +
 		"- `/alertmanager status` — Alertmanager version + uptime per backend (grouped by Alertmanager URL)\n" +
 		"- `/alertmanager validate [name|set] [--webhook-test|--end-to-end|--simulate <labels>] [--severity=<value>]` — validate pipeline configuration. Without flags: AM reach + receiver-loaded-in-AM. `--webhook-test` / `--end-to-end` fire side-effect tests. `--simulate runbook=<slug> severity=<level>` walks AM's loaded route tree against the labels and reports which receiver(s) an alert with those labels would dispatch to (read-only, no synthetic alert). `--severity=<warning|critical|info|all>` controls which severities `--end-to-end` fires; `all` fires four alerts per receiver (warning + critical + info + resolved) so you can visually verify every render path in one shot."
@@ -150,6 +151,8 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	root.AddCommand(rotate)
 
+	root.AddCommand(model.NewAutocompleteData("rules", "", "Links to the shipped sample Prometheus alerting rules (view or download)"))
+
 	root.AddCommand(model.NewAutocompleteData("silences", "", "List active Alertmanager silences (grouped by Alertmanager URL)"))
 
 	root.AddCommand(model.NewAutocompleteData("status", "", "Alertmanager version + uptime per backend (grouped by Alertmanager URL)"))
@@ -243,6 +246,9 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 		return joinErr(msg, err)
 	case "rotate":
 		msg, err := p.handleRotate(args)
+		return joinErr(msg, err)
+	case "rules":
+		msg, err := p.handleRules(args)
 		return joinErr(msg, err)
 	case "silences":
 		msg, err := p.handleListSilences(args)

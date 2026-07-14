@@ -584,7 +584,7 @@ func sortedKeys(m map[string]bool) []string {
 // decodeTargetSelection turns the (Type, Value) dropdown pair into
 // a flat list of runbook slugs:
 //
-//	type=all                → all 20 slugs (value ignored)
+//	type=all                → all 30 slugs (value ignored)
 //	type=group, value=X     → scaffoldSets[X]
 //	type=individual, value=X → [X]
 //	anything else           → nil (caller falls back to label-only sim)
@@ -630,7 +630,7 @@ func filterConfigsByChannel(configs []alertConfig, channel string) []alertConfig
 }
 
 // runInventorySimulationMatrixForSlugs runs a simulation per slug
-// from the supplied list (instead of all 20). Used when the admin
+// from the supplied list (instead of all 30). Used when the admin
 // picks a Group target — we get a coverage table scoped to just
 // that group.
 func (p *Plugin) runInventorySimulationMatrixForSlugs(slugs []string, severity, extra string, configs []alertConfig, amStatus map[string]amReachabilityEntry) []inventorySimResult {
