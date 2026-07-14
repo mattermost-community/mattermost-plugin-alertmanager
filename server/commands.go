@@ -75,7 +75,16 @@ func getAutocompleteData() *model.AutocompleteData {
 	add := model.NewAutocompleteData("add", "[team] [channel] [am-url] [target] [on]", "Create receivers for a group set OR individual runbook slug. One shared webhook per group; individual slugs get their own. Trailing `on` opts in to rotation reminders. (sysadmin/team_admin)")
 	add.AddDynamicListArgument("Mattermost team URL slug — tab through your teams", teamFetchURL, true)
 	add.AddDynamicListArgument("Mattermost channel URL slug — public channels in the chosen team (or type a new name to auto-create)", channelFetchURL, true)
-	add.AddTextArgument("Alertmanager base URL reachable FROM the Mattermost server, no trailing slash. Containerized MM (Docker Desktop): http://host.docker.internal:9093 — NOT localhost, that's the MM container itself. Same Docker network: http://<am-service>:9093.", "[am-url]", "")
+	// am-url as a static list of the three real patterns, each with its own
+	// hover, instead of one cramped hint line. Non-enforcing — users can
+	// still type any URL; these are labelled suggestions that surface the
+	// container-networking gotcha (localhost inside the MM container is the
+	// container, not the host) at the moment of typing.
+	add.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
+		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
+		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes — cluster-internal service DNS. Change 'monitoring' to the namespace your Alertmanager actually runs in."},
+		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash."},
+	})
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
 		{Item: "all", HelpText: "Every embedded runbook (default — 30 receivers in one shared webhook)"},
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
