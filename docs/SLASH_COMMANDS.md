@@ -31,10 +31,12 @@ in the channel.
 
 ## How receiver names work
 
-The plugin names receivers `<runbook-slug>--<channel-slug>`, e.g.
-`high-cpu-usage--alert-slo-channel`. The `--` separator is the
-boundary between the runbook (what the alert is about) and the
-channel (where it's delivered).
+The plugin names receivers `<runbook-slug>--<team-slug>-<channel-slug>`,
+e.g. `high-cpu-usage--sre-alert-slo-channel`. The `--` after the
+runbook slug is the boundary between the runbook (what the alert is
+about) and where it's delivered (team + channel). Team is included
+because channel names repeat across teams (`town-square` is in every
+team), so it's needed to keep receiver names globally unique.
 
 When invoking commands from chat, you can use either form:
 

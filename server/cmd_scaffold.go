@@ -160,26 +160,27 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	p.configWriteMu.Lock()
 	defer p.configWriteMu.Unlock()
 
-	// Skip-check is scoped to the destination channel only. A receiver
-	// named `high-cpu-usage--alert-slo-channel` MUST block creating it
-	// again, but `high-cpu-usage--alert-sre-channel` in another channel
-	// is independent (fan-out pattern). Walk current config once.
+	// Skip-check is scoped to the destination TEAM + channel. Channel names
+	// are unique only per team (`town-square` exists in every team), so a
+	// receiver in team-a's `town-square` must NOT block creating one in
+	// team-b's `town-square` — matching on channel name alone did exactly
+	// that, silently skipping the second team's add. Walk current config once.
 	current := p.getConfiguration().AlertConfigs
 	existingInThisChannel := make(map[string]bool)
 	for _, c := range current {
-		if c.Channel == channel {
+		if c.Team == team && c.Channel == channel {
 			existingInThisChannel[c.Name] = true
 		}
 	}
 
 	// Two-pass: identify slugs that need creation, then create one shared
-	// webhook for the whole batch. Channel-suffix every receiver name
-	// (pattern <slug>--<channel>); the shared webhook itself is named
+	// webhook for the whole batch. Team+channel-qualify every receiver name
+	// (pattern <slug>--<team>-<channel>); the shared webhook itself is named
 	// <group-or-slug>--<channel> in Mattermost.
 	results := make([]scaffoldResult, 0, len(slugs))
 	newSlugs := make([]string, 0, len(slugs))
 	for _, slug := range slugs {
-		receiverName := receiverNameForChannel(slug, channel)
+		receiverName := receiverNameForChannel(slug, team, channel)
 		if existingInThisChannel[receiverName] || existingInThisChannel[slug] {
 			results = append(results, scaffoldResult{receiverName, "skipped", "already exists"})
 			continue
@@ -202,13 +203,13 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 			// Existing skipped slugs remain in the results; rendering
 			// below shows the full picture.
 			for _, slug := range newSlugs {
-				results = append(results, scaffoldResult{receiverNameForChannel(slug, channel), "failed", hookErr.Error()})
+				results = append(results, scaffoldResult{receiverNameForChannel(slug, team, channel), "failed", hookErr.Error()})
 			}
 		} else {
 			sharedHookID = hookID
 			now := time.Now().UTC()
 			for _, slug := range newSlugs {
-				receiverName := receiverNameForChannel(slug, channel)
+				receiverName := receiverNameForChannel(slug, team, channel)
 				newEntries = append(newEntries, alertConfig{
 					Name:                     receiverName,
 					Team:                     team,
@@ -486,15 +487,25 @@ func (p *Plugin) assembleReceiversYAML(newEntries []alertConfig, results []scaff
 	return y.String()
 }
 
-// receiverNameForChannel constructs the channel-scoped receiver name
-// from a runbook slug + channel slug. Pattern: <slug>--<channel>.
+// receiverNameForChannel constructs the receiver name from a runbook slug,
+// team slug, and channel slug. Pattern: <slug>--<team>-<channel>.
 //
-// The double-hyphen separator is deliberate: it's a visually obvious
-// boundary that can't be confused with hyphens inside either component.
-// `high-cpu-usage--alert-slo-channel` parses unambiguously as
-// `(high-cpu-usage)--(alert-slo-channel)`.
-func receiverNameForChannel(slug, channelSlug string) string {
-	return slug + "--" + channelSlug
+// Team is part of the name because channel names are only unique PER TEAM —
+// `town-square` exists in every team by default. Without the team segment,
+// receivers for the same runbook in same-named channels across teams would
+// collide (Alertmanager requires globally-unique receiver names), silently
+// misrouting one team's alerts to another's channel.
+//
+// The double-hyphen after the slug is the load-bearing separator:
+// receiverBaseSlug splits on the FIRST `--` to recover the runbook slug, so
+// the slug boundary stays unambiguous. The team-channel tail uses a single
+// `-` and is NOT parsed back out — team and channel live in their own
+// alertConfig fields; the tail is display/uniqueness only. Global uniqueness
+// is enforced by the duplicate-name rejection in parseAlertConfigs, not by
+// the separator, so a (rare) team/channel hyphen ambiguity fails loud at
+// config-save rather than misrouting.
+func receiverNameForChannel(slug, teamSlug, channelSlug string) string {
+	return slug + "--" + teamSlug + "-" + channelSlug
 }
 
 // receiverBaseSlug returns the runbook slug portion of a receiver name.

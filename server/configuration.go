@@ -132,14 +132,18 @@ type alertConfig struct {
 }
 
 // Names are user-facing identifiers — URL-safe so they can appear in slash
-// command args and YAML output without escaping concerns.
-var alertConfigNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// command args and YAML output without escaping concerns. The 190-char cap
+// (up from 64) accommodates the team-qualified form <slug>--<team>-<channel>:
+// a long runbook slug (~33) plus a 64-char team slug plus a 64-char channel
+// slug plus separators tops out around 164, so 190 leaves headroom without an
+// unbounded name. Alertmanager and the rendered YAML impose no tighter limit.
+var alertConfigNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,189}$`)
 
 // IsValid enforces per-entry invariants. Name validation runs first so
 // downstream errors can reference it.
 func (ac *alertConfig) IsValid() error {
 	if !alertConfigNameRegex.MatchString(ac.Name) {
-		return fmt.Errorf("invalid name %q: must be 1-64 chars, start with [a-z0-9], remainder [a-z0-9_-]", ac.Name)
+		return fmt.Errorf("invalid name %q: must be 1-190 chars, start with [a-z0-9], remainder [a-z0-9_-]", ac.Name)
 	}
 	if ac.Team == "" {
 		return errors.New("must set team")

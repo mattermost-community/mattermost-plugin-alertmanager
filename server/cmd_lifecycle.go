@@ -601,12 +601,15 @@ func resolveReceiverName(all []alertConfig, supplied, channelID string, p *Plugi
 			return c.Name
 		}
 	}
-	// 2. Short-name match scoped to current channel
+	// 2. Short-name match scoped to current team + channel. Team is part of
+	// the receiver name now, so the candidate needs the team slug too.
 	if ch, appErr := p.API.GetChannel(channelID); appErr == nil {
-		candidate := receiverNameForChannel(supplied, ch.Name)
-		for _, c := range all {
-			if c.Name == candidate {
-				return c.Name
+		if team, teamErr := p.API.GetTeam(ch.TeamId); teamErr == nil {
+			candidate := receiverNameForChannel(supplied, team.Name, ch.Name)
+			for _, c := range all {
+				if c.Name == candidate {
+					return c.Name
+				}
 			}
 		}
 	}

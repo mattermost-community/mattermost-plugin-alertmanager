@@ -6,22 +6,27 @@ import (
 	"testing"
 )
 
-// TestReceiverNameForChannel pins the suffixing pattern used to keep
-// receiver names unique across channels. The double-hyphen separator
-// is load-bearing: it has to be unambiguous when parsed back out by
-// receiverBaseSlug.
+// TestReceiverNameForChannel pins the team-qualified suffixing pattern used to
+// keep receiver names globally unique. Team is in the name because channel
+// names are unique only per team — without it, same-named channels in
+// different teams would collide. The double-hyphen after the slug is
+// load-bearing: it stays unambiguous when parsed back out by receiverBaseSlug.
 func TestReceiverNameForChannel(t *testing.T) {
 	cases := []struct {
-		slug, channel, want string
+		slug, team, channel, want string
 	}{
-		{"high-cpu-usage", "alerts", "high-cpu-usage--alerts"},
-		{"high-cpu-usage", "alert-slo-channel", "high-cpu-usage--alert-slo-channel"},
-		{"pod-not-ready", "ops", "pod-not-ready--ops"},
+		{"high-cpu-usage", "ops", "alerts", "high-cpu-usage--ops-alerts"},
+		{"high-cpu-usage", "sre", "alert-slo-channel", "high-cpu-usage--sre-alert-slo-channel"},
+		{"pod-not-ready", "platform", "ops", "pod-not-ready--platform-ops"},
+		// Same channel name, different teams → distinct receiver names.
+		// This is the collision the team segment exists to prevent.
+		{"pod-crashloopbackoff", "team-a", "town-square", "pod-crashloopbackoff--team-a-town-square"},
+		{"pod-crashloopbackoff", "team-b", "town-square", "pod-crashloopbackoff--team-b-town-square"},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.slug+"/"+tc.channel, func(t *testing.T) {
-			got := receiverNameForChannel(tc.slug, tc.channel)
+		t.Run(tc.slug+"/"+tc.team+"/"+tc.channel, func(t *testing.T) {
+			got := receiverNameForChannel(tc.slug, tc.team, tc.channel)
 			if got != tc.want {
 				t.Fatalf("expected %q, got %q", tc.want, got)
 			}
@@ -43,6 +48,9 @@ func TestReceiverBaseSlug(t *testing.T) {
 		{"high-cpu-usage--alerts", "high-cpu-usage"},
 		{"high-cpu-usage--alert-slo-channel", "high-cpu-usage"},
 		{"pod-not-ready--ops", "pod-not-ready"},
+		// Team-qualified form: slug is still everything before the first `--`,
+		// the team-channel tail is ignored.
+		{"pod-crashloopbackoff--team-a-town-square", "pod-crashloopbackoff"},
 
 		// Unsuffixed names pass through unchanged. Treated as a legacy
 		// shape — receivers created before channel-suffixing existed

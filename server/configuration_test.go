@@ -101,7 +101,7 @@ func TestAlertConfigIsValid(t *testing.T) {
 		{"name starts with hyphen", func(c *alertConfig) { c.Name = "-bad" }, "invalid name"},
 		{"name has uppercase", func(c *alertConfig) { c.Name = "HighCPU" }, "invalid name"},
 		{"name has spaces", func(c *alertConfig) { c.Name = "high cpu" }, "invalid name"},
-		{"name too long", func(c *alertConfig) { c.Name = strings.Repeat("a", 65) }, "invalid name"},
+		{"name too long", func(c *alertConfig) { c.Name = strings.Repeat("a", 191) }, "invalid name"},
 		{"empty team", func(c *alertConfig) { c.Team = "" }, "team"},
 		{"empty channel", func(c *alertConfig) { c.Channel = "" }, "channel"},
 		{"empty webhookID", func(c *alertConfig) { c.WebhookID = "" }, "webhookID"},

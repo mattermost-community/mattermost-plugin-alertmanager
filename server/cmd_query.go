@@ -52,10 +52,21 @@ func (p *Plugin) configsForCurrentChannel(args *model.CommandArgs) []alertConfig
 		return nil
 	}
 
+	// Team-scope as well as channel-scope: channel names are unique only per
+	// team (`town-square` exists in every team), so matching on channel name
+	// alone would leak — and let commands like `remove all` act on — another
+	// team's receivers that happen to share this channel's name.
+	team, appErr := p.API.GetTeam(channel.TeamId)
+	if appErr != nil {
+		p.API.LogWarn("could not resolve current team for scoping",
+			"teamID", channel.TeamId, "err", appErr.Error())
+		return nil
+	}
+
 	all := p.getConfiguration().AlertConfigs
 	matched := make([]alertConfig, 0, len(all))
 	for _, c := range all {
-		if c.Channel == channel.Name {
+		if c.Team == team.Name && c.Channel == channel.Name {
 			matched = append(matched, c)
 		}
 	}
