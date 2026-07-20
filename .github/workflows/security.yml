@@ -85,7 +85,7 @@ jobs:
       # free; private: needs GHAS).
       - name: Upload Grype SARIF to code scanning
         if: always() && steps.grype-scan.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v3.30.0
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
           category: grype
@@ -112,7 +112,7 @@ jobs:
           cache: true
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v3.30.0
         with:
           languages: go
           # Index from repo root so root-package files (main.go,
@@ -121,14 +121,14 @@ jobs:
           # package inside it, not a separate module.
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/autobuild@7188fc363630916deb702c7fdcf4e481b751f97a # v3.30.0
 
       # Split analysis from upload so each step's success/failure has
       # one clear meaning. `upload: never` writes SARIF locally; the
       # explicit security-gate step then enforces the finding threshold,
       # and the upload step pushes results to GitHub Code Scanning.
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v3.30.0
         id: codeql-analyze
         with:
           category: codeql-go
@@ -149,7 +149,7 @@ jobs:
       # If this fails, enable Code Scanning per the workflow header.
       - name: Upload CodeQL SARIF to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v3.30.0
         with:
           sarif_file: codeql-results
           category: codeql-go
