@@ -33,9 +33,23 @@ updates:
         update-types:
           - minor
           - patch
+      # Group ALL security fixes into one PR per Dependabot run. Without
+      # this, security updates default to one-PR-per-advisory, and when
+      # two advisories land close together (e.g. grpc + x/text) neither
+      # PR can pass the required `SBOM + Grype --fail-on high` gate alone
+      # — each still carries the other's unpatched HIGH — deadlocking a
+      # strict, enforce_admins-protected main. Grouping lets a single PR
+      # clear the gate. applies-to:security-updates is required — a group
+      # with no applies-to only covers version updates.
+      security-all:
+        applies-to: security-updates
+        patterns:
+          - '*'
 
   # build/ sub-modules each have their own go.mod (manifest, pluginctl,
   # render-docs). Cover them too so the build tooling stays current.
+  # These aren't SBOM-scanned, so no gate deadlock — but group their
+  # security fixes for the same low-noise, consistency reasons.
   - package-ecosystem: gomod
     directory: /build/manifest
     schedule:
@@ -50,6 +64,11 @@ updates:
       - build-tooling
     commit-message:
       prefix: "deps(build/manifest)"
+    groups:
+      security-all:
+        applies-to: security-updates
+        patterns:
+          - '*'
 
   - package-ecosystem: gomod
     directory: /build/pluginctl
@@ -65,6 +84,11 @@ updates:
       - build-tooling
     commit-message:
       prefix: "deps(build/pluginctl)"
+    groups:
+      security-all:
+        applies-to: security-updates
+        patterns:
+          - '*'
 
   - package-ecosystem: gomod
     directory: /build/render-docs
@@ -80,6 +104,11 @@ updates:
       - build-tooling
     commit-message:
       prefix: "deps(build/render-docs)"
+    groups:
+      security-all:
+        applies-to: security-updates
+        patterns:
+          - '*'
 
   # GitHub Actions used by .github/workflows/*.yml. Keeps action SHAs
   # current — important because we pin all actions to SHAs (security),
