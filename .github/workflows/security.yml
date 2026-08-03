@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -85,7 +85,7 @@ jobs:
       # free; private: needs GHAS).
       - name: Upload Grype SARIF to code scanning
         if: always() && steps.grype-scan.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v3.30.0
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
           category: grype
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -112,7 +112,7 @@ jobs:
           cache: true
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v3.30.0
         with:
           languages: go
           # Index from repo root so root-package files (main.go,
@@ -121,14 +121,14 @@ jobs:
           # package inside it, not a separate module.
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/autobuild@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v3.30.0
 
       # Split analysis from upload so each step's success/failure has
       # one clear meaning. `upload: never` writes SARIF locally; the
       # explicit security-gate step then enforces the finding threshold,
       # and the upload step pushes results to GitHub Code Scanning.
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v3.30.0
         id: codeql-analyze
         with:
           category: codeql-go
@@ -149,7 +149,7 @@ jobs:
       # If this fails, enable Code Scanning per the workflow header.
       - name: Upload CodeQL SARIF to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v3.30.0
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v3.30.0
         with:
           sarif_file: codeql-results
           category: codeql-go
