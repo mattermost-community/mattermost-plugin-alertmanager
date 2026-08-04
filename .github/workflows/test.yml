@@ -32,6 +32,31 @@ jobs:
       - name: Run unit tests
         run: go test -race -count=1 ./...
 
+  # Validates the generated Prometheus Operator CRD output (--format=crd)
+  # against the real AlertmanagerConfig v1alpha1 + core schemas via kubeconform.
+  # The renderer emits CRDs at runtime, so TestCRDManifestKubeconform generates
+  # a sample and validates it here — catching operator schema/field drift that
+  # the structure-only YAML round-trip tests can't. Schemas come from the
+  # datreeio CRDs-catalog (fetched at run time). kubeconform is installed via
+  # the Go toolchain already set up, pinned to a released version.
+  validate-crd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kubeconform
+        run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+
+      - name: Validate generated AlertmanagerConfig against operator schema
+        run: go test -run TestCRDManifestKubeconform -count=1 -v ./server/...
+
   # Validates the shipped sample rules (samples/prometheus-rules.yaml) with
   # promtool. Users copy this file into their own Prometheus, so a broken
   # PromQL expr or malformed YAML must never merge. promtool ships inside the
