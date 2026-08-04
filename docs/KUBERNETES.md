@@ -100,6 +100,156 @@ two files. Multiple alertnames can share one runbook (e.g.,
 `NodeCPUSpike` and `K8sContainerCPUHigh` both set
 `runbook: high-cpu-usage`).
 
+## Prometheus Operator (AlertmanagerConfig CRD)
+
+Everything above is the **file** method — you paste the generated block into a
+hand-maintained `alertmanager.yml` (or a ConfigMap). If you run Alertmanager
+via the **Prometheus Operator** (e.g. kube-prometheus-stack), you don't edit a
+file: you apply an `AlertmanagerConfig` custom resource and the operator merges
+it into the running config for you.
+
+The plugin still generates the routing/receivers content the same way — this
+section is how to express that content as CRDs. See
+[Compatibility](COMPATIBILITY.md) for the exact API versions targeted.
+
+### Know which CRD you're touching
+
+Two different CRDs, and they are constantly confused:
+
+| Kind | apiVersion | What it is |
+|------|-----------|------------|
+| `Alertmanager` | `monitoring.coreos.com/v1` | Deploys the Alertmanager **instance** (replicas, storage). You already have this. |
+| `AlertmanagerConfig` | `monitoring.coreos.com/v1alpha1` | The **routes + receivers** — this is what replaces the plugin's file output. |
+
+Do **not** put `monitoring.coreos.com/v1` on an `AlertmanagerConfig` — there is
+no such served version; the apply will be rejected. Confirm what your cluster
+serves (whichever shows `storage=true` is canonical):
+
+```
+kubectl get crd alertmanagerconfigs.monitoring.coreos.com \
+  -o jsonpath='{range .spec.versions[*]}{.name}{" served="}{.served}{" storage="}{.storage}{"\n"}{end}'
+```
+
+### The webhook URL must be a Secret
+
+Unlike the file format's inline `api_url:`, an `AlertmanagerConfig`'s
+`slackConfigs.apiURL` is a **Secret reference** — you cannot inline the URL.
+Create one Secret per receiver (or reuse one per group webhook), in the **same
+namespace** as the `AlertmanagerConfig`. The URL is the one `/alertmanager add`
+DMs you.
+
+```
+kubectl create secret generic alertmanager-webhook-high-cpu-usage \
+  --from-literal=url='<webhook URL from /alertmanager add>' \
+  -n monitoring
+```
+
+Or declaratively (GitOps / air-gapped):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-webhook-high-cpu-usage
+  namespace: monitoring
+stringData:
+  url: "<webhook URL from /alertmanager add>"
+```
+
+### The AlertmanagerConfig
+
+The operator-native equivalent of the plugin's generated `route:` + `receivers:`
+(base-slug matchers, `continue: true`, one receiver per runbook-channel):
+
+```yaml
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: mattermost-alertmanager
+  namespace: monitoring
+spec:
+  route:
+    receiver: mattermost-fallback            # in-CR fallback; grafted under AM's main route
+    groupBy: [alertname, cluster]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    routes:
+      # one per receiver — matcher keys on the BASE slug, continue:true for fan-out
+      - matchers: [{name: runbook, value: high-cpu-usage, matchType: "="}]
+        receiver: high-cpu-usage--alert-slo-channel
+        continue: true
+      - matchers: [{name: runbook, value: high-memory-usage, matchType: "="}]
+        receiver: high-memory-usage--alert-slo-channel
+        continue: true
+      # ... one route per receiver
+  receivers:
+    - name: high-cpu-usage--alert-slo-channel
+      slackConfigs:
+        - apiURL: {name: alertmanager-webhook-high-cpu-usage, key: url}
+          channel: "#alert-slo-channel"
+          sendResolved: true
+          username: alertmanagerbot
+          iconURL: https://<your-mm-host>/plugins/com.mattermost.alertmanager/public/alertmanager-logo.png
+          title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}]'
+          text: |-
+            {{ range .Alerts -}}
+            **Alert:** {{ .Labels.alertname }}{{ if .Labels.severity }} - {{ .Labels.severity }}{{ end }}
+            {{ end -}}
+    - name: mattermost-fallback
+      slackConfigs:
+        - apiURL: {name: alertmanager-webhook-fallback, key: url}
+          channel: "#alerts"
+          sendResolved: true
+```
+
+Field renames vs the file format (same meaning, camelCased, secret-backed URL):
+
+| File (`alertmanager.yml`) | CRD (`AlertmanagerConfig`) |
+|---------------------------|----------------------------|
+| `slack_configs` | `slackConfigs` |
+| `api_url: https://…` | `apiURL: {name, key}` (Secret ref, mandatory) |
+| `send_resolved` | `sendResolved` |
+| `matchers: [runbook="…"]` | `matchers: [{name, value, matchType}]` |
+
+### Operator gotchas
+
+- **Namespace matcher injection.** By default the operator adds a `namespace`
+  matcher to every route (`alertmanagerConfigMatcherStrategy: OnNamespace`), so
+  an `AlertmanagerConfig` only matches alerts whose `namespace` label equals its
+  own namespace. If your alerts originate elsewhere, deploy the CR in that
+  namespace or set the matcher strategy to `None`.
+- **Route grafting.** Your `spec.route` is grafted as a child under the
+  operator's top-level route — it is not the global route. The true catch-all
+  fallback lives in the main Alertmanager config, not here.
+- **Selector.** Your `Alertmanager` resource must select this CR via
+  `alertmanagerConfigSelector` (plus `alertmanagerConfigNamespaceSelector` for
+  cross-namespace).
+
+### Alerting rules as a PrometheusRule
+
+The file-format rules in `samples/prometheus-rules.yaml` become a
+`PrometheusRule` (this one **is** GA, `monitoring.coreos.com/v1`) — identical
+`groups:` content, wrapped:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mattermost-alertmanager-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack     # must match your Prometheus's ruleSelector
+spec:
+  groups:
+    # exact contents of samples/prometheus-rules.yaml (do not hand-copy —
+    # take it from that single source; `/alertmanager rules` prints it)
+```
+
+The only hard requirement for the plugin to work is that your rules emit
+`runbook: <slug>` — see [Required: route alerts to the right
+receiver](#required-route-alerts-to-the-right-receiver) above.
+
 ## HA / multi-pod considerations
 
 The plugin is HA-aware where it counts:
