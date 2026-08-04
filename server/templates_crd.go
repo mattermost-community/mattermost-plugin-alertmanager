@@ -38,6 +38,29 @@ const crdReceiverHeader = `    - name: {{NAME}}
           iconURL: '{{ICON_URL}}'
 `
 
+// crdFallbackReceiver is the synthesized catch-all receiver the parent route
+// points at. Unlike a per-runbook receiver it has no runbook context, so it
+// gets a deliberately simple body (no severity color/diagnostics, and a title
+// that says so) rather than the rich per-runbook template with an empty runbook
+// link. One is emitted per group (per AlertmanagerConfig).
+const crdFallbackReceiver = `    - name: {{NAME}}
+      slackConfigs:
+        - apiURL:
+            name: {{SECRET}}
+            key: url
+          channel: '{{CHANNEL}}'
+          sendResolved: true
+          username: 'alertmanagerbot'
+          iconURL: '{{ICON_URL}}'
+          title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}] (no runbook-specific template)'
+          text: |-
+            {{ range .Alerts -}}
+            **Alert:** {{ .Labels.alertname }}{{ if .Labels.severity }} - {{ .Labels.severity }}{{ end }}{{ "\n" }}
+            {{- if .Annotations.description }}**Description:** {{ .Annotations.description }}{{ "\n" }}{{ end -}}
+            {{- range .Labels.SortedPairs }}{{ "\n" }}  • **{{ .Name }}:** ` + "`{{ .Value }}`" + `{{ end }}
+            {{ end -}}
+`
+
 // crdEnvelope is the AlertmanagerConfig wrapper. {{API_VERSION}} is filled from
 // TargetAlertmanagerConfigAPIVersion so the emitted apiVersion tracks the single
 // source of truth in crd_versions.go.
@@ -123,6 +146,21 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	return header + body
 }
 
+// renderCRDFallbackReceiver renders the synthesized catch-all receiver with the
+// simple crdFallbackReceiver body (no runbook-specific color/diagnostics).
+func renderCRDFallbackReceiver(spec crdReceiverSpec) string {
+	channel := spec.channel
+	if !strings.HasPrefix(channel, "#") {
+		channel = "#" + channel
+	}
+	return strings.NewReplacer(
+		"{{NAME}}", spec.name,
+		"{{SECRET}}", spec.secretName,
+		"{{CHANNEL}}", channel,
+		"{{ICON_URL}}", spec.iconURL,
+	).Replace(crdFallbackReceiver)
+}
+
 // renderAlertmanagerConfig assembles a full AlertmanagerConfig for one group of
 // receivers that share a webhook/channel (the plugin's one-shared-webhook-per-
 // group model). fallback is a synthesized catch-all receiver (already included
@@ -133,14 +171,16 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 	slugs := make([]string, 0, len(specs))
 
 	for _, s := range specs {
-		// The fallback receiver has no runbook slug and gets no sub-route — it
-		// is only the parent route's catch-all.
-		if s.slug != "" {
-			slugs = append(slugs, s.slug)
-			fmt.Fprintf(&subroutes,
-				"      - matchers: [{name: runbook, value: \"%s\", matchType: \"=\"}]\n        receiver: %s\n        continue: true\n",
-				s.slug, s.name)
+		// The fallback receiver (no runbook slug) gets no sub-route and a
+		// simple body — it is only the parent route's catch-all.
+		if s.slug == "" {
+			receivers.WriteString(renderCRDFallbackReceiver(s))
+			continue
 		}
+		slugs = append(slugs, s.slug)
+		fmt.Fprintf(&subroutes,
+			"      - matchers: [{name: runbook, value: \"%s\", matchType: \"=\"}]\n        receiver: %s\n        continue: true\n",
+			s.slug, s.name)
 		receivers.WriteString(renderCRDReceiver(s))
 	}
 

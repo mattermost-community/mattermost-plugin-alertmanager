@@ -24,8 +24,10 @@ storage version. `v1beta1` has been stalled since 2022 and there is no `v1`.
 
 The plugin tracks the **latest** operator CRD formatting and only that — it does
 not ship per-version renderers. If a future operator release graduates
-`AlertmanagerConfig` to a new apiVersion, this table and `server/crd_versions.go`
-are bumped together in a single release, and that bump lands in the changelog.
+`AlertmanagerConfig` to a new apiVersion, this table, `server/crd_versions.go`,
+and the vendored kubeconform schema at `build/crd-schemas/` are bumped together
+in a single release, and that bump lands in the changelog. (The schema is
+vendored so the `validate-crd` CI gate runs offline — see `build/crd-schemas/README.md`.)
 
 Before applying the CRD examples, confirm what your own cluster actually serves
 (whichever version shows `storage=true` is the canonical one):
