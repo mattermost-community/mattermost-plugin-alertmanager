@@ -39,14 +39,12 @@ func TestCompatibilityDocMatchesConstants(t *testing.T) {
 // currentTargetSection returns the body of the "## Current target" section (up
 // to the next "## " heading), or "" if the heading is absent.
 func currentTargetSection(doc string) string {
-	const heading = "## Current target"
-	i := strings.Index(doc, heading)
-	if i < 0 {
+	_, after, found := strings.Cut(doc, "## Current target")
+	if !found {
 		return ""
 	}
-	rest := doc[i+len(heading):]
-	if j := strings.Index(rest, "\n## "); j >= 0 {
-		return rest[:j]
+	if before, _, found := strings.Cut(after, "\n## "); found {
+		return before
 	}
-	return rest
+	return after
 }
