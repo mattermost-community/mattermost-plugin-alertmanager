@@ -65,7 +65,16 @@ const canonicalTemplate = `- name: {{NAME}}
       # if either drifts, the other still carries the right values.
       username: 'alertmanagerbot'
       icon_url: '{{ICON_URL}}'
-      # Sidebar color. Mattermost honors Slack-named colors
+` + receiverBodyTemplate
+
+// receiverBodyTemplate is the color/title/text notification body — the rich
+// part (severity sidebar color, templated title, text with runbook link +
+// inline quick diagnostics). It is shared verbatim by the file
+// (alertmanager.yml, canonicalTemplate above) and the CRD (AlertmanagerConfig)
+// receiver renderers so the two output formats can never drift. Authored at the
+// file format's indentation; the CRD renderer re-indents it to the deeper
+// AlertmanagerConfig nesting depth.
+const receiverBodyTemplate = `      # Sidebar color. Mattermost honors Slack-named colors
       # (good/warning/danger) plus arbitrary hex codes. Mapping:
       #   firing + warning  -> yellow
       #   firing + critical -> red
