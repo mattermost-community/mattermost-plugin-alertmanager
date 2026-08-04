@@ -37,6 +37,18 @@ import (
 func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
+
+	// --format=standard (default, alertmanager.yml) | crd (AlertmanagerConfig).
+	format, rest := extractFlagValue(rest, "--format=")
+	if format == "" {
+		format = "standard"
+	}
+	// --namespace= applies to CRD output only; defaults to monitoring.
+	namespace, rest := extractFlagValue(rest, "--namespace=")
+	if namespace == "" {
+		namespace = defaultCRDNamespace
+	}
+
 	diffMode := containsFlag(rest, "--diff-against-loaded")
 
 	// --diff-against-loaded is sysadmin-only because it surfaces the
@@ -61,6 +73,15 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 
 	if diffMode {
 		return p.handleExportDiff(args, scoped)
+	}
+
+	switch format {
+	case "standard":
+		// fall through to the file-format path below
+	case "crd":
+		return p.handleExportCRD(args, scoped, namespace)
+	default:
+		return fmt.Sprintf(":warning: Unknown `--format=%s`. Use `standard` (alertmanager.yml, default) or `crd` (Prometheus Operator AlertmanagerConfig).", format), nil
 	}
 
 	// Assemble the YAML for every channel-scoped receiver. Same

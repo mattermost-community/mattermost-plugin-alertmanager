@@ -56,17 +56,33 @@ func TestRenderCRDReceiverParity(t *testing.T) {
 	out := renderAlertmanagerConfig("cr", "monitoring", "security-fallback", sampleCRDSpecs())
 
 	checks := map[string]string{
-		"secret-ref apiURL":         "        - apiURL:\n            name: alertmanager-webhook-security\n            key: url",
-		"camelCased sendResolved":   "\n          sendResolved: true",
-		"color key at 10 spaces":    "\n          color: '{{ if eq .Status \"firing\" }}",
-		"title body at 12 spaces":   "\n            {{- if eq .Status \"firing\" -}}",
-		"sub-route with continue":   "      - matchers: [{name: runbook, value: \"unexpected-container-image\", matchType: \"=\"}]\n        receiver: unexpected-container-image--team-security-alerts\n        continue: true",
-		"parent =~ matcher":         "value: \"^(unexpected-container-image)$\"",
-		"per-runbook runbook URL":   "runbooks/unexpected-container-image.html",
+		"secret-ref apiURL":       "        - apiURL:\n            name: alertmanager-webhook-security\n            key: url",
+		"camelCased sendResolved": "\n          sendResolved: true",
+		"color key at 10 spaces":  "\n          color: '{{ if eq .Status \"firing\" }}",
+		"title body at 12 spaces": "\n            {{- if eq .Status \"firing\" -}}",
+		"sub-route with continue": "      - matchers: [{name: runbook, value: \"unexpected-container-image\", matchType: \"=\"}]\n        receiver: unexpected-container-image--team-security-alerts\n        continue: true",
+		"parent =~ matcher":       "value: \"^(unexpected-container-image)$\"",
+		"per-runbook runbook URL": "runbooks/unexpected-container-image.html",
 	}
 	for name, want := range checks {
 		if !strings.Contains(out, want) {
 			t.Errorf("%s: generated CRD missing expected fragment:\n%s\n---full---\n%s", name, want, out)
+		}
+	}
+}
+
+func TestSanitizeK8sName(t *testing.T) {
+	cases := map[string]string{
+		"alert-slo-channel": "alert-slo-channel",
+		"Security_Alerts":   "security-alerts",
+		"town square":       "town-square",
+		"--weird--":         "weird",
+		"a..b//c":           "a-b-c",
+		"UPPER":             "upper",
+	}
+	for in, want := range cases {
+		if got := sanitizeK8sName(in); got != want {
+			t.Errorf("sanitizeK8sName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
