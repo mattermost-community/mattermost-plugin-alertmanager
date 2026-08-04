@@ -16,15 +16,37 @@ func TestCompatibilityDocMatchesConstants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("COMPATIBILITY.md not embedded: %v", err)
 	}
-	doc := string(body)
-
+	// Scope to the "## Current target" section and require each value
+	// backticked, as the table renders them. Two reasons over a whole-doc
+	// Contains: (1) a stale table can't be masked by the value appearing in
+	// prose, and (2) the backtick delimiters stop "monitoring.coreos.com/v1"
+	// from matching as a substring of ".../v1alpha1".
+	section := currentTargetSection(string(body))
+	if section == "" {
+		t.Fatal(`docs/COMPATIBILITY.md is missing the "## Current target" section`)
+	}
 	for _, want := range []string{
 		TargetPrometheusOperatorVersion,
 		TargetAlertmanagerConfigAPIVersion,
 		TargetPrometheusRuleAPIVersion,
 	} {
-		if !strings.Contains(doc, want) {
-			t.Errorf("docs/COMPATIBILITY.md is missing target constant %q — update the table to match server/crd_versions.go", want)
+		if !strings.Contains(section, "`"+want+"`") {
+			t.Errorf("docs/COMPATIBILITY.md \"## Current target\" section is missing backticked %q — update the table to match server/crd_versions.go", want)
 		}
 	}
+}
+
+// currentTargetSection returns the body of the "## Current target" section (up
+// to the next "## " heading), or "" if the heading is absent.
+func currentTargetSection(doc string) string {
+	const heading = "## Current target"
+	i := strings.Index(doc, heading)
+	if i < 0 {
+		return ""
+	}
+	rest := doc[i+len(heading):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		return rest[:j]
+	}
+	return rest
 }
