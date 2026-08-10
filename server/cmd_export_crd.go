@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -15,6 +16,32 @@ import (
 // defaultCRDNamespace is where the generated Secret + AlertmanagerConfig land
 // unless overridden with --namespace=. kube-prometheus-stack's default.
 const defaultCRDNamespace = "monitoring"
+
+// Output formats accepted by the `--format=` flag on add/export.
+const (
+	formatStandard = "standard" // flat alertmanager.yml
+	formatCRD      = "crd"      // Prometheus Operator AlertmanagerConfig
+)
+
+// crdNamespaceRegex matches a valid Kubernetes namespace name: an RFC 1123 DNS
+// label — lowercase alphanumerics and '-', starting and ending alphanumeric.
+var crdNamespaceRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// validateCRDNamespace rejects a user-supplied --namespace that isn't a valid
+// Kubernetes namespace. The value comes straight from the slash-command args
+// and flows into generated AlertmanagerConfig/Secret manifests
+// (metadata.namespace), so an unvalidated value could yield broken or injected
+// YAML. We reject rather than silently coerce (unlike sanitizeK8sName) so the
+// operator isn't surprised by output landing in a different namespace.
+func validateCRDNamespace(ns string) error {
+	if len(ns) > 63 {
+		return fmt.Errorf("namespace %q is too long (max 63 characters)", ns)
+	}
+	if !crdNamespaceRegex.MatchString(ns) {
+		return fmt.Errorf("namespace %q is not a valid Kubernetes namespace (lowercase letters, digits and '-'; must start and end with a letter or digit)", ns)
+	}
+	return nil
+}
 
 // sanitizeK8sName lowercases and coerces s into an RFC1123-ish DNS label
 // (a-z, 0-9, '-'), collapsing any other run to a single '-' and trimming

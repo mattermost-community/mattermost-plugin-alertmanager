@@ -41,12 +41,14 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	// --format=standard (default, alertmanager.yml) | crd (AlertmanagerConfig).
 	format, rest := extractFlagValue(rest, "--format=")
 	if format == "" {
-		format = "standard"
+		format = formatStandard
 	}
 	// --namespace= applies to CRD output only; defaults to monitoring.
 	namespace, rest := extractFlagValue(rest, "--namespace=")
 	if namespace == "" {
 		namespace = defaultCRDNamespace
+	} else if err := validateCRDNamespace(namespace); err != nil {
+		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
 	}
 
 	diffMode := containsFlag(rest, "--diff-against-loaded")
@@ -76,9 +78,9 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	}
 
 	switch format {
-	case "standard":
+	case formatStandard:
 		// fall through to the file-format path below
-	case "crd":
+	case formatCRD:
 		return p.handleExportCRD(args, scoped, namespace)
 	default:
 		return fmt.Sprintf(":warning: Unknown `--format=%s`. Use `standard` (alertmanager.yml, default) or `crd` (Prometheus Operator AlertmanagerConfig).", format), nil

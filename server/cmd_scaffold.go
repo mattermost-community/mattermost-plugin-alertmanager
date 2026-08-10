@@ -113,14 +113,16 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// --namespace= applies to CRD output only; defaults to monitoring.
 	format, rest := extractFlagValue(rest, "--format=")
 	if format == "" {
-		format = "standard"
+		format = formatStandard
 	}
-	if format != "standard" && format != "crd" {
+	if format != formatStandard && format != formatCRD {
 		return fmt.Sprintf(":warning: Unknown `--format=%s`. Use `standard` (alertmanager.yml, default) or `crd` (Prometheus Operator AlertmanagerConfig).", format), nil
 	}
 	namespace, rest := extractFlagValue(rest, "--namespace=")
 	if namespace == "" {
 		namespace = defaultCRDNamespace
+	} else if err := validateCRDNamespace(namespace); err != nil {
+		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
 	}
 
 	// Extract optional `on` positional anywhere in the args list. Opts
@@ -311,7 +313,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		}
 		b.WriteString("```\n\n")
 
-		if format == "crd" {
+		if format == formatCRD {
 			// Prometheus Operator path: DM an AlertmanagerConfig + Secret
 			// manifest instead of the alertmanager.yml receivers/routes files.
 			manifest, crCount := p.assembleCRDManifest(newEntries, namespace)
