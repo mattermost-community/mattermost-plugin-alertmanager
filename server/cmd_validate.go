@@ -170,12 +170,16 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 			r.AMReach = "✗ " + st.statusText
 		}
 
-		// (b) Receiver loaded in AM — only meaningful if (a) passed
+		// (b) Receiver loaded in AM — only meaningful if (a) passed.
+		// Canonical match so CRD-managed receivers (renamed by the Prometheus
+		// Operator to "<ns>/<config>/<name>") still register as loaded.
 		if st.ok {
-			needle := "name: " + c.Name
-			if strings.Contains(st.configBody, needle) {
+			switch loaded, viaOperator := receiverLoadedIn(st.configBody, c.Name); {
+			case loaded && viaOperator:
+				r.LoadedInAM = "✓ (via operator)"
+			case loaded:
 				r.LoadedInAM = "✓"
-			} else {
+			default:
 				r.LoadedInAM = "✗ not found in AM config"
 			}
 		} else {

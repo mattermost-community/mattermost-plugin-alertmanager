@@ -15,12 +15,12 @@ const (
 	helpMsg = "**Alertmanager bridge slash commands** _(channel-scoped — you only see receivers bound to this channel)_\n\n" +
 		"_All commands listed in alphabetical order to match the autocomplete dropdown._\n\n" +
 		"- `/alertmanager about` — plugin build info, configured settings, reconciler health, jump-off links\n" +
-		"- `/alertmanager add <team> <channel> <am-url> [target] [on]` — create receivers for a group set OR an individual runbook slug. Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays).\n" +
+		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=]` — create receivers for a group set OR an individual runbook slug. Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`).\n" +
 		"- `/alertmanager alerts` — list currently firing alerts (grouped by Alertmanager URL — one section per backend, not per receiver)\n" +
 		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
 		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: alerts, requirements, architecture, configuration, development, kubernetes, slash_commands)\n" +
 		"- `/alertmanager expire_silence <name> <silence-id>` — expire a silence\n" +
-		"- `/alertmanager export [--diff-against-loaded]` — DM the assembled receivers.yml + routes.yml for this channel; with `--diff-against-loaded` (sysadmin) diff against AM's currently-loaded config\n" +
+		"- `/alertmanager export [--format=standard|crd] [--namespace=] [--diff-against-loaded]` — DM this channel's config. `--format=standard` (default) is alertmanager.yml receivers + routes; `--format=crd` is a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded` (sysadmin) diff against AM's currently-loaded config\n" +
 		"- `/alertmanager help` — this message\n" +
 		"- `/alertmanager list` — list receivers bound to this channel\n" +
 		"- `/alertmanager reconcile` — prune receivers whose Mattermost webhook has been deleted out-of-band (sysadmin; runs automatically every 5 min)\n" +
@@ -98,6 +98,12 @@ func getAutocompleteData() *model.AutocompleteData {
 	add.AddStaticListArgument("Optional: enable webhook rotation reminders for these receivers", false, []model.AutocompleteListItem{
 		{Item: "on", HelpText: "Opt receivers in this channel INTO rotation reminders. Sysadmins get DM'd when these webhooks haven't been rotated for the threshold set in System Console → WebhookRotationDays. Without this flag, these receivers are never reminded — even if the global threshold is set. Per-channel scope: opting in here does not affect receivers in other channels."},
 	})
+	// Output format for the DM'd config. Non-enforcing labelled suggestions —
+	// same hover pattern as the am-url hints above.
+	add.AddStaticListArgument("Optional: output format for the DM'd config (default standard)", false, []model.AutocompleteListItem{
+		{Item: "--format=standard", HelpText: "Default. alertmanager.yml receivers + routes to paste into a file-based Alertmanager."},
+		{Item: "--format=crd", HelpText: "Prometheus Operator: an AlertmanagerConfig (v1alpha1) + Secret to `kubectl apply`. Combine with --namespace= (default monitoring). See /alertmanager docs kubernetes."},
+	})
 	root.AddCommand(add)
 
 	root.AddCommand(model.NewAutocompleteData("alerts", "", "List currently firing alerts (grouped by Alertmanager URL)"))
@@ -121,7 +127,11 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	root.AddCommand(model.NewAutocompleteData("expire_silence", "[name] [silence-id]", "Expire an active Alertmanager silence"))
 
-	exportCmd := model.NewAutocompleteData("export", "[--diff-against-loaded]", "DM the assembled receivers.yml + routes.yml for this channel (sysadmin/team_admin)")
+	exportCmd := model.NewAutocompleteData("export", "[--format=standard|crd] [--namespace=] [--diff-against-loaded]", "DM this channel's config as alertmanager.yml or a Prometheus Operator AlertmanagerConfig (sysadmin/team_admin)")
+	exportCmd.AddStaticListArgument("Optional: output format (default standard)", false, []model.AutocompleteListItem{
+		{Item: "--format=standard", HelpText: "Default. alertmanager.yml receivers + routes to paste into a file-based Alertmanager."},
+		{Item: "--format=crd", HelpText: "Prometheus Operator: AlertmanagerConfig (v1alpha1) + Secret to `kubectl apply`. Combine with --namespace= (default monitoring). See /alertmanager docs kubernetes."},
+	})
 	exportCmd.AddStaticListArgument("Optional flag: diff against AM's currently-loaded config (sysadmin only)", false, []model.AutocompleteListItem{
 		{Item: "--diff-against-loaded", HelpText: "Output a side-by-side diff between AM's loaded YAML and what this export would add (sysadmin only)"},
 	})

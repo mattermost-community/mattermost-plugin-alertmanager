@@ -24,6 +24,7 @@ var docTopics = map[string]string{
 	"alert-catalog":  "ALERT_CATALOG.md",
 	"requirements":   "ALERT_REQUIREMENTS.md",
 	"architecture":   "ARCHITECTURE.md",
+	"compatibility":  "COMPATIBILITY.md",
 	"configuration":  "CONFIGURATION.md",
 	"development":    "DEVELOPMENT.md",
 	"kubernetes":     "KUBERNETES.md",

@@ -9,12 +9,12 @@ the channel where you ran the command.
 | Subcommand | Args | Purpose | Sysadmin? |
 |---|---|---|---|
 | `about` | _(none)_ | Plugin build info, settings, reconciler health, links | any user |
-| `add` | `<team> <channel> <am-url> [target] [on]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml`. Trailing `on` opts in to rotation reminders. | sysadmin / team_admin |
+| `add` | `<team> <channel> <am-url> [target] [on] [--format=standard\|crd] [--namespace=]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`--format=standard`, default), or an `AlertmanagerConfig` v1alpha1 + Secret (`--format=crd`; `--namespace=` default `monitoring`). Trailing `on` opts in to rotation reminders. | sysadmin / team_admin |
 | `alerts` | _(none)_ | Currently firing alerts, grouped by Alertmanager URL | any user |
 | `config` | `<name>` | Detail card + `slack_configs` YAML for one receiver | sysadmin / team_admin |
-| `docs` | `[topic]` | List or print embedded docs (alerts / architecture / configuration / development / kubernetes / requirements / rotation / slash_commands) | any user |
+| `docs` | `[topic]` | List or print embedded docs (alerts / architecture / compatibility / configuration / development / kubernetes / requirements / rotation / slash_commands) | any user |
 | `expire_silence` | `<name> <silence-id>` | Expire an active Alertmanager silence | any user |
-| `export` | `[--diff-against-loaded]` | DM a fresh `receivers.yml` + `routes.yml` for this channel. With `--diff-against-loaded`, diff against AM's loaded config + schema-validate. | sysadmin / team_admin |
+| `export` | `[--format=standard\|crd] [--namespace=] [--diff-against-loaded]` | DM this channel's config: `--format=standard` (default) is a fresh `receivers.yml` + `routes.yml`; `--format=crd` is a Prometheus Operator `AlertmanagerConfig` (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded`, diff against AM's loaded config + schema-validate. | sysadmin / team_admin |
 | `help` | _(none)_ | Slash-command reference | any user |
 | `list` | _(none)_ | Receivers bound to this channel (table with Rotated column) | any user |
 | `reconcile` | _(none)_ | Prune entries whose Mattermost webhook was deleted out-of-band | sysadmin |

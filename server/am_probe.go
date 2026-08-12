@@ -38,17 +38,70 @@ type amReachabilityEntry struct {
 	// page, doctor check b). Empty when probe fails OR when AM
 	// returned data we couldn't parse.
 	ConfigBody string
+	// receivers indexes the receiver names present in ConfigBody by their
+	// canonical (operator-prefix-stripped) name. The value is true when a
+	// canonical name appeared ONLY in operator-prefixed form — i.e. the
+	// receiver is loaded via an AlertmanagerConfig CRD rather than flat YAML.
+	// Built once at probe time so per-receiver lookups are O(1).
+	receivers map[string]bool
 }
 
-// LoadedInAM reports whether a given receiver name appears in the
-// AM-side config the probe captured. Substring match — AM's config
-// uses `name: <receivername>` so a literal contains check is enough.
-// Returns false when probe failed or config wasn't parsed.
-func (e amReachabilityEntry) LoadedInAM(receiverName string) bool {
-	if e.ConfigBody == "" {
-		return false
+// LoadedInAM reports whether a given receiver name appears in the AM-side
+// config the probe captured, and whether it is present only via the Prometheus
+// Operator's AlertmanagerConfig prefixing.
+//
+// Matching is canonical: the Prometheus Operator renames receivers to
+// "<namespace>/<alertmanagerconfig-name>/<receiver>" when it merges an
+// AlertmanagerConfig CRD into alertmanager.yaml, so a plain substring check for
+// the bare name would miss CRD-managed receivers and wrongly report them "Not
+// in AM YAML". We strip that prefix before comparing.
+//
+// Returns (false, false) when the probe failed or the config wasn't parsed.
+func (e amReachabilityEntry) LoadedInAM(receiverName string) (loaded, viaOperator bool) {
+	if e.receivers == nil {
+		return false, false
 	}
-	return strings.Contains(e.ConfigBody, "name: "+receiverName)
+	// receiverName is the plugin's own name (never operator-prefixed), so it is
+	// already canonical and can key the index directly.
+	viaOperator, ok := e.receivers[receiverName]
+	return ok, viaOperator
+}
+
+// canonicalReceiverName strips the Prometheus Operator's
+// "<namespace>/<alertmanagerconfig-name>/" prefix, returning the bare receiver
+// name and whether a prefix was present. Flat-YAML names (no "/") come back
+// unchanged with viaOperator=false.
+func canonicalReceiverName(name string) (canonical string, viaOperator bool) {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return name[i+1:], true
+	}
+	return name, false
+}
+
+// indexAMReceivers parses the receiver names out of an AM-loaded config body
+// and indexes them by canonical name. A canonical name maps to true only when
+// every occurrence was operator-prefixed, so a receiver also present in flat
+// form is never mislabelled "via operator".
+func indexAMReceivers(configBody string) map[string]bool {
+	idx := map[string]bool{}
+	for _, raw := range extractAMReceiverNames(configBody) {
+		canonical, viaOperator := canonicalReceiverName(raw)
+		if existing, ok := idx[canonical]; ok {
+			idx[canonical] = existing && viaOperator
+		} else {
+			idx[canonical] = viaOperator
+		}
+	}
+	return idx
+}
+
+// receiverLoadedIn reports whether receiverName is present in an AM-loaded
+// config body, canonicalizing operator-prefixed names. Convenience wrapper for
+// callers that hold a raw config body rather than a probe entry (e.g. the
+// validate command).
+func receiverLoadedIn(configBody, receiverName string) (loaded, viaOperator bool) {
+	viaOperator, ok := indexAMReceivers(configBody)[receiverName]
+	return ok, viaOperator
 }
 
 // probeAMReachability returns the cached reachability status for an
@@ -115,6 +168,7 @@ func doAMProbe(amURL string) amReachabilityEntry {
 	entry := amReachabilityEntry{Reachable: true, Status: "ok", CheckedAt: time.Now()}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
 		entry.ConfigBody = body.Config.Original
+		entry.receivers = indexAMReceivers(entry.ConfigBody)
 	}
 	return entry
 }

@@ -90,6 +90,26 @@ When you change something with mirrors, update the mirrors in the same PR:
 - Anything under `docs/`, `runbooks/`, `samples/` → `make render-docs` (never edit `public/` by hand).
 - A **URL the user has to get right** → surface it as an autocomplete hover/suggestion (containerized MM reaches services via `host.docker.internal`, not `localhost`).
 
+## CRD version discipline (Prometheus Operator, `--format=crd`)
+
+**Track the latest operator release's CRD formatting, and manage exactly ONE
+version at a time — never maintain multiple.** The current target lives in one
+place: `server/crd_versions.go` (constants) mirrored by `docs/COMPATIBILITY.md`
+(drift-guarded by `TestCompatibilityDocMatchesConstants`). Today: `AlertmanagerConfig`
+= `monitoring.coreos.com/v1alpha1` (its maintained storage version — v1beta1 has
+been stalled since 2022, there is no v1), `PrometheusRule` = `v1`.
+
+When you bump the CRD version (only when a new operator release actually changes
+a served/storage apiVersion — rare, announced), do all of these in the same PR:
+1. Update the constants in `server/crd_versions.go` to the latest release's apiVersion.
+2. **Pull the latest matching JSON schema into `build/crd-schemas/`** (the
+   air-gapped `validate-crd` gate reads it locally — see that dir's README for
+   the exact `curl`). If the apiVersion string changed, rename the file to
+   kubeconform's `{{.ResourceKind}}_{{.ResourceAPIVersion}}.json` pattern.
+3. Update `docs/COMPATIBILITY.md` + the `docs/KUBERNETES.md` examples to match.
+Do NOT add a second renderer/template for the old version — replace, don't
+accumulate. Users on an older operator adapt or upgrade (documented boundary).
+
 ## Git / PR workflow
 
 - Conventional commits: `feat:` → minor, `fix:` → patch (release-please). Breaking changes noted in the body.

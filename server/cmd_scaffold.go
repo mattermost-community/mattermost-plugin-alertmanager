@@ -109,6 +109,22 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		}
 	}
 
+	// --format=standard (default, alertmanager.yml) | crd (AlertmanagerConfig).
+	// --namespace= applies to CRD output only; defaults to monitoring.
+	format, rest := extractFlagValue(rest, "--format=")
+	if format == "" {
+		format = formatStandard
+	}
+	if format != formatStandard && format != formatCRD {
+		return fmt.Sprintf(":warning: Unknown `--format=%s`. Use `standard` (alertmanager.yml, default) or `crd` (Prometheus Operator AlertmanagerConfig).", format), nil
+	}
+	namespace, rest := extractFlagValue(rest, "--namespace=")
+	if namespace == "" {
+		namespace = defaultCRDNamespace
+	} else if err := validateCRDNamespace(namespace); err != nil {
+		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
+	}
+
 	// Extract optional `on` positional anywhere in the args list. Opts
 	// the receivers being created into the rotation reminder system.
 	// Default off — without this, the receivers we create here never
@@ -297,24 +313,40 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		}
 		b.WriteString("```\n\n")
 
-		yamlFile := p.assembleReceiversYAML(newEntries, results, channel, amURL)
-		routesFile := assembleRoutesYAML(newEntries)
-		dmErr := p.dmYAMLBundle(args.UserId, yamlFile, routesFile, created, amURL)
-		if dmErr != nil {
-			// DM delivery failed — fall back to inline YAML in the
-			// summary post. Long but functional.
-			p.API.LogWarn("scaffold: couldn't DM assembled YAML; falling back to inline", "err", dmErr.Error())
-			b.WriteString(":warning: Couldn't DM the assembled YAML file (")
-			b.WriteString(dmErr.Error())
-			b.WriteString("). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n")
-			b.WriteString(yamlFile)
-			b.WriteString("```\n")
+		if format == formatCRD {
+			// Prometheus Operator path: DM an AlertmanagerConfig + Secret
+			// manifest instead of the alertmanager.yml receivers/routes files.
+			manifest, crCount := p.assembleCRDManifest(newEntries, namespace)
+			if dmErr := p.dmCRDBundle(args.UserId, manifest, crCount, namespace); dmErr != nil {
+				p.API.LogWarn("scaffold: couldn't DM CRD manifest; falling back to inline", "err", dmErr.Error())
+				b.WriteString(":warning: Couldn't DM the manifest (")
+				b.WriteString(dmErr.Error())
+				b.WriteString(fmt.Sprintf("). Inline copy below — review and `kubectl apply -n %s`:\n\n```yaml\n", namespace))
+				b.WriteString(manifest)
+				b.WriteString("```\n")
+			} else {
+				b.WriteString(fmt.Sprintf(":page_facing_up: **Sent `alertmanager-config.yaml` (%d AlertmanagerConfig, v1alpha1) to your DM with `@%s`.** Open it, review, then apply:\n\n```\nkubectl apply -n %s -f alertmanager-config.yaml\n```\n:book: `/alertmanager docs kubernetes`\n", crCount, webhookUsername, namespace))
+			}
 		} else {
-			b.WriteString(":page_facing_up: **Sent `alertmanager-receivers.yml` to your DM with `@")
-			b.WriteString(webhookUsername)
-			b.WriteString("`** — open that conversation to download the file. Paste the contents under `receivers:` in your `alertmanager.yml`, then reload:\n\n```\ncurl -X POST ")
-			b.WriteString(amURL)
-			b.WriteString("/-/reload\n```\n")
+			yamlFile := p.assembleReceiversYAML(newEntries, results, channel, amURL)
+			routesFile := assembleRoutesYAML(newEntries)
+			dmErr := p.dmYAMLBundle(args.UserId, yamlFile, routesFile, created, amURL)
+			if dmErr != nil {
+				// DM delivery failed — fall back to inline YAML in the
+				// summary post. Long but functional.
+				p.API.LogWarn("scaffold: couldn't DM assembled YAML; falling back to inline", "err", dmErr.Error())
+				b.WriteString(":warning: Couldn't DM the assembled YAML file (")
+				b.WriteString(dmErr.Error())
+				b.WriteString("). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n")
+				b.WriteString(yamlFile)
+				b.WriteString("```\n")
+			} else {
+				b.WriteString(":page_facing_up: **Sent `alertmanager-receivers.yml` to your DM with `@")
+				b.WriteString(webhookUsername)
+				b.WriteString("`** — open that conversation to download the file. Paste the contents under `receivers:` in your `alertmanager.yml`, then reload:\n\n```\ncurl -X POST ")
+				b.WriteString(amURL)
+				b.WriteString("/-/reload\n```\n")
+			}
 		}
 	}
 

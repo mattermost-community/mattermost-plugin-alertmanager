@@ -94,6 +94,10 @@ type inventoryRow struct {
 	AMReachable     bool
 	AMStatus        string
 	LoadedInAM      bool // receiver name found in AM's loaded YAML
+	// LoadedViaOperator is true when the receiver is present only under the
+	// Prometheus Operator's "<ns>/<config>/" prefix — i.e. loaded from an
+	// AlertmanagerConfig CRD rather than flat alertmanager.yml.
+	LoadedViaOperator bool
 
 	// HealthLabel + HealthClass are pre-computed for the template
 	// so the row can render an actionable status badge instead of
@@ -132,6 +136,14 @@ func (r *inventoryRow) computeHealth() {
 	if !r.LoadedInAM {
 		r.HealthLabel = "Not in AM YAML"
 		r.HealthClass = "warn"
+		return
+	}
+	// Loaded, but via the Prometheus Operator's AlertmanagerConfig prefixing.
+	// Still healthy — surfaced distinctly so an admin can see the receiver is
+	// CRD-managed rather than present in a flat alertmanager.yml.
+	if r.LoadedViaOperator {
+		r.HealthLabel = "OK · via operator"
+		r.HealthClass = "ok"
 		return
 	}
 	r.HealthLabel = "OK"
@@ -186,7 +198,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		if entry, ok := amStatus[c.AlertManagerURL]; ok {
 			row.AMReachable = entry.Reachable
 			row.AMStatus = entry.Status
-			row.LoadedInAM = entry.LoadedInAM(c.Name)
+			row.LoadedInAM, row.LoadedViaOperator = entry.LoadedInAM(c.Name)
 		}
 		row.computeHealth()
 		rows = append(rows, row)
@@ -250,7 +262,11 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		pluginSet := pluginNamesPerAM[amURL]
 		var driftNames []string
 		for _, n := range amNames {
-			if !pluginSet[n] {
+			// Compare on the canonical name so a plugin receiver the operator
+			// renamed to "<ns>/<config>/<name>" isn't mistaken for a hand-edited
+			// AM-only receiver. Display the original (prefixed) name either way.
+			canonical, _ := canonicalReceiverName(n)
+			if !pluginSet[canonical] {
 				driftNames = append(driftNames, n)
 			}
 		}
@@ -1247,6 +1263,7 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
 
     <div class="legend">
         <div class="row"><span class="status ok">OK</span><span class="desc">Receiver is loaded in AM and AM is reachable.</span></div>
+        <div class="row"><span class="status ok">OK · via operator</span><span class="desc">Loaded and reachable, but present under the Prometheus Operator's <code>&lt;namespace&gt;/&lt;alertmanagerconfig&gt;/</code> prefix — i.e. delivered by an AlertmanagerConfig CRD, not a flat alertmanager.yml.</span></div>
         <div class="row"><span class="status warn">Not in AM YAML</span><span class="desc">Receiver in plugin config but missing from AM's loaded config (paste the latest receivers.yml + reload AM).</span></div>
         <div class="row"><span class="status bad">AM unreachable</span><span class="desc">Plugin can't reach the Alertmanager URL (network, TLS, or AM down).</span></div>
         <div class="row"><span class="status drift">AM-only</span><span class="desc">Loaded in AM but NOT tracked by the plugin (someone hand-edited alertmanager.yml). Shown in the orange "AM-only receivers" section below.</span></div>
