@@ -185,4 +185,9 @@ func TestRenderAlertmanagerConfigCustomOnlyIsInert(t *testing.T) {
 	if !strings.Contains(out, "__mm_no_runbook_routes__") {
 		t.Fatalf("custom-only group should use the never-matching sentinel parent matcher:\n%s", out)
 	}
+	// spec.route.routes must be an explicit empty array, not null (schema types it
+	// as an array — a comment-only body would decode to null and fail validation).
+	if !strings.Contains(out, "routes: []") {
+		t.Fatalf("custom-only group must emit `routes: []`, not a null routes body:\n%s", out)
+	}
 }

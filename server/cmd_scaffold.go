@@ -91,10 +91,6 @@ var scaffoldSets = map[string][]string{
 // `--webhook-host=<url>` overrides the host portion of the rendered
 // api_url for the multi-cluster deployment pattern.
 func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
@@ -147,6 +143,14 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	}
 
 	team, channel, amURL := rest[0], rest[1], strings.TrimRight(rest[2], "/")
+
+	// Authorize the DESTINATION team, not the invocation channel — a team_admin
+	// must not be able to create a channel or bind a webhook in a team they do
+	// not administer. System admins bypass (handled in the helper).
+	if err := p.requireTeamAdminBySlug(args.UserId, team); err != nil {
+		return err.Error(), nil
+	}
+
 	target := "all"
 	if len(rest) == 4 {
 		target = strings.ToLower(rest[3])

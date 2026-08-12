@@ -88,8 +88,7 @@ spec:
     groupWait: 30s
     groupInterval: 5m
     repeatInterval: 4h
-    routes:
-{{SUBROUTES}}  receivers:
+{{ROUTES_BLOCK}}  receivers:
 {{RECEIVERS}}`
 
 // crdReceiverSpec is one receiver to render into an AlertmanagerConfig.
@@ -212,13 +211,22 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		parentMatch = "^(" + strings.Join(slugs, "|") + ")$"
 	}
 
+	// Emit the routes: key. With live sub-routes, list them under `routes:`. A
+	// custom-only group has none — emit an explicit empty array (the schema types
+	// spec.route.routes as an array; a comment-only body would decode to null and
+	// fail schema validation) and keep the editable stub as trailing comments.
+	routesBlock := "    routes:\n" + subroutes.String()
+	if len(slugs) == 0 {
+		routesBlock = "    routes: []\n" + subroutes.String()
+	}
+
 	return strings.NewReplacer(
 		"{{API_VERSION}}", TargetAlertmanagerConfigAPIVersion,
 		"{{CR_NAME}}", crName,
 		"{{NAMESPACE}}", namespace,
 		"{{FALLBACK}}", fallbackReceiver,
 		"{{PARENT_MATCH}}", parentMatch,
-		"{{SUBROUTES}}", subroutes.String(),
+		"{{ROUTES_BLOCK}}", routesBlock,
 		"{{RECEIVERS}}", receivers.String(),
 	).Replace(crdEnvelope)
 }
