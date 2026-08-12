@@ -140,8 +140,10 @@ func TestRenderAlertmanagerConfigCustom(t *testing.T) {
 	specs := []crdReceiverSpec{
 		{name: "alerts-fallback", channel: "alerts", secretName: "s"}, // slug=="" fallback
 		{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "alerts", secretName: "s", custom: true},
-		{slug: "high-cpu-usage", name: "high-cpu-usage--ops-alerts", channel: "alerts", secretName: "s",
-			runbookDefaultURL: "https://mm.example.com/rb/high-cpu-usage.html"},
+		{
+			slug: "high-cpu-usage", name: "high-cpu-usage--ops-alerts", channel: "alerts", secretName: "s",
+			runbookDefaultURL: "https://mm.example.com/rb/high-cpu-usage.html",
+		},
 	}
 	out := renderAlertmanagerConfig("cr", "monitoring", "alerts-fallback", specs)
 
