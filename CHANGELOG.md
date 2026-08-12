@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.1.0...v1.2.0) (2026-08-12)
+
+
+### Features
+
+* Prometheus Operator (CRD) deployment support: `--format=crd` on `/alertmanager add` and `/alertmanager export` emits an `AlertmanagerConfig` (v1alpha1) + Secret to `kubectl apply`, with `--namespace=` (default `monitoring`). Generated CRDs are schema-validated offline in CI via kubeconform. See `/alertmanager docs kubernetes`.
+* recognize CRD-managed receivers as healthy in the inventory and `/alertmanager validate`: receiver-name matching now strips the Prometheus Operator's `<namespace>/<config>/` prefix, so operator-managed receivers show `OK · via operator` instead of "Not in AM YAML"
+
+
+### Bug Fixes
+
+* validate the user-supplied `--namespace` on `add`/`export` — reject non-RFC-1123 values before they reach generated manifests
+* bump grpc and golang.org/x/text to clear HIGH CVEs
+
+
+### Dependencies
+
+* group Dependabot security updates into one PR per run; bump the go-minor-patch, goldmark, and GitHub Actions groups
+
 ## [1.1.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.0.6...v1.1.0) (2026-07-14)
 
 
