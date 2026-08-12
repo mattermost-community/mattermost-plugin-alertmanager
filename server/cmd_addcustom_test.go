@@ -105,3 +105,63 @@ func TestAssembleRoutesYAMLCustom(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderReceiverYAMLForKindCustom is C2: a custom receiver must NOT render
+// the plugin runbook fallback link (which 404s), while a standard receiver still
+// does. The annotation-based runbook line is preserved for both.
+func TestRenderReceiverYAMLForKindCustom(t *testing.T) {
+	const fallbackURL = "https://mm.example.com/plugins/x/public/runbooks/slo-burn-rate.html"
+
+	standard := renderReceiverYAMLForKind("high-cpu-usage--ops-alerts", "http://wh", "alerts",
+		"https://mm.example.com/plugins/x/public/runbooks/high-cpu-usage.html", "http://icon", false)
+	if !strings.Contains(standard, "public/runbooks/high-cpu-usage.html") {
+		t.Fatalf("standard receiver must include the runbook fallback link, got:\n%s", standard)
+	}
+
+	custom := renderReceiverYAMLForKind("slo-burn-rate--ops-alerts", "http://wh", "alerts",
+		fallbackURL, "http://icon", true)
+	if strings.Contains(custom, fallbackURL) {
+		t.Fatalf("custom receiver must NOT include the runbook fallback link, got:\n%s", custom)
+	}
+	// The plugin-side placeholders must all be resolved (no leftover tokens).
+	if strings.Contains(custom, "{{RUNBOOK") {
+		t.Fatalf("custom render left an unresolved runbook placeholder:\n%s", custom)
+	}
+	// Alert-time runbook_url annotation support is retained (the AM conditional).
+	if !strings.Contains(custom, ".Annotations.runbook_url") {
+		t.Fatalf("custom render should still honor an alert's runbook_url annotation:\n%s", custom)
+	}
+}
+
+// TestRenderAlertmanagerConfigCustom is C4: the CRD export must not auto-generate
+// a runbook matcher for a custom receiver, must keep it out of the parent gate,
+// but must still emit the receiver + a commented stub.
+func TestRenderAlertmanagerConfigCustom(t *testing.T) {
+	specs := []crdReceiverSpec{
+		{name: "alerts-fallback", channel: "alerts", secretName: "s"}, // slug=="" fallback
+		{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "alerts", secretName: "s", custom: true},
+		{slug: "high-cpu-usage", name: "high-cpu-usage--ops-alerts", channel: "alerts", secretName: "s",
+			runbookDefaultURL: "https://mm.example.com/rb/high-cpu-usage.html"},
+	}
+	out := renderAlertmanagerConfig("cr", "monitoring", "alerts-fallback", specs)
+
+	// The standard receiver still gets its live runbook matcher.
+	if !strings.Contains(out, `{name: runbook, value: "high-cpu-usage", matchType: "="}`) {
+		t.Fatalf("standard receiver should keep its runbook matcher, got:\n%s", out)
+	}
+	// The custom receiver must NOT get an auto runbook matcher...
+	if strings.Contains(out, `{name: runbook, value: "slo-burn-rate", matchType: "="}`) {
+		t.Fatalf("custom receiver must NOT get an auto runbook matcher, got:\n%s", out)
+	}
+	// ...must be kept out of the parent =~ gate...
+	if strings.Contains(out, "slo-burn-rate|") || strings.Contains(out, "|slo-burn-rate") || strings.Contains(out, "^(slo-burn-rate)$") {
+		t.Fatalf("custom slug must not appear in the parent matcher, got:\n%s", out)
+	}
+	// ...but the receiver itself must still be defined, with a commented stub.
+	if !strings.Contains(out, "slo-burn-rate--ops-alerts") {
+		t.Fatalf("custom receiver must still be emitted, got:\n%s", out)
+	}
+	if !strings.Contains(out, "# Custom receiver") {
+		t.Fatalf("expected a commented custom-route stub, got:\n%s", out)
+	}
+}

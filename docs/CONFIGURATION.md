@@ -259,6 +259,17 @@ route composes cleanly with the others.
 > use `/alertmanager validate --simulate <labels>` to confirm an alert with your
 > labels dispatches to the custom receiver.
 
+### Prometheus Operator (`--format=crd`)
+
+`/alertmanager export --format=crd` emits the custom receiver into the
+`AlertmanagerConfig` (so its Secret + receiver exist), but — like the file
+format — generates **no** route for it. The plugin's generated CR gates entry on
+the `runbook` label a custom alert doesn't carry, so a custom receiver can't be
+reached through this CR without edits: add your own sub-route under `spec.route.routes`
+**and** widen the parent route's `matchers` to admit your alert's labels (the
+export leaves a commented stub showing where). For anything beyond a quick tweak,
+route the alert to the receiver from your own top-level Alertmanager config instead.
+
 ### Naming rules
 
 The custom `<name>` must be lowercase `[a-z0-9_-]`, contain no `--` (the reserved

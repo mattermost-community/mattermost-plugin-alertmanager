@@ -115,11 +115,7 @@ const receiverBodyTemplate = `      # Sidebar color. Mattermost honors Slack-nam
         {{ "\n" }}  • **{{ .Name }}:** ` + "`{{ .Value }}`" + `
         {{- end -}}
         {{ "\n\n" }}
-        {{- if .Annotations.runbook_url -}}
-        **Runbook:** {{ .Annotations.runbook_url }}{{ "\n" }}
-        {{- else -}}
-        **Runbook:** {{RUNBOOK_DEFAULT}}{{ "\n" }}
-        {{- end -}}
+        {{RUNBOOK_SECTION}}
         {{- if .Annotations.dashboard_url }}**Dashboard:** {{ .Annotations.dashboard_url }}{{ "\n" }}{{ end -}}
         {{QUICK_DIAGNOSTICS}}
         {{ end -}}
@@ -144,14 +140,52 @@ const yamlBlockIndent = "        "
 // (the runbook identifier extracted from a possibly channel-suffixed
 // name). Multi-line content is re-indented to match the YAML literal
 // block's column position so the generated YAML parses correctly.
+// runbookSectionStandard/Custom fill the {{RUNBOOK_SECTION}} placeholder in the
+// shared receiverBodyTemplate. Standard receivers fall back to the plugin-hosted
+// runbook page when an alert carries no runbook_url annotation. Custom
+// (add-custom, non-runbook) receivers OMIT the fallback entirely so no broken
+// link to a nonexistent runbook page is rendered — a Runbook line appears only
+// if the alert itself sets a runbook_url annotation. Continuation lines carry
+// the 8-space YAML block indent to match the surrounding template.
+const runbookSectionStandard = `{{- if .Annotations.runbook_url -}}
+        **Runbook:** {{ .Annotations.runbook_url }}{{ "\n" }}
+        {{- else -}}
+        **Runbook:** {{RUNBOOK_DEFAULT}}{{ "\n" }}
+        {{- end -}}`
+
+const runbookSectionCustom = `{{- if .Annotations.runbook_url -}}
+        **Runbook:** {{ .Annotations.runbook_url }}{{ "\n" }}
+        {{- end -}}`
+
+// runbookSection resolves {{RUNBOOK_SECTION}} for a receiver. Custom receivers
+// get the annotation-only variant (no plugin fallback link); standard receivers
+// get the fallback with runbookDefaultURL baked in.
+func runbookSection(runbookDefaultURL string, custom bool) string {
+	if custom {
+		return runbookSectionCustom
+	}
+	return strings.Replace(runbookSectionStandard, "{{RUNBOOK_DEFAULT}}", runbookDefaultURL, 1)
+}
+
+// renderReceiverYAML renders a standard (runbook-backed) receiver.
 func renderReceiverYAML(name, webhookURL, channel, runbookDefaultURL, iconURL string) string {
+	return renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, iconURL, false)
+}
+
+// renderReceiverYAMLForKind substitutes the plugin-level placeholders and
+// returns a slack_configs YAML block ready to paste under receivers: in
+// alertmanager.yml. When custom is true the runbook fallback line is omitted
+// (see runbookSection) so a generic add-custom receiver never links to a
+// nonexistent runbook page. Channel name conventionally takes a leading # in
+// slack_configs; tolerate either form on input.
+func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, iconURL string, custom bool) string {
 	if !strings.HasPrefix(channel, "#") {
 		channel = "#" + channel
 	}
 
 	// Quick diagnostics block: empty string when the runbook lacks
-	// the "## Quick diagnostics" section, otherwise multi-line
-	// markdown re-indented for the YAML literal block.
+	// the "## Quick diagnostics" section (always empty for custom names),
+	// otherwise multi-line markdown re-indented for the YAML literal block.
 	diagnostics := loadQuickDiagnosticsForSlug(receiverBaseSlug(name))
 	diagText := formatQuickDiagnosticsForAlert(diagnostics)
 	if diagText != "" {
@@ -159,10 +193,10 @@ func renderReceiverYAML(name, webhookURL, channel, runbookDefaultURL, iconURL st
 	}
 
 	r := strings.NewReplacer(
+		"{{RUNBOOK_SECTION}}", runbookSection(runbookDefaultURL, custom),
 		"{{NAME}}", name,
 		"{{URL}}", webhookURL,
 		"{{CHANNEL}}", channel,
-		"{{RUNBOOK_DEFAULT}}", runbookDefaultURL,
 		"{{ICON_URL}}", iconURL,
 		"{{QUICK_DIAGNOSTICS}}", diagText,
 	)

@@ -541,7 +541,7 @@ func (p *Plugin) assembleReceiversYAML(newEntries []alertConfig, results []scaff
 			y.WriteString(fmt.Sprintf("# WARN: created result for %q has no matching entry — skipping\n\n", r.Slug))
 			continue
 		}
-		rendered := renderReceiverYAML(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL)
+		rendered := renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL, entry.Custom)
 		y.WriteString(rendered)
 		y.WriteString("\n")
 	}
@@ -629,10 +629,6 @@ func resolveAddTarget(target string) (groupName string, slugs []string, err erro
 //
 //	/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]
 func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
@@ -647,6 +643,13 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return addCustomUsageMessage(), nil
 	}
 	team, channel, amURL, rawName := rest[0], rest[1], strings.TrimRight(rest[2], "/"), rest[3]
+
+	// Authorize the DESTINATION team, not the invocation channel — otherwise a
+	// team_admin could create a channel and bind a webhook in a team they do
+	// not administer. System admins bypass (handled in the helper).
+	if err := p.requireTeamAdminBySlug(args.UserId, team); err != nil {
+		return err.Error(), nil
+	}
 
 	receiverName, err := validateCustomReceiverName(rawName, team, channel)
 	if err != nil {
@@ -692,17 +695,37 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v", err), nil
 	}
 
-	// Guide the user through the one manual step: wiring the route.
+	// Build the runbook-free receiver block + the commented route stub and DM
+	// them to the caller. add-custom can target a channel the caller is not a
+	// member of, so pointing them at channel-scoped `/alertmanager export` could
+	// leave them unable to retrieve the block — DM it directly (mirrors handleAdd).
+	receiverYAML := "# Custom (non-runbook) receiver created by /alertmanager add-custom.\n" +
+		"# Paste under `receivers:` in your alertmanager.yml.\n\n" +
+		renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), channel, "", p.siteURL()+webhookIconURL, true)
+	routesYAML := assembleRoutesYAML([]alertConfig{entry})
+
 	var b strings.Builder
 	fmt.Fprintf(&b, ":white_check_mark: Created custom receiver `%s`\n", receiverName)
 	fmt.Fprintf(&b, "Webhook created and bound to `%s` (team `%s`). No runbook is attached — alerts render as raw content.\n\n", channel, team)
-	b.WriteString(":warning: **No route exists yet — you must wire it manually.** Add a matcher under `route.routes:` in your `alertmanager.yml` selecting the alerts you want here, e.g.:\n\n")
+	b.WriteString(":warning: **No route exists yet — you must wire it manually.** Add a matcher under `route.routes:` selecting the alerts you want here, e.g.:\n\n")
 	b.WriteString("```yaml\n")
 	b.WriteString("  - matchers: [ alertname=\"MyCustomAlert\" ]   # <-- set to labels YOUR rules emit\n")
 	fmt.Fprintf(&b, "    receiver: %s\n", receiverName)
 	b.WriteString("    continue: true\n")
 	b.WriteString("```\n\n")
-	b.WriteString("Run `/alertmanager export` for the full receiver block (with this stub included), or `/alertmanager docs configuration` for the custom-receiver walkthrough.")
+
+	if dmErr := p.dmYAMLBundle(args.UserId, receiverYAML, routesYAML, 1, amURL); dmErr != nil {
+		// DM failed — inline the receiver block so the caller isn't left unable
+		// to retrieve it (export is channel-scoped and may be unreachable).
+		p.API.LogWarn("add-custom: couldn't DM receiver YAML; falling back to inline", "err", dmErr.Error())
+		b.WriteString(":warning: Couldn't DM the receiver block (")
+		b.WriteString(dmErr.Error())
+		b.WriteString("). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n")
+		b.WriteString(receiverYAML)
+		b.WriteString("```\n")
+	} else {
+		fmt.Fprintf(&b, ":page_facing_up: **Sent the receiver block + route stub to your DM with `@%s`.** See `/alertmanager docs configuration` for the walkthrough.", webhookUsername)
+	}
 	return b.String(), nil
 }
 

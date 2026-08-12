@@ -93,6 +93,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 			channel:           ac.Channel,
 			runbookDefaultURL: p.runbookDefaultURL(slug),
 			iconURL:           p.siteURL() + webhookIconURL,
+			custom:            ac.Custom,
 		})
 	}
 

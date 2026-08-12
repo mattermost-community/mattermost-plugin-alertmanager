@@ -100,6 +100,7 @@ type crdReceiverSpec struct {
 	channel           string // destination channel (with or without leading #)
 	runbookDefaultURL string // plugin-hosted runbook fallback URL
 	iconURL           string // bot avatar URL
+	custom            bool   // add-custom (non-runbook) receiver: no auto route, no runbook link
 }
 
 // indentBlock prefixes every non-empty line of s with prefix. Blank lines stay
@@ -132,14 +133,15 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	).Replace(crdReceiverHeader)
 
 	// Same body as the file format, shifted to the CRD's nesting depth. Fill
-	// the diagnostics block at the deeper column so the YAML literal aligns.
-	body := indentBlock(receiverBodyTemplate, crdBodyIndent)
+	// {{RUNBOOK_SECTION}} BEFORE re-indenting so its continuation lines pick up
+	// the CRD body indent uniformly. Custom receivers omit the runbook fallback.
+	body := strings.Replace(receiverBodyTemplate, "{{RUNBOOK_SECTION}}", runbookSection(spec.runbookDefaultURL, spec.custom), 1)
+	body = indentBlock(body, crdBodyIndent)
 	diagText := formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
 	if diagText != "" {
 		diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
 	}
 	body = strings.NewReplacer(
-		"{{RUNBOOK_DEFAULT}}", spec.runbookDefaultURL,
 		"{{QUICK_DIAGNOSTICS}}", diagText,
 	).Replace(body)
 
@@ -175,6 +177,21 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		// simple body — it is only the parent route's catch-all.
 		if s.slug == "" {
 			receivers.WriteString(renderCRDFallbackReceiver(s))
+			continue
+		}
+		if s.custom {
+			// Custom (add-custom) receiver: no runbook label, so emit NO auto
+			// matcher and keep it OUT of the parent =~ gate. The receiver is
+			// still defined; the operator adds their own matcher (and must widen
+			// the parent route's matchers to admit the labels their alerts carry,
+			// since this CR gates entry on the runbook label a custom alert lacks).
+			fmt.Fprintf(&subroutes,
+				"      # Custom receiver %q (add-custom) — no matcher generated; wire your own,\n"+
+					"      # and widen the parent route's matchers above to admit its labels:\n"+
+					"      #  - matchers: [{name: alertname, value: \"MyCustomAlert\", matchType: \"=\"}]\n"+
+					"      #    receiver: %s\n      #    continue: true\n",
+				s.name, s.name)
+			receivers.WriteString(renderCRDReceiver(s))
 			continue
 		}
 		slugs = append(slugs, s.slug)
