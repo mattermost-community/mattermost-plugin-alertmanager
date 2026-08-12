@@ -167,3 +167,22 @@ func TestRenderAlertmanagerConfigCustom(t *testing.T) {
 		t.Fatalf("expected a commented custom-route stub, got:\n%s", out)
 	}
 }
+
+// TestRenderAlertmanagerConfigCustomOnlyIsInert guards the C5 regression: a
+// custom-only webhook group (the normal add-custom case) must NOT emit an empty
+// "^()$" parent matcher, which Alertmanager would treat as matching every alert
+// with no runbook label and route broad traffic into the group's fallback.
+func TestRenderAlertmanagerConfigCustomOnlyIsInert(t *testing.T) {
+	specs := []crdReceiverSpec{
+		{name: "alerts-fallback", channel: "alerts", secretName: "s"}, // slug=="" fallback
+		{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "alerts", secretName: "s", custom: true},
+	}
+	out := renderAlertmanagerConfig("cr", "monitoring", "alerts-fallback", specs)
+
+	if strings.Contains(out, `value: "^()$"`) {
+		t.Fatalf("custom-only group must not emit an empty ^()$ parent matcher (captures all no-runbook alerts):\n%s", out)
+	}
+	if !strings.Contains(out, "__mm_no_runbook_routes__") {
+		t.Fatalf("custom-only group should use the never-matching sentinel parent matcher:\n%s", out)
+	}
+}

@@ -201,7 +201,16 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		receivers.WriteString(renderCRDReceiver(s))
 	}
 
-	parentMatch := "^(" + strings.Join(slugs, "|") + ")$"
+	// Gate the parent route on the group's runbook slugs. A custom-only group has
+	// no runbook slugs, which would yield "^()$" — and because Alertmanager treats
+	// an absent `runbook` label as "", that empty regex matches EVERY non-runbook
+	// alert and dumps it into this group's fallback receiver (broad auto-routing).
+	// Use a sentinel no real slug (nor an absent label) can match, so the CR stays
+	// inert until the operator wires a route for the custom receiver.
+	parentMatch := "^__mm_no_runbook_routes__$"
+	if len(slugs) > 0 {
+		parentMatch = "^(" + strings.Join(slugs, "|") + ")$"
+	}
 
 	return strings.NewReplacer(
 		"{{API_VERSION}}", TargetAlertmanagerConfigAPIVersion,
