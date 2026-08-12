@@ -444,9 +444,17 @@ func assembleRoutesYAML(entries []alertConfig) string {
 		return ""
 	}
 
-	// Group entries by base slug. Two-pass: collect, then emit ordered.
+	// Split runbook receivers (auto-routed on the `runbook` label) from custom
+	// receivers (add-custom): the plugin can't know what labels a custom alert
+	// carries, so custom receivers get a COMMENTED matcher stub the user fills
+	// in manually rather than a live route.
+	var customEntries []alertConfig
 	grouped := make(map[string][]alertConfig)
 	for _, ac := range entries {
+		if ac.Custom {
+			customEntries = append(customEntries, ac)
+			continue
+		}
 		slug := receiverBaseSlug(ac.Name)
 		grouped[slug] = append(grouped[slug], ac)
 	}
@@ -466,13 +474,34 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	b.WriteString("# to multiple channels via separate /alertmanager add calls) works\n")
 	b.WriteString("# correctly when both blocks are pasted under one routes: list.\n")
 	b.WriteString("\n")
-	b.WriteString("routes:\n")
-	for _, slug := range slugs {
-		group := grouped[slug]
-		for _, ac := range group {
-			b.WriteString(fmt.Sprintf("  - matchers: [runbook=%q]\n", slug))
-			b.WriteString(fmt.Sprintf("    receiver: %s\n", ac.Name))
-			b.WriteString("    continue: true\n")
+
+	// Only emit the `routes:` key when there is at least one live (runbook)
+	// route. A bare `routes:` with nothing but comments underneath is invalid
+	// YAML; when every receiver is custom we emit only the commented stubs,
+	// which the user pastes under their own existing `routes:`.
+	if len(slugs) > 0 {
+		b.WriteString("routes:\n")
+		for _, slug := range slugs {
+			group := grouped[slug]
+			for _, ac := range group {
+				b.WriteString(fmt.Sprintf("  - matchers: [runbook=%q]\n", slug))
+				b.WriteString(fmt.Sprintf("    receiver: %s\n", ac.Name))
+				b.WriteString("    continue: true\n")
+			}
+		}
+	}
+
+	if len(customEntries) > 0 {
+		sort.Slice(customEntries, func(i, j int) bool { return customEntries[i].Name < customEntries[j].Name })
+		b.WriteString("\n")
+		b.WriteString("# Custom (non-runbook) receivers — created via /alertmanager add-custom.\n")
+		b.WriteString("# The plugin cannot know which labels your custom alerts carry, so no\n")
+		b.WriteString("# matcher is generated. Uncomment each block and fill in the matcher(s)\n")
+		b.WriteString("# your Prometheus rules actually emit, then paste under `route.routes:`.\n")
+		for _, ac := range customEntries {
+			b.WriteString("#  - matchers: [ <your labels, e.g. alertname=\"MyCustomAlert\", severity=\"critical\"> ]\n")
+			b.WriteString(fmt.Sprintf("#    receiver: %s\n", ac.Name))
+			b.WriteString("#    continue: true\n")
 		}
 	}
 	return b.String()
@@ -589,6 +618,128 @@ func resolveAddTarget(target string) (groupName string, slugs []string, err erro
 	}
 	return "", nil, fmt.Errorf("unknown target `%s` — must be a category set (`%s`) OR a specific runbook slug (e.g. `high-cpu-usage`). Run `/alertmanager add` with no args for the full list",
 		target, strings.Join(scaffoldSetNames(), "`, `"))
+}
+
+// handleAddCustom creates ONE generic (non-runbook) receiver named
+// <name>--<team>-<channel> with its own Mattermost webhook. Unlike handleAdd it
+// does NOT emit a `runbook=` route — the receiver is marked Custom and the user
+// wires the matcher manually (export renders a commented stub). Mirrors the
+// handleAdd persistence discipline: configWriteMu held across the read-modify-write,
+// webhook rolled back if the save fails.
+//
+//	/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]
+func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
+	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
+		return err.Error(), nil
+	}
+
+	fields := strings.Fields(args.Command)
+	rest := fields[2:]
+
+	webhookHostOverride, rest := extractFlagValue(rest, "--webhook-host=")
+	if webhookHostOverride != "" {
+		if err := validateWebhookHost(webhookHostOverride); err != nil {
+			return fmt.Sprintf("Invalid --webhook-host value: %v", err), nil
+		}
+	}
+
+	if len(rest) != 4 {
+		return addCustomUsageMessage(), nil
+	}
+	team, channel, amURL, rawName := rest[0], rest[1], strings.TrimRight(rest[2], "/"), rest[3]
+
+	receiverName, err := validateCustomReceiverName(rawName, team, channel)
+	if err != nil {
+		return ":warning: " + err.Error(), nil
+	}
+
+	channelID, err := p.resolveOrCreateChannel(team, channel)
+	if err != nil {
+		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
+	}
+
+	// Atomic read-modify-write — same discipline as handleAdd.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
+	for _, c := range p.getConfiguration().AlertConfigs {
+		if c.Team == team && c.Channel == channel && c.Name == receiverName {
+			return fmt.Sprintf(":warning: Receiver `%s` already exists in this channel.", receiverName), nil
+		}
+	}
+
+	webhookDisplayName := fmt.Sprintf("Alertmanager: %s--%s", receiverBaseSlug(receiverName), channel)
+	hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
+	if hookErr != nil {
+		return fmt.Sprintf("Failed to create Mattermost webhook: %v", hookErr), nil
+	}
+
+	entry := alertConfig{
+		Name:                receiverName,
+		Team:                team,
+		Channel:             channel,
+		AlertManagerURL:     amURL,
+		WebhookID:           hookID,
+		GroupName:           receiverBaseSlug(receiverName),
+		Custom:              true,
+		WebhookHostOverride: webhookHostOverride,
+		LastRotatedAt:       time.Now().UTC(),
+	}
+
+	merged := slices.Concat(p.getConfiguration().AlertConfigs, []alertConfig{entry})
+	if err := p.saveConfigsLocked(merged); err != nil {
+		_ = p.deleteIncomingWebhook(args.UserId, hookID)
+		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v", err), nil
+	}
+
+	// Guide the user through the one manual step: wiring the route.
+	var b strings.Builder
+	fmt.Fprintf(&b, ":white_check_mark: Created custom receiver `%s`\n", receiverName)
+	fmt.Fprintf(&b, "Webhook created and bound to `%s` (team `%s`). No runbook is attached — alerts render as raw content.\n\n", channel, team)
+	b.WriteString(":warning: **No route exists yet — you must wire it manually.** Add a matcher under `route.routes:` in your `alertmanager.yml` selecting the alerts you want here, e.g.:\n\n")
+	b.WriteString("```yaml\n")
+	b.WriteString("  - matchers: [ alertname=\"MyCustomAlert\" ]   # <-- set to labels YOUR rules emit\n")
+	fmt.Fprintf(&b, "    receiver: %s\n", receiverName)
+	b.WriteString("    continue: true\n")
+	b.WriteString("```\n\n")
+	b.WriteString("Run `/alertmanager export` for the full receiver block (with this stub included), or `/alertmanager docs configuration` for the custom-receiver walkthrough.")
+	return b.String(), nil
+}
+
+// addCustomUsageMessage is shown when /alertmanager add-custom is called with
+// the wrong number of positional args.
+func addCustomUsageMessage() string {
+	return "Usage: `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]`\n\n" +
+		"Creates ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own Mattermost webhook. " +
+		"Unlike `/alertmanager add`, it does NOT generate a `runbook=` route — you wire the matcher yourself " +
+		"(see `/alertmanager docs configuration`). `<name>`: lowercase `[a-z0-9_-]`, no `--`, and not a runbook slug or category set. " +
+		"Requires channel team-admin or sysadmin."
+}
+
+// validateCustomReceiverName checks a user-supplied custom name and returns the
+// full team+channel-qualified receiver name. It rejects names that would break
+// the `<slug>--<team>-<channel>` parsing contract or collide with the runbook
+// flow, and defers final shape/length enforcement to alertConfigNameRegex on the
+// assembled name.
+func validateCustomReceiverName(rawName, team, channel string) (fullName string, err error) {
+	name := strings.ToLower(strings.TrimSpace(rawName))
+	if name == "" {
+		return "", fmt.Errorf("a receiver name is required")
+	}
+	if strings.Contains(name, "--") {
+		return "", fmt.Errorf("name %q must not contain `--` (that's the reserved slug/team-channel separator)", name)
+	}
+	if slices.Contains(runbookSlugs(), name) {
+		return "", fmt.Errorf("name %q is a runbook slug — use `/alertmanager add %s %s %s` for the runbook flow, or pick a different custom name", name, team, channel, name)
+	}
+	if _, ok := scaffoldSets[name]; ok {
+		return "", fmt.Errorf("name %q is a reserved category set — pick a different custom name", name)
+	}
+	full := receiverNameForChannel(name, team, channel)
+	if !alertConfigNameRegex.MatchString(full) {
+		return "", fmt.Errorf("resulting receiver name %q is invalid or too long (max 190 chars; allowed [a-z0-9_-], must start [a-z0-9]) — shorten the custom name or channel/team slug", full)
+	}
+	return full, nil
 }
 
 // scaffoldSetNames returns the sorted list of known set names for help

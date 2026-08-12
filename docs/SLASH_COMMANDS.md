@@ -10,6 +10,7 @@ the channel where you ran the command.
 |---|---|---|---|
 | `about` | _(none)_ | Plugin build info, settings, reconciler health, links | any user |
 | `add` | `<team> <channel> <am-url> [target] [on] [--format=standard\|crd] [--namespace=]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`--format=standard`, default), or an `AlertmanagerConfig` v1alpha1 + Secret (`--format=crd`; `--namespace=` default `monitoring`). Trailing `on` opts in to rotation reminders. | sysadmin / team_admin |
+| `add-custom` | `<team> <channel> <am-url> <name> [--webhook-host=<url>]` | Create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. No `runbook=` route is generated — you wire the matcher manually (`export` includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
 | `alerts` | _(none)_ | Currently firing alerts, grouped by Alertmanager URL | any user |
 | `config` | `<name>` | Detail card + `slack_configs` YAML for one receiver | sysadmin / team_admin |
 | `docs` | `[topic]` | List or print embedded docs (alerts / architecture / compatibility / configuration / development / kubernetes / requirements / rotation / slash_commands) | any user |
@@ -115,6 +116,36 @@ existing group in this channel, the add is skipped with a clear
 "already exists" message. Remove the receiver first
 (`/alertmanager remove high-cpu-usage`) if you want to detach it
 from the group and re-add individually.
+
+### Custom (non-runbook) receiver
+
+For an alert that has no shipped runbook — a bespoke rule you wrote —
+create a generic receiver with a name you choose:
+
+```
+/alertmanager add-custom testing sre-alerts http://alertmanager:9093 slo-burn-rate
+```
+
+Creates one receiver named `slo-burn-rate--testing-sre-alerts`
+and its own webhook. Because there's no runbook, the plugin does **not**
+generate a `runbook=` route — the post is the raw alert, and **you must
+wire the route yourself**. Run `/alertmanager export` and you'll get the
+receiver block plus a commented stub to fill in:
+
+```yaml
+# Custom (non-runbook) receivers — created via /alertmanager add-custom.
+#  - matchers: [ <your labels, e.g. alertname="ErrorBudgetBurn", severity="critical"> ]
+#    receiver: slo-burn-rate--testing-sre-alerts
+#    continue: true
+```
+
+Uncomment it, set the matcher(s) to whatever labels your Prometheus rule
+emits, and paste under `route.routes:` in your `alertmanager.yml`. See
+[Custom (non-runbook) receivers](configuration.md) in the configuration
+doc for the full walkthrough.
+
+The name must be lowercase `[a-z0-9_-]`, contain no `--`, and not collide
+with a runbook slug or a category set name (`all`, `compute`, …).
 
 ### Set up with rotation reminders
 

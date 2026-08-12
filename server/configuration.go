@@ -87,6 +87,14 @@ type alertConfig struct {
 	//     existed. Treated as individual for backwards compatibility.
 	GroupName string `json:"groupName,omitempty"`
 
+	// Custom marks a generic (non-runbook) receiver created via
+	// /alertmanager add-custom. Its base slug is a user-chosen name rather than
+	// a runbook slug, so the plugin does NOT auto-generate a `runbook=<slug>`
+	// route for it — the user wires the matcher manually (see assembleRoutesYAML,
+	// which emits a commented stub for these). Runbook diagnostics/links are
+	// naturally empty since no runbook backs the name.
+	Custom bool `json:"custom,omitempty"`
+
 	// WebhookHostOverride lets a sysadmin pin a per-receiver host that
 	// takes precedence over the global WebhookHost setting at YAML
 	// render time. Set via /alertmanager add --webhook-host=<url>.
