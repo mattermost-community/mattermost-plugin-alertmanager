@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.2.0...v1.3.0) (2026-08-12)
+
+
+### Features
+
+* `/alertmanager add-custom <team> <channel> <am-url> <name>` — create a generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook, for custom alerts that don't map to a shipped runbook. No `runbook=` route is generated; `/alertmanager export` includes a commented matcher stub you wire manually. See `/alertmanager docs configuration`.
+
 ## [1.2.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.1.0...v1.2.0) (2026-08-12)
 
 
