@@ -136,9 +136,14 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	// the CRD body indent uniformly. Custom receivers omit the runbook fallback.
 	body := strings.Replace(receiverBodyTemplate, "{{RUNBOOK_SECTION}}", runbookSection(spec.runbookDefaultURL, spec.custom), 1)
 	body = indentBlock(body, crdBodyIndent)
-	diagText := formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
-	if diagText != "" {
-		diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
+	// Custom receivers carry no runbook content (Custom is authoritative), so skip
+	// the diagnostics lookup — see the matching guard in renderReceiverYAMLForKind.
+	diagText := ""
+	if !spec.custom {
+		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
+		if diagText != "" {
+			diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
+		}
 	}
 	body = strings.NewReplacer(
 		"{{QUICK_DIAGNOSTICS}}", diagText,
@@ -170,6 +175,7 @@ func renderCRDFallbackReceiver(spec crdReceiverSpec) string {
 func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs []crdReceiverSpec) string {
 	var subroutes, receivers strings.Builder
 	slugs := make([]string, 0, len(specs))
+	var customNames []string
 
 	for _, s := range specs {
 		// The fallback receiver (no runbook slug) gets no sub-route and a
@@ -180,16 +186,10 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		}
 		if s.custom {
 			// Custom (add-custom) receiver: no runbook label, so emit NO auto
-			// matcher and keep it OUT of the parent =~ gate. The receiver is
-			// still defined; the operator adds their own matcher (and must widen
-			// the parent route's matchers to admit the labels their alerts carry,
-			// since this CR gates entry on the runbook label a custom alert lacks).
-			fmt.Fprintf(&subroutes,
-				"      # Custom receiver %q (add-custom) — no matcher generated; wire your own,\n"+
-					"      # and widen the parent route's matchers above to admit its labels:\n"+
-					"      #  - matchers: [{name: alertname, value: \"MyCustomAlert\", matchType: \"=\"}]\n"+
-					"      #    receiver: %s\n      #    continue: true\n",
-				s.name, s.name)
+			// matcher and keep it OUT of the parent =~ gate. The receiver is still
+			// defined; the commented stub is emitted after the loop, once we know
+			// whether routes: is the empty array (which changes the instruction).
+			customNames = append(customNames, s.name)
 			receivers.WriteString(renderCRDReceiver(s))
 			continue
 		}
@@ -198,6 +198,28 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 			"      - matchers: [{name: runbook, value: \"%s\", matchType: \"=\"}]\n        receiver: %s\n        continue: true\n",
 			s.slug, s.name)
 		receivers.WriteString(renderCRDReceiver(s))
+	}
+
+	// Emit commented, ready-to-uncomment sub-route stubs for any custom receivers.
+	// The instruction differs by context: in a custom-only group `routes:` is the
+	// empty array `[]` (schema validity), so the operator must switch it back to
+	// `routes:` before adding a list item — spell that out so uncommenting a stub
+	// can't silently produce invalid YAML.
+	if len(customNames) > 0 {
+		if len(slugs) == 0 {
+			subroutes.WriteString("      # Custom (non-runbook) receivers only — `routes:` is the empty array `[]`\n")
+			subroutes.WriteString("      # below (schema validity). To route to one, change `routes: []` to\n")
+			subroutes.WriteString("      # `routes:`, uncomment a block, set its matchers, AND widen the parent\n")
+			subroutes.WriteString("      # route's matchers above to admit those labels:\n")
+		} else {
+			subroutes.WriteString("      # Custom (non-runbook) receivers below have no matcher generated. Uncomment\n")
+			subroutes.WriteString("      # a block, set its matchers, and widen the parent route's matchers to admit them:\n")
+		}
+		for _, name := range customNames {
+			fmt.Fprintf(&subroutes,
+				"      #  - matchers: [{name: alertname, value: \"MyCustomAlert\", matchType: \"=\"}]\n"+
+					"      #    receiver: %s\n      #    continue: true\n", name)
+		}
 	}
 
 	// Gate the parent route on the group's runbook slugs. A custom-only group has

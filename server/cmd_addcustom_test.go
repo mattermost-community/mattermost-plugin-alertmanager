@@ -163,8 +163,8 @@ func TestRenderAlertmanagerConfigCustom(t *testing.T) {
 	if !strings.Contains(out, "slo-burn-rate--ops-alerts") {
 		t.Fatalf("custom receiver must still be emitted, got:\n%s", out)
 	}
-	if !strings.Contains(out, "# Custom receiver") {
-		t.Fatalf("expected a commented custom-route stub, got:\n%s", out)
+	if !strings.Contains(out, "#    receiver: slo-burn-rate--ops-alerts") {
+		t.Fatalf("expected a commented custom-route stub for the custom receiver, got:\n%s", out)
 	}
 }
 

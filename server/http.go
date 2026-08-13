@@ -204,6 +204,24 @@ func (p *Plugin) handleAutocompleteChannels(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Scope to teams the caller can target — same rule as handleAutocompleteTeams
+	// and the command handlers: system admins bypass, otherwise the caller must be
+	// a team_admin of this team. Without this, a non-admin could enumerate another
+	// team's public channel names by typing its slug (GetPublicChannelsForTeam is
+	// plugin-privileged and would otherwise ignore userID).
+	if !(p.client != nil && p.client.User.HasPermissionTo(userID, model.PermissionManageSystem)) {
+		member, mErr := p.API.GetTeamMember(team.Id, userID)
+		if mErr != nil || !slices.Contains(strings.Fields(member.Roles), "team_admin") {
+			respondAutocompleteItems(w, []model.AutocompleteListItem{
+				{
+					Item:     "_not-authorized_",
+					HelpText: fmt.Sprintf("You must be a team_admin of `%s` (or system_admin) to list its channels", teamSlug),
+				},
+			})
+			return
+		}
+	}
+
 	// Page 0 / 200 covers nearly every team. Teams with more than 200
 	// public channels can't reasonably use typeahead anyway, and the
 	// command still accepts free-text channel names.

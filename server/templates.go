@@ -183,13 +183,18 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 		channel = "#" + channel
 	}
 
-	// Quick diagnostics block: empty string when the runbook lacks
-	// the "## Quick diagnostics" section (always empty for custom names),
-	// otherwise multi-line markdown re-indented for the YAML literal block.
-	diagnostics := loadQuickDiagnosticsForSlug(receiverBaseSlug(name))
-	diagText := formatQuickDiagnosticsForAlert(diagnostics)
-	if diagText != "" {
-		diagText = indentForYAMLBlock(diagText, yamlBlockIndent)
+	// Quick diagnostics block: empty string when the runbook lacks the "## Quick
+	// diagnostics" section, otherwise multi-line markdown re-indented for the YAML
+	// literal block. Custom receivers skip the lookup ENTIRELY — Custom is the
+	// authoritative "no runbook content" contract, so it must hold even if a
+	// future catalog adds a runbook slug matching a persisted custom name (or an
+	// entry is imported via AlertConfigsJSON, bypassing name-collision validation).
+	diagText := ""
+	if !custom {
+		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(receiverBaseSlug(name)))
+		if diagText != "" {
+			diagText = indentForYAMLBlock(diagText, yamlBlockIndent)
+		}
 	}
 
 	r := strings.NewReplacer(

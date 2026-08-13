@@ -141,7 +141,7 @@ receiver block plus a commented stub to fill in:
 
 Uncomment it, set the matcher(s) to whatever labels your Prometheus rule
 emits, and paste under `route.routes:` in your `alertmanager.yml`. See
-[Custom (non-runbook) receivers](configuration.md) in the configuration
+[Custom (non-runbook) receivers](CONFIGURATION.md) in the configuration
 doc for the full walkthrough.
 
 The name must be lowercase `[a-z0-9_-]`, contain no `--`, and not collide
