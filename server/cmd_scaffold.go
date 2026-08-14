@@ -171,7 +171,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	// Resolve the destination channel ONCE rather than per-receiver. All
 	// receivers we create here share a channel, so one lookup is enough.
-	channelID, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
+	channelID, channelCreated, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
@@ -226,7 +226,9 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		if hookErr != nil {
 			// Webhook creation failed — every requested new slug fails.
 			// Existing skipped slugs remain in the results; rendering
-			// below shows the full picture.
+			// below shows the full picture. If we created the channel just
+			// for this add, archive it so a failed add leaves no empty squat.
+			p.rollbackCreatedChannel(channelCreated, channelID)
 			for _, slug := range newSlugs {
 				results = append(results, scaffoldResult{receiverNameForChannel(slug, team, channel), "failed", hookErr.Error()})
 			}
@@ -262,6 +264,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		merged := slices.Concat(p.getConfiguration().AlertConfigs, newEntries)
 		if err := p.saveConfigsLocked(merged); err != nil {
 			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
+			p.rollbackCreatedChannel(channelCreated, channelID)
 			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v", err), nil
 		}
 	}
@@ -668,7 +671,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return ":warning: " + err.Error(), nil
 	}
 
-	channelID, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
+	channelID, channelCreated, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
@@ -679,6 +682,8 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 
 	for _, c := range p.getConfiguration().AlertConfigs {
 		if c.Team == team && c.Channel == channel && c.Name == receiverName {
+			// A duplicate means the channel already had this receiver, so it
+			// pre-existed — channelCreated is false and nothing is rolled back.
 			return fmt.Sprintf(":warning: Receiver `%s` already exists in this channel.", receiverName), nil
 		}
 	}
@@ -686,6 +691,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	webhookDisplayName := fmt.Sprintf("Alertmanager: %s--%s", receiverBaseSlug(receiverName), channel)
 	hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
 	if hookErr != nil {
+		p.rollbackCreatedChannel(channelCreated, channelID)
 		return fmt.Sprintf("Failed to create Mattermost webhook: %v", hookErr), nil
 	}
 
@@ -704,6 +710,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	merged := slices.Concat(p.getConfiguration().AlertConfigs, []alertConfig{entry})
 	if err := p.saveConfigsLocked(merged); err != nil {
 		_ = p.deleteIncomingWebhook(args.UserId, hookID)
+		p.rollbackCreatedChannel(channelCreated, channelID)
 		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v", err), nil
 	}
 

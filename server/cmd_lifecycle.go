@@ -423,7 +423,10 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		}
 	}
 
-	channelID, err := p.resolveOrCreateChannel(target.Team, target.Channel, false, "")
+	// Rotation resolves the receiver's existing channel; the created flag is
+	// irrelevant here (a rotate should never be scaffolding a new channel), so it
+	// is intentionally ignored.
+	channelID, _, err := p.resolveOrCreateChannel(target.Team, target.Channel, false, "")
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), nil
 	}
@@ -791,25 +794,30 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 // otherwise, and the webhook is created with the caller's token, which requires
 // channel access). callerUserID may be empty for paths that only ever resolve an
 // existing channel (e.g. rotate). Used by add / add-custom / rotate.
-func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bool, callerUserID string) (string, error) {
+//
+// The created return reports whether THIS call brought the channel into
+// existence (vs. resolving a pre-existing one). Callers use it to roll back —
+// delete a channel they just created — when the rest of the add fails, without
+// ever touching a channel that was already there (CL-01).
+func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bool, callerUserID string) (channelID string, created bool, err error) {
 	team, appErr := p.API.GetTeamByName(teamSlug)
 	if appErr != nil {
-		return "", fmt.Errorf("get team %q: %w", teamSlug, appErr)
+		return "", false, fmt.Errorf("get team %q: %w", teamSlug, appErr)
 	}
 
 	channel, appErr := p.API.GetChannelByName(team.Id, channelSlug, false)
 	if appErr == nil {
-		return channel.Id, nil
+		return channel.Id, false, nil
 	}
 	if appErr.StatusCode != http.StatusNotFound {
-		return "", fmt.Errorf("get channel %q: %w", channelSlug, appErr)
+		return "", false, fmt.Errorf("get channel %q: %w", channelSlug, appErr)
 	}
 
 	chanType := model.ChannelTypeOpen
 	if private {
 		chanType = model.ChannelTypePrivate
 	}
-	created, appErr := p.API.CreateChannel(&model.Channel{
+	newChannel, appErr := p.API.CreateChannel(&model.Channel{
 		Name:        channelSlug,
 		DisplayName: channelSlug,
 		Type:        chanType,
@@ -817,7 +825,7 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bo
 		CreatorId:   p.BotUserID,
 	})
 	if appErr != nil {
-		return "", fmt.Errorf("create channel %q: %w", channelSlug, appErr)
+		return "", false, fmt.Errorf("create channel %q: %w", channelSlug, appErr)
 	}
 
 	// Private channels are invisible to non-members and the webhook is created
@@ -825,11 +833,25 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bo
 	// failure shouldn't lose the created channel — surface it via the webhook
 	// step's own error if it then fails.
 	if private && callerUserID != "" {
-		if _, mErr := p.API.AddChannelMember(created.Id, callerUserID); mErr != nil {
+		if _, mErr := p.API.AddChannelMember(newChannel.Id, callerUserID); mErr != nil {
 			p.API.LogWarn("could not add caller to new private channel", "channel", channelSlug, "err", mErr.Error())
 		}
 	}
-	return created.Id, nil
+	return newChannel.Id, true, nil
+}
+
+// rollbackCreatedChannel archives a channel this add call just created after the
+// rest of the add failed, so a failed add can't leave an empty squatted channel
+// behind (CL-01). No-op when the channel pre-existed (created=false) — the plugin
+// must never remove a channel it didn't make. Best-effort: a failed archive is
+// logged, not surfaced, since the caller is already returning an add error.
+func (p *Plugin) rollbackCreatedChannel(created bool, channelID string) {
+	if !created || channelID == "" {
+		return
+	}
+	if appErr := p.API.DeleteChannel(channelID); appErr != nil {
+		p.API.LogWarn("could not roll back channel created for a failed add", "channelID", channelID, "err", appErr.Error())
+	}
 }
 
 // saveConfigsLocked marshals + validates + persists the receiver list to the
