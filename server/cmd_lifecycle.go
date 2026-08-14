@@ -423,13 +423,14 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		}
 	}
 
-	// Rotation resolves the receiver's existing channel; the created flag is
-	// irrelevant here (a rotate should never be scaffolding a new channel), so it
-	// is intentionally ignored.
-	channelID, _, err := p.resolveOrCreateChannel(target.Team, target.Channel, false, "")
+	// Rotation resolves the receiver's existing channel; target.Team/Channel are
+	// already canonical, and a rotate never scaffolds a new channel, so only the
+	// channel ID is needed here.
+	rc, err := p.resolveOrCreateChannel(target.Team, target.Channel, false, "")
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), nil
 	}
+	channelID := rc.channelID
 
 	// Webhook display name for the replacement follows the same rule as
 	// /alertmanager add: <group-or-slug>--<channel>. Legacy receivers
@@ -799,29 +800,45 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	return b.String(), nil
 }
 
-// resolveOrCreateChannel maps team-slug + channel-slug → channel ID, creating
-// the channel if missing. When private is true a private channel is created and
-// the caller is added as a member (a private channel is invisible to the caller
-// otherwise, and the webhook is created with the caller's token, which requires
-// channel access). callerUserID may be empty for paths that only ever resolve an
-// existing channel (e.g. rotate). Used by add / add-custom / rotate.
+// resolvedChannel is the outcome of resolveOrCreateChannel. teamName/channelName
+// are the CANONICAL names read back from the resolved Mattermost objects, not the
+// caller's raw arguments — callers persist these (CL-39) so a stored receiver
+// never carries a name that Mattermost itself wouldn't accept on lookup.
+type resolvedChannel struct {
+	channelID   string
+	teamName    string
+	channelName string
+	created     bool // this call brought the channel into existence
+}
+
+// resolveOrCreateChannel maps team-slug + channel-slug → resolvedChannel,
+// creating the channel if missing. When private is true a private channel is
+// created and the caller is added as a member (a private channel is invisible to
+// the caller otherwise, and the webhook is created with the caller's token, which
+// requires channel access). callerUserID may be empty for paths that only ever
+// resolve an existing channel (e.g. rotate). Used by add / add-custom / rotate.
 //
-// The created return reports whether THIS call brought the channel into
-// existence (vs. resolving a pre-existing one). Callers use it to roll back —
-// delete a channel they just created — when the rest of the add fails, without
-// ever touching a channel that was already there (CL-01).
-func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bool, callerUserID string) (channelID string, created bool, err error) {
+// created reports whether THIS call brought the channel into existence (vs.
+// resolving a pre-existing one). Callers use it to roll back — delete a channel
+// they just created — when the rest of the add fails, without ever touching a
+// channel that was already there (CL-01).
+//
+// teamName/channelName are returned so callers persist the authoritative names
+// (CL-39). Storing the raw args instead was only safe because alertConfigNameRegex
+// happens to reject anything that could differ — a load-bearing guard in another
+// file that a future regex relaxation would silently defeat.
+func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bool, callerUserID string) (resolvedChannel, error) {
 	team, appErr := p.API.GetTeamByName(teamSlug)
 	if appErr != nil {
-		return "", false, fmt.Errorf("get team %q: %w", teamSlug, appErr)
+		return resolvedChannel{}, fmt.Errorf("get team %q: %w", teamSlug, appErr)
 	}
 
 	channel, appErr := p.API.GetChannelByName(team.Id, channelSlug, false)
 	if appErr == nil {
-		return channel.Id, false, nil
+		return resolvedChannel{channelID: channel.Id, teamName: team.Name, channelName: channel.Name, created: false}, nil
 	}
 	if appErr.StatusCode != http.StatusNotFound {
-		return "", false, fmt.Errorf("get channel %q: %w", channelSlug, appErr)
+		return resolvedChannel{}, fmt.Errorf("get channel %q: %w", channelSlug, appErr)
 	}
 
 	chanType := model.ChannelTypeOpen
@@ -836,7 +853,7 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bo
 		CreatorId:   p.BotUserID,
 	})
 	if appErr != nil {
-		return "", false, fmt.Errorf("create channel %q: %w", channelSlug, appErr)
+		return resolvedChannel{}, fmt.Errorf("create channel %q: %w", channelSlug, appErr)
 	}
 
 	// Private channels are invisible to non-members and the webhook is created
@@ -848,7 +865,7 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bo
 			p.API.LogWarn("could not add caller to new private channel", "channel", channelSlug, "err", mErr.Error())
 		}
 	}
-	return newChannel.Id, true, nil
+	return resolvedChannel{channelID: newChannel.Id, teamName: team.Name, channelName: newChannel.Name, created: true}, nil
 }
 
 // rollbackCreatedChannel archives a channel this add call just created after the

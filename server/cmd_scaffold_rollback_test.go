@@ -57,14 +57,20 @@ func TestResolveOrCreateChannelReportsCreated(t *testing.T) {
 	p := &Plugin{}
 	p.API = api
 
-	id, created, err := p.resolveOrCreateChannel("ateam", "existing", false, "")
-	if err != nil || created || id != "chExisting" {
-		t.Fatalf("pre-existing channel: id=%q created=%v err=%v (want chExisting, false, nil)", id, created, err)
+	rc, err := p.resolveOrCreateChannel("ateam", "existing", false, "")
+	if err != nil || rc.created || rc.channelID != "chExisting" {
+		t.Fatalf("pre-existing channel: %#v err=%v (want chExisting, created=false)", rc, err)
+	}
+	if rc.teamName != "ateam" || rc.channelName != "existing" {
+		t.Fatalf("pre-existing channel returned non-canonical names: %#v", rc)
 	}
 
-	id, created, err = p.resolveOrCreateChannel("ateam", "fresh", false, "")
-	if err != nil || !created || id != "new-fresh" {
-		t.Fatalf("missing channel: id=%q created=%v err=%v (want new-fresh, true, nil)", id, created, err)
+	rc, err = p.resolveOrCreateChannel("ateam", "fresh", false, "")
+	if err != nil || !rc.created || rc.channelID != "new-fresh" {
+		t.Fatalf("missing channel: %#v err=%v (want new-fresh, created=true)", rc, err)
+	}
+	if rc.teamName != "ateam" || rc.channelName != "fresh" {
+		t.Fatalf("created channel returned non-canonical names: %#v", rc)
 	}
 	if len(api.created) != 1 {
 		t.Fatalf("expected exactly one channel created, got %d", len(api.created))

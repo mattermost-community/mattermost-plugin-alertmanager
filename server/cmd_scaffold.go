@@ -177,10 +177,15 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	// Resolve the destination channel ONCE rather than per-receiver. All
 	// receivers we create here share a channel, so one lookup is enough.
-	channelID, channelCreated, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
+	rc, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
+	// Adopt the canonical team/channel names from the resolved objects for every
+	// downstream use — receiver-name construction, the skip check, and the stored
+	// entries — so nothing persists a raw arg (CL-39).
+	channelID, channelCreated := rc.channelID, rc.created
+	team, channel = rc.teamName, rc.channelName
 
 	// Atomic read-modify-write: acquire configWriteMu here, immediately
 	// before the first getConfiguration read, and hold it through the save
@@ -681,10 +686,15 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return ":warning: " + err.Error(), nil
 	}
 
-	channelID, channelCreated, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
+	rc, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
+	// Persist canonical names (CL-39). receiverName was already validated and
+	// built from the raw args above, which equal these canonical values for any
+	// name Mattermost accepts on lookup.
+	channelID, channelCreated := rc.channelID, rc.created
+	team, channel = rc.teamName, rc.channelName
 
 	// Atomic read-modify-write — same discipline as handleAdd.
 	p.configWriteMu.Lock()
