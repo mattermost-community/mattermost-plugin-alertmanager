@@ -9,14 +9,23 @@ import (
 	"github.com/cenkalti/backoff/v4"
 )
 
-// Client is the HTTP client used for all outbound Alertmanager API
-// calls. Defaults to http.DefaultClient (trusts system root CAs).
-// The plugin replaces this with a CA-bundle-aware client when the
-// AlertManagerCABundle setting is set — see updateAlertmanagerHTTPClient
-// in the main package. Exposing it as a package variable keeps the
-// call sites stable while letting config changes take effect
-// immediately.
-var Client = http.DefaultClient
+// NewTransport returns an http.Transport for Alertmanager calls: a clone of the
+// default transport with transparent response compression DISABLED (CL-09), so a
+// hostile endpoint cannot gzip-amplify a small wire body into a huge decoded one.
+// Callers set TLSClientConfig on the returned transport when a CA bundle applies.
+func NewTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DisableCompression = true
+	return t
+}
+
+// Client is the HTTP client used for all outbound Alertmanager API calls. It
+// trusts system root CAs and disables response compression (defense in depth for
+// the size-limited decode). The plugin replaces this with a CA-bundle-aware
+// client when the AlertManagerCABundle setting is set — see
+// updateAlertmanagerHTTPClient in the main package. Exposing it as a package
+// variable keeps the call sites stable while letting config changes take effect.
+var Client = &http.Client{Transport: NewTransport()}
 
 // httpBackoff returns the backoff policy used for Alertmanager API calls.
 // Total elapsed time is capped at 30s so a slow/flaky Alertmanager doesn't

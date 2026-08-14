@@ -490,7 +490,7 @@ func doValidateAMStatus(amURL string) (out struct {
 			Original string `json:"original"`
 		} `json:"config"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := alertmanager.DecodeJSONLimited(resp.Body, &body); err != nil {
 		// AM responded but we couldn't parse the config body. Treat as
 		// reachable (check a passes) but check b will be inconclusive
 		// since configBody stays empty.

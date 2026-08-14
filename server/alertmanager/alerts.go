@@ -8,7 +8,6 @@
 package alertmanager
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/prometheus/alertmanager/alert"
@@ -30,7 +29,7 @@ func ListAlerts(alertmanagerURL, user, password string) ([]*alert.Alert, error) 
 	defer func() { _ = resp.Body.Close() }()
 
 	var alertResponse []*alert.Alert
-	if errDec := json.NewDecoder(resp.Body).Decode(&alertResponse); errDec != nil {
+	if errDec := DecodeJSONLimited(resp.Body, &alertResponse); errDec != nil {
 		return nil, errDec
 	}
 	return alertResponse, nil

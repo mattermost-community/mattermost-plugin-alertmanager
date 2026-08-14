@@ -1,10 +1,8 @@
 package alertmanager
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"time"
@@ -37,7 +35,7 @@ func ListSilences(alertmanagerURL, user, password string) ([]*models.GettableSil
 	defer func() { _ = resp.Body.Close() }()
 
 	var silences []*models.GettableSilence
-	if errDec := json.NewDecoder(resp.Body).Decode(&silences); errDec != nil {
+	if errDec := DecodeJSONLimited(resp.Body, &silences); errDec != nil {
 		return nil, errDec
 	}
 
@@ -62,7 +60,7 @@ func ExpireSilence(silenceID, alertmanagerURL, user, password string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := ReadAllLimited(resp.Body)
 	if err != nil {
 		return err
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"sort"
@@ -126,8 +125,40 @@ func (p *Plugin) probeAMReachability(amURL string) amReachabilityEntry {
 
 	// Cache miss or expired — probe fresh.
 	entry := doAMProbe(amURL)
+	p.evictReachabilityCache(time.Now())
 	p.amReachabilityCache.Store(amURL, &entry)
 	return entry
+}
+
+// amReachabilityMaxEntries hard-caps the probe cache. Without eviction (there
+// was no Delete anywhere), every distinct probed URL pinned its full config body
+// for the process lifetime (CL-09). With the decode limit each body is bounded,
+// and this caps how many are retained.
+const amReachabilityMaxEntries = 256
+
+// evictReachabilityCache drops entries older than the TTL (they'd be re-probed
+// anyway) and, if still over the cap, evicts the single stalest entry. Called
+// before each Store, so the cache stays bounded even under a flood of distinct
+// URLs. O(n) over a small n (distinct AM URLs), on the cold probe path only.
+func (p *Plugin) evictReachabilityCache(now time.Time) {
+	var count int
+	var stalestKey any
+	var stalestAt time.Time
+	p.amReachabilityCache.Range(func(k, v any) bool {
+		e := v.(*amReachabilityEntry)
+		if now.Sub(e.CheckedAt) > amReachabilityTTL {
+			p.amReachabilityCache.Delete(k)
+			return true
+		}
+		count++
+		if stalestAt.IsZero() || e.CheckedAt.Before(stalestAt) {
+			stalestAt, stalestKey = e.CheckedAt, k
+		}
+		return true
+	})
+	if count >= amReachabilityMaxEntries && stalestKey != nil {
+		p.amReachabilityCache.Delete(stalestKey)
+	}
 }
 
 // doAMProbe makes a single GET against AM's /api/v2/status endpoint
@@ -166,7 +197,7 @@ func doAMProbe(amURL string) amReachabilityEntry {
 		} `json:"config"`
 	}
 	entry := amReachabilityEntry{Reachable: true, Status: "ok", CheckedAt: time.Now()}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+	if err := alertmanager.DecodeJSONLimited(resp.Body, &body); err == nil {
 		entry.ConfigBody = body.Config.Original
 		entry.receivers = indexAMReceivers(entry.ConfigBody)
 	}

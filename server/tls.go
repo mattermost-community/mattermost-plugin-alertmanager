@@ -30,7 +30,7 @@ const outboundHTTPTimeout = 30 * time.Second
 // rather than refusing to function entirely.
 func (p *Plugin) updateAlertmanagerHTTPClient(caBundle string) {
 	if strings.TrimSpace(caBundle) == "" {
-		alertmanager.Client = http.DefaultClient
+		alertmanager.Client = &http.Client{Transport: alertmanager.NewTransport()}
 		return
 	}
 
@@ -47,10 +47,10 @@ func (p *Plugin) updateAlertmanagerHTTPClient(caBundle string) {
 		p.API.LogWarn("AlertManagerCABundle could not be parsed as PEM (no certs added); falling back to system roots only")
 	}
 
+	transport := alertmanager.NewTransport()
+	transport.TLSClientConfig = &tls.Config{RootCAs: pool}
 	alertmanager.Client = &http.Client{
-		Timeout: outboundHTTPTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: pool},
-		},
+		Timeout:   outboundHTTPTimeout,
+		Transport: transport,
 	}
 }
