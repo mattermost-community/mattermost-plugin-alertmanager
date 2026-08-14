@@ -71,7 +71,14 @@ func substituteLabelPlaceholders(code string) string {
 		lines[i] = labelPlaceholderRegex.ReplaceAllStringFunc(line, func(match string) string {
 			name := match[1 : len(match)-1]
 			if labelPlaceholderAllowlist[name] {
-				return "{{ .Labels." + name + " }}"
+				// CL-05: the label VALUE Alertmanager substitutes at delivery is
+				// attacker-influenceable (anyone who can POST an alert) and lands
+				// unquoted in a copy-paste `bash` fence — a bare `{{ .Labels.name }}`
+				// lets `$(...)`/backticks execute in the on-call engineer's shell.
+				// Strip everything outside a safe charset (legit hostnames, pod
+				// names, namespaces, IPs are all inside it) and cap the length, so
+				// no shell metacharacter survives.
+				return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | printf "%.128s" }}`
 			}
 			return match
 		})
