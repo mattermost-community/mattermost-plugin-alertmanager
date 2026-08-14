@@ -82,7 +82,16 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	defer p.configWriteMu.Unlock()
 
 	current := p.getConfiguration().AlertConfigs
-	resolved := resolveReceiverName(current, name, args.ChannelId, p)
+	// CL-02: resolve only within receivers bound to THIS team+channel so a
+	// guessed short name can't reach another team's receiver, then confirm the
+	// resolved name really is in scope — resolveReceiverName echoes its input on a
+	// miss, which could coincide with another channel's full name and slip past
+	// the global filter below (names are globally unique).
+	scoped := p.configsForCurrentChannel(args)
+	resolved := resolveReceiverName(scoped, name, args.ChannelId, p)
+	if !receiverNameInScope(scoped, resolved) {
+		return fmt.Sprintf("Receiver %q not found.", name), nil
+	}
 	var hookID string
 	filtered := make([]alertConfig, 0, len(current))
 	for _, c := range current {
@@ -377,7 +386,15 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	defer p.configWriteMu.Unlock()
 
 	current := p.getConfiguration().AlertConfigs
-	resolved := resolveReceiverName(current, name, args.ChannelId, p)
+	// CL-02: scope resolution to this team+channel and confirm membership before
+	// touching anything — same guard as handleRemoveOne. Rotating another team's
+	// receiver is blocked by the webhook API's 403 anyway, but scoping stops the
+	// management-plane probe (and the cross-team name disclosure) before that.
+	scoped := p.configsForCurrentChannel(args)
+	resolved := resolveReceiverName(scoped, name, args.ChannelId, p)
+	if !receiverNameInScope(scoped, resolved) {
+		return fmt.Sprintf("Receiver %q not found.", name), nil
+	}
 	targetIdx := -1
 	for i, c := range current {
 		if c.Name == resolved {
@@ -594,6 +611,21 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 //
 // The plugin pointer is needed to resolve the current channel's slug
 // from its ID, which is what the receiver name is suffixed with.
+// receiverNameInScope reports whether name is among the channel-scoped
+// receivers. remove/rotate use it to confirm a resolved name really belongs to
+// the invocation channel before mutating it: resolveReceiverName returns its raw
+// input unchanged on a miss, which could coincide with another channel's full
+// receiver name, so an exact-match against the global list downstream would
+// otherwise act cross-channel (CL-02).
+func receiverNameInScope(scoped []alertConfig, name string) bool {
+	for _, c := range scoped {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveReceiverName(all []alertConfig, supplied, channelID string, p *Plugin) string {
 	// 1. Exact match — covers full suffixed names AND legacy unsuffixed names
 	for _, c := range all {
