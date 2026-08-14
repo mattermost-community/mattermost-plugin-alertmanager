@@ -446,7 +446,13 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		return fmt.Sprintf("Failed to create replacement webhook: %v", err), nil
 	}
 
+	// Track whether the old webhook was actually deleted (B-003): rotation is
+	// often triggered because a leak is suspected, so the response must not claim
+	// "the old URL no longer works" if the delete failed and the token is still
+	// live.
+	oldDeleted := true
 	if err := p.deleteIncomingWebhook(args.UserId, oldHookID); err != nil {
+		oldDeleted = false
 		p.API.LogWarn("could not delete old webhook during rotation (continuing)", "receiver", target.Name, "webhook", redactHookID(oldHookID), "err", err.Error())
 	}
 
@@ -471,7 +477,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	// matches v1.0.2 behavior.
 	if len(affectedIdx) == 1 {
 		ac := updated[affectedIdx[0]]
-		return p.renderRotateResponse(ac), nil
+		return p.renderRotateResponse(ac, oldDeleted, oldHookID), nil
 	}
 
 	// Group case: list affected receivers, DM the merged YAML bundle.
@@ -479,14 +485,14 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	for _, idx := range affectedIdx {
 		affected = append(affected, updated[idx])
 	}
-	return p.renderRotateGroupResponse(args.UserId, affected, target.GroupName), nil
+	return p.renderRotateGroupResponse(args.UserId, affected, target.GroupName, oldDeleted, oldHookID), nil
 }
 
 // renderRotateGroupResponse builds the in-channel summary AND fires the
 // DM with the merged YAML bundle when the rotated webhook serves a
 // multi-receiver group. Same DM shape as /alertmanager rotate all
 // --overdue — operator pastes once into alertmanager.yml.
-func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig, groupName string) string {
+func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig, groupName string, oldDeleted bool, oldHookID string) string {
 	primary := affected[0]
 	var y strings.Builder
 	y.WriteString(fmt.Sprintf("# Alertmanager receivers re-rotated by /alertmanager rotate (group %q)\n", groupName))
@@ -503,7 +509,12 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf(":key: Rotated `%s` group webhook in `~%s`. **The old URL no longer works for any of the %d affected receiver(s).**\n\n", groupName, primary.Channel, len(affected)))
+	if oldDeleted {
+		b.WriteString(fmt.Sprintf(":key: Rotated `%s` group webhook in `~%s`. **The old URL no longer works for any of the %d affected receiver(s).**\n\n", groupName, primary.Channel, len(affected)))
+	} else {
+		// B-003: the shared old webhook wasn't deleted — don't imply it's dead.
+		b.WriteString(fmt.Sprintf(":key: Rotated `%s` group webhook in `~%s` for %d receiver(s). :warning: **The old shared webhook could NOT be deleted and may still be live** — delete webhook `%s` in System Console → Integrations → Incoming Webhooks.\n\n", groupName, primary.Channel, len(affected), oldHookID))
+	}
 	b.WriteString("**Affected:**\n")
 	for _, ac := range affected {
 		b.WriteString("- `" + ac.Name + "`\n")
@@ -910,12 +921,28 @@ func (p *Plugin) saveConfigsLocked(entries []alertConfig) error {
 // renderRotateResponse builds the success message for /alertmanager
 // rotate. The receiver's slack_configs YAML embeds the new webhook URL,
 // so the admin re-pastes the whole block to update alertmanager.yml.
-func (p *Plugin) renderRotateResponse(ac alertConfig) string {
+//
+// oldDeleted reports whether the previous webhook was actually deleted; when it
+// wasn't, the message must NOT claim the old URL is dead (B-003) and instead
+// tells the admin to remove the lingering webhook by hand.
+func (p *Plugin) renderRotateResponse(ac alertConfig, oldDeleted bool, oldHookID string) string {
 	yaml := renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom)
 	return fmt.Sprintf(
-		":key: Rotated webhook for `%s`. **The old webhook URL no longer works.**\n\n"+
+		":key: Rotated webhook for `%s`. %s\n\n"+
 			"**Update your `alertmanager.yml`:**\n\n```yaml\n%s```\n\n"+
 			"**Then reload Alertmanager:**\n```\ncurl -X POST %s/-/reload\n```",
-		ac.Name, yaml, ac.AlertManagerURL,
+		ac.Name, oldWebhookStatusLine(oldDeleted, oldHookID), yaml, ac.AlertManagerURL,
 	)
+}
+
+// oldWebhookStatusLine returns the sentence describing the fate of the old
+// webhook after a rotation: a clean "no longer works" when the delete succeeded,
+// or an explicit warning (with the webhook ID to find in System Console) when it
+// did not — so an admin rotating because of a suspected leak isn't told the token
+// is dead when it may still be live (B-003).
+func oldWebhookStatusLine(oldDeleted bool, oldHookID string) string {
+	if oldDeleted {
+		return "**The old webhook URL no longer works.**"
+	}
+	return fmt.Sprintf(":warning: **The old webhook could NOT be deleted and may still be live** — delete webhook `%s` in System Console → Integrations → Incoming Webhooks.", oldHookID)
 }

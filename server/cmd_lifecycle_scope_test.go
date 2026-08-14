@@ -89,3 +89,20 @@ func TestRemoveOneShortNameResolvesInChannelOnly(t *testing.T) {
 		t.Fatalf("cross-channel receiver leaked into the scoped set")
 	}
 }
+
+// TestOldWebhookStatusLine is the B-003 regression: a successful delete says the
+// old URL is dead; a failed delete must warn that it may still be live and name
+// the webhook to remove by hand — never a false "no longer works".
+func TestOldWebhookStatusLine(t *testing.T) {
+	ok := oldWebhookStatusLine(true, "hook123")
+	if !strings.Contains(ok, "no longer works") || strings.Contains(ok, "hook123") {
+		t.Fatalf("deleted case should claim dead and not leak the ID: %q", ok)
+	}
+	warn := oldWebhookStatusLine(false, "hook123")
+	if strings.Contains(warn, "no longer works") {
+		t.Fatalf("failed-delete case must NOT claim the old URL is dead: %q", warn)
+	}
+	if !strings.Contains(warn, "hook123") || !strings.Contains(warn, "may still be live") {
+		t.Fatalf("failed-delete case should warn and name the webhook: %q", warn)
+	}
+}
