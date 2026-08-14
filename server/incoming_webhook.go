@@ -2,12 +2,28 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
+
+// redactHookID returns a short, non-reversible fingerprint of a webhook ID for
+// log correlation (CL-13). A webhook ID is a durable bearer token — anyone
+// holding it can POST to /hooks/<id> unauthenticated — so the raw value must
+// never reach the logs, which flow to centralized aggregators readable far more
+// widely than the bound channel. The SHA-256 prefix is stable enough to
+// correlate log lines about the same webhook without disclosing the token.
+func redactHookID(id string) string {
+	if id == "" {
+		return "(none)"
+	}
+	sum := sha256.Sum256([]byte(id))
+	return "sha256:" + hex.EncodeToString(sum[:4])
+}
 
 // This file owns the "plugin programmatically creates Mattermost incoming
 // webhooks" subsystem. The plugin RPC API doesn't expose IncomingWebhook

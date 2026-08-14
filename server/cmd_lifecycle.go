@@ -113,7 +113,7 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	// still depends on it.
 	if !webhookStillReferenced(filtered, hookID) {
 		if err := p.deleteIncomingWebhook(args.UserId, hookID); err != nil {
-			p.API.LogWarn("could not delete orphaned webhook on remove (continuing)", "webhookID", hookID, "err", err.Error())
+			p.API.LogWarn("could not delete orphaned webhook on remove (continuing)", "receiver", resolved, "webhook", redactHookID(hookID), "err", err.Error())
 		}
 	}
 
@@ -217,7 +217,7 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 	for _, hookID := range orphans {
 		if err := p.deleteIncomingWebhook(args.UserId, hookID); err != nil {
 			p.API.LogWarn("remove-all: could not delete orphaned webhook (config entries pruned)",
-				"webhookID", hookID, "err", err.Error())
+				"webhook", redactHookID(hookID), "err", err.Error())
 			webhookFailures = append(webhookFailures, hookID)
 		}
 	}
@@ -314,7 +314,7 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 	for _, hookID := range orphans {
 		if err := p.deleteIncomingWebhook(args.UserId, hookID); err != nil {
 			p.API.LogWarn("remove-set: could not delete orphaned webhook (config entries pruned)",
-				"webhookID", hookID, "err", err.Error())
+				"webhook", redactHookID(hookID), "err", err.Error())
 			webhookFailures = append(webhookFailures, hookID)
 		}
 	}
@@ -444,7 +444,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	}
 
 	if err := p.deleteIncomingWebhook(args.UserId, oldHookID); err != nil {
-		p.API.LogWarn("could not delete old webhook during rotation (continuing)", "oldWebhookID", oldHookID, "err", err.Error())
+		p.API.LogWarn("could not delete old webhook during rotation (continuing)", "receiver", target.Name, "webhook", redactHookID(oldHookID), "err", err.Error())
 	}
 
 	updated := make([]alertConfig, len(current))
