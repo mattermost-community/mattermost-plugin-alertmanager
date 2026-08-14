@@ -7,6 +7,35 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TestCRDBaseNameQualifiesTeam is the CL-34/CL-35 regression: two teams sharing a
+// channel name must NOT produce identical CRD object names (which kubectl apply
+// would silently merge across teams), and long inputs must truncate with a stable
+// hash that stays injective and within the Kubernetes DNS-subdomain cap.
+func TestCRDBaseNameQualifiesTeam(t *testing.T) {
+	platform := crdBaseName("platform", "alerts")
+	marketing := crdBaseName("marketing", "alerts")
+	if platform == marketing {
+		t.Fatalf("two teams sharing channel %q collided on base name %q", "alerts", platform)
+	}
+
+	// Stable across calls (the object name must not churn between exports).
+	if crdBaseName("platform", "alerts") != platform {
+		t.Fatal("crdBaseName is not stable for the same inputs")
+	}
+
+	// Over-long inputs: distinct pairs sharing a prefix must not collapse, and the
+	// most-decorated name must still fit the 253-char cap.
+	long1 := crdBaseName(strings.Repeat("x", 300), "alerts")
+	long2 := crdBaseName(strings.Repeat("x", 299)+"y", "alerts")
+	if long1 == long2 {
+		t.Fatalf("distinct long inputs collided after truncation: %q", long1)
+	}
+	decorated := "mattermost-alertmanager-" + long1 + "-999-fallback"
+	if len(decorated) > crdNameMaxLen {
+		t.Fatalf("decorated object name exceeds the DNS cap (%d > %d)", len(decorated), crdNameMaxLen)
+	}
+}
+
 // sampleCRDSpecs builds a fallback + one real runbook receiver sharing a webhook
 // secret, mirroring the plugin's one-shared-webhook-per-group model.
 func sampleCRDSpecs() []crdReceiverSpec {

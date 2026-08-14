@@ -225,6 +225,20 @@ Field renames vs the file format (same meaning, camelCased, secret-backed URL):
 - **Selector.** Your `Alertmanager` resource must select this CR via
   `alertmanagerConfigSelector` (plus `alertmanagerConfigNamespaceSelector` for
   cross-namespace).
+- **Object names are team-qualified.** Generated `metadata.name` values (Secret,
+  AlertmanagerConfig, fallback receiver) include the Mattermost **team** as well
+  as the channel — e.g. `mattermost-alertmanager-<team>-<channel>` — because
+  channel names are unique only per team. Without the team, two teams both
+  exporting their `~alerts` channel into the same namespace would produce
+  byte-identical object names, and `kubectl apply` would silently merge them
+  (one team's Secret/route overwriting the other's).
+  - **Migration:** if you applied manifests from a build that named objects by
+    channel only, the new names differ, so `kubectl apply` **creates** the new
+    objects and leaves the old ones orphaned — alerts can double-deliver until you
+    remove the stragglers. Re-export, apply, then delete the old channel-only
+    objects, e.g. `kubectl -n monitoring delete alertmanagerconfig
+    mattermost-alertmanager-<channel>` and the matching
+    `secret alertmanager-webhook-<channel>`.
 
 ### Alerting rules as a PrometheusRule
 
