@@ -209,7 +209,7 @@ func (p *Plugin) handleAutocompleteChannels(w http.ResponseWriter, r *http.Reque
 	// a team_admin of this team. Without this, a non-admin could enumerate another
 	// team's public channel names by typing its slug (GetPublicChannelsForTeam is
 	// plugin-privileged and would otherwise ignore userID).
-	if !(p.client != nil && p.client.User.HasPermissionTo(userID, model.PermissionManageSystem)) {
+	if p.client == nil || !p.client.User.HasPermissionTo(userID, model.PermissionManageSystem) {
 		member, mErr := p.API.GetTeamMember(team.Id, userID)
 		if mErr != nil || !slices.Contains(strings.Fields(member.Roles), "team_admin") {
 			respondAutocompleteItems(w, []model.AutocompleteListItem{
