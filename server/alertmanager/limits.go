@@ -32,9 +32,11 @@ func DecodeJSONLimited(r io.Reader, v any) error {
 	return err
 }
 
-// ReadAllLimited reads at most MaxResponseBytes from r, rejecting overflow. Used
-// for non-JSON bodies (e.g. an error body) that would otherwise be io.ReadAll'd
-// without a bound.
+// ReadAllLimited reads at most MaxResponseBytes from r, rejecting overflow. The
+// bounded counterpart to io.ReadAll for any non-JSON Alertmanager body a caller
+// needs to slurp — pairs with DecodeJSONLimited. (ExpireSilence stopped reading
+// the error body for CL-08, so this currently has no in-tree caller, but it
+// stays as the size-limit primitive for the next non-JSON reader.)
 func ReadAllLimited(r io.Reader) ([]byte, error) {
 	limited := &io.LimitedReader{R: r, N: MaxResponseBytes + 1}
 	b, err := io.ReadAll(limited)

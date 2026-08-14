@@ -19,13 +19,26 @@ func NewTransport() *http.Transport {
 	return t
 }
 
+// RefuseRedirect is the CheckRedirect policy for the Alertmanager client. The
+// AM API never legitimately redirects the calls the plugin makes; a redirect is
+// the signature of a path-normalizing front door (AM's ServeMux 301s a traversal
+// path), and http.Client would otherwise FOLLOW it and re-send the Authorization
+// header to the same host — turning a crafted request path into a credentialed
+// GET against an arbitrary endpoint. Returning ErrUseLastResponse stops the
+// follow and hands the redirect response back, which surfaces as a non-200 to
+// the caller (CL-08). Applied to every construction of Client below.
+func RefuseRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 // Client is the HTTP client used for all outbound Alertmanager API calls. It
-// trusts system root CAs and disables response compression (defense in depth for
-// the size-limited decode). The plugin replaces this with a CA-bundle-aware
-// client when the AlertManagerCABundle setting is set — see
-// updateAlertmanagerHTTPClient in the main package. Exposing it as a package
-// variable keeps the call sites stable while letting config changes take effect.
-var Client = &http.Client{Transport: NewTransport()}
+// trusts system root CAs, disables response compression (defense in depth for
+// the size-limited decode), and refuses redirects (see RefuseRedirect). The
+// plugin replaces this with a CA-bundle-aware client when the
+// AlertManagerCABundle setting is set — see updateAlertmanagerHTTPClient in the
+// main package. Exposing it as a package variable keeps the call sites stable
+// while letting config changes take effect.
+var Client = &http.Client{Transport: NewTransport(), CheckRedirect: RefuseRedirect}
 
 // httpBackoff returns the backoff policy used for Alertmanager API calls.
 // Total elapsed time is capped at 30s so a slow/flaky Alertmanager doesn't

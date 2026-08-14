@@ -30,7 +30,7 @@ const outboundHTTPTimeout = 30 * time.Second
 // rather than refusing to function entirely.
 func (p *Plugin) updateAlertmanagerHTTPClient(caBundle string) {
 	if strings.TrimSpace(caBundle) == "" {
-		alertmanager.Client = &http.Client{Transport: alertmanager.NewTransport()}
+		alertmanager.Client = &http.Client{Transport: alertmanager.NewTransport(), CheckRedirect: alertmanager.RefuseRedirect}
 		return
 	}
 
@@ -50,7 +50,8 @@ func (p *Plugin) updateAlertmanagerHTTPClient(caBundle string) {
 	transport := alertmanager.NewTransport()
 	transport.TLSClientConfig = &tls.Config{RootCAs: pool}
 	alertmanager.Client = &http.Client{
-		Timeout:   outboundHTTPTimeout,
-		Transport: transport,
+		Timeout:       outboundHTTPTimeout,
+		Transport:     transport,
+		CheckRedirect: alertmanager.RefuseRedirect,
 	}
 }
