@@ -352,6 +352,15 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 // associated with the receiver, or by using the unscoped form once we
 // add it (future v1.x).
 func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
+	// CL-07: expire_silence mutates external Alertmanager state (deletes a
+	// silence, re-firing every alert it suppressed). It was the ONLY mutating
+	// subcommand with no authorization gate — a guest could paste the ready-made
+	// command surfaced by `/alertmanager silences`. Require team_admin of this
+	// channel's team, matching remove/rotate/config, and audit the mutation.
+	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
+		return err.Error(), nil
+	}
+
 	fields := strings.Fields(args.Command)
 	if len(fields) != 4 {
 		return "Usage: `/alertmanager expire_silence <name> <silence-id>`", nil
@@ -374,7 +383,9 @@ func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 	}
 
 	if err := alertmanager.ExpireSilence(silenceID, match.AlertManagerURL, match.User, match.Password); err != nil {
+		p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "failure")
 		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %v", silenceID, name, err), nil
 	}
+	p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "success")
 	return fmt.Sprintf(":mute: Silence `%s` expired on `%s`.", silenceID, name), nil
 }

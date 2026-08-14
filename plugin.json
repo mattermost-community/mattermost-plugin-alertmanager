@@ -37,6 +37,7 @@
                 "key": "MetricsToken",
                 "display_name": "Metrics endpoint bearer token",
                 "type": "text",
+                "secret": true,
                 "help_text": "Optional bearer token that turns on the Prometheus metrics endpoint at `/plugins/com.mattermost.alertmanager/metrics`; empty disables it (404).",
                 "placeholder": "(random 64-character hex string)",
                 "default": ""
