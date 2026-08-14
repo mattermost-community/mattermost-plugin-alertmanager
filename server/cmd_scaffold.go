@@ -148,6 +148,12 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	}
 
 	team, channel, amURL := rest[0], rest[1], strings.TrimRight(rest[2], "/")
+	// Validate the AM URL before any side effects so a bad value fails with a
+	// clear message instead of creating a channel + webhook and rolling back
+	// (CL-03/CL-21). IsValid re-checks it at persist time for the KV-import path.
+	if err := validateAlertManagerURL(amURL); err != nil {
+		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+	}
 
 	// Authorize the DESTINATION team, not the invocation channel — a team_admin
 	// must not be able to create a channel or bind a webhook in a team they do
@@ -658,6 +664,10 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return addCustomUsageMessage(), nil
 	}
 	team, channel, amURL, rawName := rest[0], rest[1], strings.TrimRight(rest[2], "/"), rest[3]
+	// Reject a dangerous AM URL up front (CL-03/CL-21) — see handleAdd.
+	if err := validateAlertManagerURL(amURL); err != nil {
+		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+	}
 
 	// Authorize the DESTINATION team, not the invocation channel — otherwise a
 	// team_admin could create a channel and bind a webhook in a team they do
