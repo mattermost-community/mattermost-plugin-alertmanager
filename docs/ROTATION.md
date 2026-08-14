@@ -148,7 +148,7 @@ is per-group, not per-receiver.
 |---|---|
 | Receiver rotated via `/alertmanager rotate <name>` | `LastRotatedAt` reset to now; clock restarts. |
 | Receiver removed entirely | Reminder will never fire again for that name. |
-| `RotationRemindersEnabled` set to false | The next cycle skips this receiver. Manually editable via System Console → Plugins → Alertmanager → AlertConfigsJSON. |
+| `RotationRemindersEnabled` set to false | The next cycle skips this receiver. Set at add time via the `on` argument; the receiver list itself lives in the plugin KV store and isn't hand-editable from System Console. |
 | Global `WebhookRotationDays` set to 0 | Feature off; reconciler skips the rotation pass entirely. |
 
 ## Why no auto-rotation
@@ -182,9 +182,11 @@ fast iteration):
    ```
    /alertmanager add testing test-rotation http://alertmanager:9093 compute on
    ```
-2. Hand-edit `AlertConfigsJSON` in System Console → Plugins →
-   Alertmanager → AlertConfigsJSON. Set `lastRotatedAt` on one
-   entry to a date >1 day ago.
+2. Force one entry overdue. The receiver list lives in the plugin KV
+   store (key `alertconfigs:v1`), not System Console, so there's no UI
+   field to edit. In dev, write the KV value directly (decode the JSON,
+   set `lastRotatedAt` on one entry to a date >1 day ago, write it
+   back) using whatever KV/DB access your test stack has.
 3. Wait up to 5 minutes for the next reconciler cycle.
 4. Check the bot DM channel — should have a per-channel reminder
    listing that one overdue receiver.

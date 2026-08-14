@@ -10,10 +10,15 @@ import (
 	"time"
 )
 
-// rawConfiguration is what Mattermost's settings framework fills in. The
-// AlertConfigsJSON field is the JSON-serialized array of alertConfig entries.
-// Slash commands are the primary write path; the System Console field is the
-// bulk-edit / GitOps fallback.
+// rawConfiguration is what Mattermost's settings framework fills in from the
+// plugin's System Console settings_schema.
+//
+// The receiver list (alertConfig entries) is deliberately NOT here: it holds
+// webhook IDs and Alertmanager basic-auth passwords, and anything in the plugin
+// config map is readable via GET /api/v4/config by delegated console roles
+// (sysconsole_read_plugins) unless flagged secret. It lives in the plugin KV
+// store instead (kvKeyAlertConfigs), which the config API does not expose. See
+// loadAlertConfigsFromKV / saveConfigsLocked (CL-19).
 //
 // WebhookHost is the optional override for the host:port portion of the
 // Mattermost webhook URL when rendered into alertmanager.yml. See
@@ -26,7 +31,6 @@ import (
 // free-text WebhookHost always wins, so existing installs and custom URLs
 // are unaffected.
 type rawConfiguration struct {
-	AlertConfigsJSON      string
 	WebhookHost           string
 	WebhookHostPreset     string
 	AssembledYAMLTTLHours int
@@ -34,6 +38,13 @@ type rawConfiguration struct {
 	MetricsToken          string
 	WebhookRotationDays   int
 }
+
+// kvKeyAlertConfigs is the plugin KV-store key holding the JSON-serialized
+// receiver list. The KV store is not surfaced by GET /api/v4/config, so the
+// webhook IDs and Alertmanager passwords in these entries are not readable by
+// delegated console roles the way a plugin-config value would be (CL-19). The
+// :v1 suffix leaves room to change the on-disk shape without a key collision.
+const kvKeyAlertConfigs = "alertconfigs:v1"
 
 // configuration is the parsed, validated, ready-to-serve plugin state.
 // AlertConfigs is the active list; nameIndex provides O(1) lookup for
@@ -107,8 +118,10 @@ type alertConfig struct {
 	// REST API (used by /alertmanager alerts, silences, status). Not a
 	// Mattermost user — these are service-account credentials for the
 	// Alertmanager side. Leave empty unless your Alertmanager is behind an
-	// auth proxy. NOT exposed via the /alertmanager add slash command;
-	// set via System Console JSON edit if needed.
+	// auth proxy. NOT exposed via the /alertmanager add slash command. Since
+	// CL-19 moved the receiver list to the KV store, the old config-JSON edit
+	// path is gone; setting these now means writing the KV entry directly.
+	// A dedicated slash flag is a possible future addition.
 	User     string `json:"user,omitempty"`
 	Password string `json:"password,omitempty"`
 
@@ -314,6 +327,22 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 	return entries, nil
 }
 
+// loadAlertConfigsFromKV reads and validates the receiver list from the plugin
+// KV store (CL-19). An absent key (fresh install, or nothing added yet) is not
+// an error — it returns an empty list. Parse/validation errors ARE surfaced so a
+// corrupt blob fails the config swap loudly rather than silently dropping
+// receivers.
+func (p *Plugin) loadAlertConfigsFromKV() ([]alertConfig, error) {
+	data, appErr := p.API.KVGet(kvKeyAlertConfigs)
+	if appErr != nil {
+		return nil, fmt.Errorf("read receiver list from KV: %w", appErr)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return parseAlertConfigs(string(data))
+}
+
 // configurationLock-aware helpers live on *Plugin.
 
 // getConfiguration is defined as a method on *Plugin in plugin.go to keep
@@ -340,12 +369,15 @@ func (p *Plugin) OnConfigurationChange() error {
 		return err
 	}
 
-	entries, err := parseAlertConfigs(raw.AlertConfigsJSON)
-	if err != nil {
-		return err
-	}
-
+	// Receiver list comes from the KV store, not the config map (CL-19). KVGet
+	// needs a live API, so skip it when the API isn't wired yet (early startup /
+	// tests) — an empty list matches the prior behavior of an empty config blob.
+	var entries []alertConfig
 	if p.API != nil {
+		var err error
+		if entries, err = p.loadAlertConfigsFromKV(); err != nil {
+			return err
+		}
 		for _, ac := range entries {
 			_, appErr := p.API.GetTeamByName(ac.Team)
 			if appErr == nil {

@@ -800,32 +800,27 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bo
 	return created.Id, nil
 }
 
-// saveConfigs marshals + validates + persists. Validation runs locally
-// before SavePluginConfig so handlers can return clean errors without
-// touching durable state.
+// saveConfigsLocked marshals + validates + persists the receiver list to the
+// plugin KV store (CL-19), then refreshes the in-memory configuration so the
+// write is visible to readers without waiting for a config-change hook.
 //
-// Mattermost's SavePluginConfig REPLACES the entire plugin config map
-// rather than merging. If we pass just `alertconfigsjson`, every
-// other setting (WebhookHost, MetricsToken, CA bundle, YAML TTL) gets
-// wiped on every save — which happens on /alertmanager add, remove,
-// rotate, and the background reconciler. The bug is silent: the
-// settings still appear in System Console (defaults from
-// plugin.json's settings_schema kick in), but custom values an
-// admin set are erased on the next mutate operation.
+// Why KV and not the plugin config map: entries hold webhook IDs (durable
+// bearer tokens for /hooks/<id>) and Alertmanager basic-auth passwords. Anything
+// in the config map is returned by GET /api/v4/config to delegated console roles
+// (sysconsole_read_plugins) unless flagged secret. The KV store is not exposed
+// there, so moving the list off the config map takes those secrets out of that
+// read surface entirely.
 //
-// Fix: always pass the full set of keys we own. Read the live
-// configuration first, splice in the new alertconfigsjson, write
-// the merged map back. Lowercased keys because MM's webapp
-// lowercases setting.key when constructing the storage path —
-// keeping our save path aligned with its read path. Go's
-// case-insensitive JSON unmarshaling handles the read side
-// regardless.
-// saveConfigsLocked persists the receiver list. The caller MUST hold
-// configWriteMu across its entire read-modify-write (from the initial
-// getConfiguration read through this save) — that's what makes the RMW
-// atomic and prevents lost updates (two callers computing from the same
-// stale snapshot, the second clobbering the first). Locking only inside
-// the save serialized writes but did not close that race.
+// KVSet does NOT trigger OnConfigurationChange (only settings_schema writes do),
+// so this function updates the runtime configuration itself. The OTHER settings
+// (WebhookHost, MetricsToken, CA bundle, TTL, rotation days) stay in the config
+// map and are read from the current live configuration here — unchanged by this
+// write, so no splice-and-rewrite dance is needed anymore.
+//
+// The caller MUST hold configWriteMu across its entire read-modify-write (from
+// the initial getConfiguration read through this save) — that's what makes the
+// RMW atomic and prevents lost updates (two callers computing from the same
+// stale snapshot, the second clobbering the first).
 func (p *Plugin) saveConfigsLocked(entries []alertConfig) error {
 	// Guard: TryLock succeeds only when the mutex is unlocked, so a success
 	// here means nobody holds it — a caller forgot to lock. Fail loud rather
@@ -840,18 +835,22 @@ func (p *Plugin) saveConfigsLocked(entries []alertConfig) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if _, err := parseAlertConfigs(string(blob)); err != nil {
+	// Validate before persisting so a bad write can't corrupt durable state.
+	parsed, err := parseAlertConfigs(string(blob))
+	if err != nil {
 		return fmt.Errorf("validation: %w", err)
 	}
+
+	if appErr := p.API.KVSet(kvKeyAlertConfigs, blob); appErr != nil {
+		return fmt.Errorf("persist receiver list to KV: %w", appErr)
+	}
+
+	// Refresh the in-memory config from the just-written entries; other settings
+	// are carried over from the current live configuration (KV write left them
+	// untouched).
 	cur := p.getConfiguration()
-	return p.client.Configuration.SavePluginConfig(map[string]any{
-		"alertconfigsjson":      string(blob),
-		"webhookhost":           cur.WebhookHost,
-		"assembledyamlttlhours": cur.AssembledYAMLTTLHours,
-		"alertmanagercabundle":  cur.AlertManagerCABundle,
-		"metricstoken":          cur.MetricsToken,
-		"webhookrotationdays":   cur.WebhookRotationDays,
-	})
+	p.setConfiguration(newConfiguration(parsed, cur.WebhookHost, cur.AssembledYAMLTTLHours, cur.AlertManagerCABundle, cur.MetricsToken, cur.WebhookRotationDays))
+	return nil
 }
 
 // renderRotateResponse builds the success message for /alertmanager

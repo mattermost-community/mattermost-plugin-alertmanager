@@ -105,12 +105,16 @@ the auto-delete janitor removes them. Default `72`. Set to `0` to
 disable auto-delete (files persist forever — not recommended for
 production).
 
-### Internal: `AlertConfigsJSON`
+### Internal: receiver list storage
 
-System Console → Plugins → Alertmanager → Advanced shows
-`AlertConfigsJSON` — the JSON-serialized receiver list managed by
-slash commands. Don't hand-edit unless you're recovering from a bug
-or batch-importing from another tool. Schema:
+The receiver list is stored in the plugin **KV store** (key
+`alertconfigs:v1`), not in the plugin config. It holds webhook IDs
+and any Alertmanager basic-auth passwords, and the KV store — unlike
+plugin config — is not returned by `GET /api/v4/config`, so those
+secrets aren't exposed to delegated System Console roles
+(`sysconsole_read_plugins`). It is managed entirely by slash commands;
+there is no System Console field to hand-edit it. The stored JSON shape
+is:
 
 ```json
 [

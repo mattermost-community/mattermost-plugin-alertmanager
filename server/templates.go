@@ -242,7 +242,7 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 	// literal block. Custom receivers skip the lookup ENTIRELY — Custom is the
 	// authoritative "no runbook content" contract, so it must hold even if a
 	// future catalog adds a runbook slug matching a persisted custom name (or an
-	// entry is imported via AlertConfigsJSON, bypassing name-collision validation).
+	// entry is written straight to the KV store, bypassing name-collision validation).
 	diagText := ""
 	if !custom {
 		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(receiverBaseSlug(name)))
