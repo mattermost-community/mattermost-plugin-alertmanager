@@ -121,6 +121,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
 	}
 
+	// --private creates the destination channel as PRIVATE when it doesn't yet
+	// exist (the caller is added as a member so their token can create the
+	// webhook). An existing channel keeps whatever type it already has.
+	private, rest := extractBoolFlag(rest, "--private")
+
 	// Extract optional `on` positional anywhere in the args list. Opts
 	// the receivers being created into the rotation reminder system.
 	// Default off — without this, the receivers we create here never
@@ -166,7 +171,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	// Resolve the destination channel ONCE rather than per-receiver. All
 	// receivers we create here share a channel, so one lookup is enough.
-	channelID, err := p.resolveOrCreateChannel(team, channel)
+	channelID, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
@@ -643,6 +648,9 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		}
 	}
 
+	// --private creates the destination channel as PRIVATE when it's new.
+	private, rest := extractBoolFlag(rest, "--private")
+
 	if len(rest) != 4 {
 		return addCustomUsageMessage(), nil
 	}
@@ -660,7 +668,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return ":warning: " + err.Error(), nil
 	}
 
-	channelID, err := p.resolveOrCreateChannel(team, channel)
+	channelID, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
@@ -832,6 +840,20 @@ func extractFlagValue(args []string, prefix string) (value string, rest []string
 		rest = append(rest, a)
 	}
 	return value, rest
+}
+
+// extractBoolFlag removes a bare boolean flag (e.g. `--private`) from anywhere in
+// args, returning whether it was present and the remaining positionals.
+func extractBoolFlag(args []string, flag string) (present bool, rest []string) {
+	rest = make([]string, 0, len(args))
+	for _, a := range args {
+		if a == flag {
+			present = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return present, rest
 }
 
 // runbookSlugs reads the embedded runbooks/ directory and returns the

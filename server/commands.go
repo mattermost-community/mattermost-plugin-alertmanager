@@ -15,8 +15,8 @@ const (
 	helpMsg = "**Alertmanager bridge slash commands** _(channel-scoped — you only see receivers bound to this channel)_\n\n" +
 		"_All commands listed in alphabetical order to match the autocomplete dropdown._\n\n" +
 		"- `/alertmanager about` — plugin build info, configured settings, reconciler health, jump-off links\n" +
-		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=]` — create receivers for a group set OR an individual runbook slug. Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`).\n" +
-		"- `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]` — create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. Unlike `add`, it does NOT generate a `runbook=` route — you wire the matcher manually (the DM'd/exported config includes a commented stub). Use for custom alerts that don't map to a shipped runbook. See `/alertmanager docs configuration`.\n" +
+		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=] [--private]` — create receivers for a group set OR an individual runbook slug. `--private` creates the destination channel as PRIVATE when it doesn't already exist (you're added as a member). Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`).\n" +
+		"- `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>] [--private]` — create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. `--private` creates a private destination channel when new. Unlike `add`, it does NOT generate a `runbook=` route — you wire the matcher manually (the DM'd/exported config includes a commented stub). Use for custom alerts that don't map to a shipped runbook. See `/alertmanager docs configuration`.\n" +
 		"- `/alertmanager alerts` — list currently firing alerts (grouped by Alertmanager URL — one section per backend, not per receiver)\n" +
 		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
 		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: alerts, requirements, architecture, configuration, development, kubernetes, slash_commands)\n" +
@@ -105,6 +105,9 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "--format=standard", HelpText: "Default. alertmanager.yml receivers + routes to paste into a file-based Alertmanager."},
 		{Item: "--format=crd", HelpText: "Prometheus Operator: an AlertmanagerConfig (v1alpha1) + Secret to `kubectl apply`. Combine with --namespace= (default monitoring). See /alertmanager docs kubernetes."},
 	})
+	add.AddStaticListArgument("Optional: create the destination channel private if it does not yet exist", false, []model.AutocompleteListItem{
+		{Item: "--private", HelpText: "Create the destination channel as PRIVATE when it doesn't already exist (you're added as a member so your token can bind the webhook). Existing channels keep their type."},
+	})
 	root.AddCommand(add)
 
 	// add-custom: one generic (non-runbook) receiver with a user-chosen name.
@@ -119,6 +122,9 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash."},
 	})
 	addCustom.AddTextArgument("Custom receiver name: lowercase [a-z0-9_-], no `--`, not a runbook slug or category set. Full name becomes `<name>--<team>-<channel>` (max 190 chars).", "[name]", "")
+	addCustom.AddStaticListArgument("Optional: create the destination channel private if it does not yet exist", false, []model.AutocompleteListItem{
+		{Item: "--private", HelpText: "Create the destination channel as PRIVATE when it doesn't already exist (you're added as a member)."},
+	})
 	root.AddCommand(addCustom)
 
 	root.AddCommand(model.NewAutocompleteData("alerts", "", "List currently firing alerts (grouped by Alertmanager URL)"))

@@ -406,7 +406,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		}
 	}
 
-	channelID, err := p.resolveOrCreateChannel(target.Team, target.Channel)
+	channelID, err := p.resolveOrCreateChannel(target.Team, target.Channel, false, "")
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), nil
 	}
@@ -753,10 +753,13 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	return b.String(), nil
 }
 
-// resolveOrCreateChannel maps team-slug + channel-slug → channel ID,
-// creating the channel as an open channel if missing. Used by add and
-// rotate when we need to bind a webhook to a channel.
-func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string) (string, error) {
+// resolveOrCreateChannel maps team-slug + channel-slug → channel ID, creating
+// the channel if missing. When private is true a private channel is created and
+// the caller is added as a member (a private channel is invisible to the caller
+// otherwise, and the webhook is created with the caller's token, which requires
+// channel access). callerUserID may be empty for paths that only ever resolve an
+// existing channel (e.g. rotate). Used by add / add-custom / rotate.
+func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bool, callerUserID string) (string, error) {
 	team, appErr := p.API.GetTeamByName(teamSlug)
 	if appErr != nil {
 		return "", fmt.Errorf("get team %q: %w", teamSlug, appErr)
@@ -770,15 +773,29 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string) (string, e
 		return "", fmt.Errorf("get channel %q: %w", channelSlug, appErr)
 	}
 
+	chanType := model.ChannelTypeOpen
+	if private {
+		chanType = model.ChannelTypePrivate
+	}
 	created, appErr := p.API.CreateChannel(&model.Channel{
 		Name:        channelSlug,
 		DisplayName: channelSlug,
-		Type:        model.ChannelTypeOpen,
+		Type:        chanType,
 		TeamId:      team.Id,
 		CreatorId:   p.BotUserID,
 	})
 	if appErr != nil {
 		return "", fmt.Errorf("create channel %q: %w", channelSlug, appErr)
+	}
+
+	// Private channels are invisible to non-members and the webhook is created
+	// with the caller's token, so add the caller. Best-effort: a membership
+	// failure shouldn't lose the created channel — surface it via the webhook
+	// step's own error if it then fails.
+	if private && callerUserID != "" {
+		if _, mErr := p.API.AddChannelMember(created.Id, callerUserID); mErr != nil {
+			p.API.LogWarn("could not add caller to new private channel", "channel", channelSlug, "err", mErr.Error())
+		}
 	}
 	return created.Id, nil
 }
