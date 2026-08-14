@@ -171,9 +171,7 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 	// Second pass: find overdue receivers, group by channel, and DM.
 	byChannel := make(map[string][]rotationOverdueEntry)
 	channelToTeam := make(map[string]string)
-	indexByName := make(map[string]int, len(updated))
-	for i, c := range updated {
-		indexByName[c.Name] = i
+	for _, c := range updated {
 		// Per-receiver opt-in: skip receivers that weren't created
 		// with the `on` flag at /alertmanager add time. The global
 		// WebhookRotationDays threshold only fires reminders for
@@ -201,6 +199,10 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 		channelToTeam[c.Channel] = c.Team
 	}
 
+	// Names we DM'd this cycle — their LastReminderAt gets stamped in the durable
+	// write below (keyed by name so it's correct against a concurrently-modified
+	// KV list, not by the stale index).
+	remindedNames := make(map[string]bool)
 	if len(byChannel) > 0 {
 		// Resolve a recipient — for v1, DM the calling sysadmin we
 		// already minted a PAT for. Future: enumerate channel team
@@ -212,20 +214,33 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 
 		for channel, entries := range byChannel {
 			p.sendRotationReminderDM(dm.Id, channel, entries, cfg.WebhookRotationDays)
-			// Stamp LastReminderAt on each entry we just notified.
 			for _, e := range entries {
-				if idx, ok := indexByName[e.Name]; ok {
-					updated[idx].LastReminderAt = now
-					mutated = true
-				}
+				remindedNames[e.Name] = true
 			}
 			p.auditLog("webhook.rotation.reminder", sysadminID, channel,
 				"", fmt.Sprintf("count=%d", len(entries)))
 		}
 	}
 
-	if mutated {
-		if err := p.saveConfigsLocked(updated); err != nil {
+	// Persist stamps under compare-and-set (CL-24): re-apply the migration stamp
+	// to any entry whose LastRotatedAt is still zero in the freshly-read KV list,
+	// and the reminder stamp to every entry we just DM'd. Keyed by zero-ness and
+	// name so a slash command adding/rotating on another pod between our read and
+	// this write is not clobbered. The DMs already went out and are not replayed.
+	if mutated || len(remindedNames) > 0 {
+		if _, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+			out := make([]alertConfig, len(current))
+			copy(out, current)
+			for i := range out {
+				if out[i].LastRotatedAt.IsZero() {
+					out[i].LastRotatedAt = now
+				}
+				if remindedNames[out[i].Name] {
+					out[i].LastReminderAt = now
+				}
+			}
+			return out, nil
+		}); err != nil {
 			return fmt.Errorf("persist rotation timestamps: %w", err)
 		}
 	}
@@ -337,27 +352,30 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		return nil, nil
 	}
 
-	// Re-read inside the write-modify path to minimize the race window
-	// with concurrent add/rotate operations.
-	fresh := p.getConfiguration().AlertConfigs
-	filtered := make([]alertConfig, 0, len(fresh))
+	// Prune the orphaned names from the freshly-read KV list under compare-and-set
+	// (CL-24): the probe above decided WHICH names are orphaned; applying that to
+	// the KV-current list — not the possibly-stale in-memory one — means a
+	// concurrent admin add/rotate on another pod is never clobbered.
 	pruned := make([]string, 0, len(orphanSet))
-	for _, c := range fresh {
-		if orphanSet[c.Name] {
-			pruned = append(pruned, c.Name)
-			continue
+	if _, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		pruned = pruned[:0] // reset per attempt
+		out := make([]alertConfig, 0, len(current))
+		for _, c := range current {
+			if orphanSet[c.Name] {
+				pruned = append(pruned, c.Name)
+				continue
+			}
+			out = append(out, c)
 		}
-		filtered = append(filtered, c)
+		return out, nil
+	}); err != nil {
+		p.API.LogWarn("reconciler: failed to persist after pruning orphans",
+			"orphanCount", len(orphanSet), "err", err.Error())
+		return nil, fmt.Errorf("persist filtered config: %w", err)
 	}
 
 	if len(pruned) == 0 {
 		return nil, nil
-	}
-
-	if err := p.saveConfigsLocked(filtered); err != nil {
-		p.API.LogWarn("reconciler: failed to persist after pruning orphans",
-			"pruned", strings.Join(pruned, ","), "err", err.Error())
-		return nil, fmt.Errorf("persist filtered config: %w", err)
 	}
 
 	p.API.LogInfo("reconciler: pruned orphan receivers (webhooks deleted out-of-band)",

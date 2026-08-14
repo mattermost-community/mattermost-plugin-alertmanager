@@ -81,7 +81,6 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	p.configWriteMu.Lock()
 	defer p.configWriteMu.Unlock()
 
-	current := p.getConfiguration().AlertConfigs
 	// CL-02: resolve only within receivers bound to THIS team+channel so a
 	// guessed short name can't reach another team's receiver, then confirm the
 	// resolved name really is in scope — resolveReceiverName echoes its input on a
@@ -92,21 +91,27 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	if !receiverNameInScope(scoped, resolved) {
 		return fmt.Sprintf("Receiver %q not found.", name), nil
 	}
+
 	var hookID string
-	filtered := make([]alertConfig, 0, len(current))
-	for _, c := range current {
-		if c.Name == resolved {
-			hookID = c.WebhookID
-			continue
+	_, filtered, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		hookID = "" // reset per attempt — the transform may run more than once
+		out := make([]alertConfig, 0, len(current))
+		for _, c := range current {
+			if c.Name == resolved {
+				hookID = c.WebhookID
+				continue
+			}
+			out = append(out, c)
 		}
-		filtered = append(filtered, c)
+		return out, nil
+	})
+	if err != nil {
+		return fmt.Sprintf("Failed to persist config: %v", err), nil
 	}
 	if hookID == "" {
+		// In scope per the in-memory snapshot but absent from the freshly-read KV
+		// list — a concurrent writer already removed it.
 		return fmt.Sprintf("Receiver %q not found.", name), nil
-	}
-
-	if err := p.saveConfigsLocked(filtered); err != nil {
-		return fmt.Sprintf("Failed to persist config: %v", err), nil
 	}
 
 	// Refcount: only delete the underlying webhook if no other receiver
@@ -194,18 +199,20 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 		namesToRemove[c.Name] = true
 	}
 
-	current := p.getConfiguration().AlertConfigs
-	filtered := make([]alertConfig, 0, len(current))
 	removed := make([]string, 0, len(scoped))
-	for _, c := range current {
-		if !namesToRemove[c.Name] {
-			filtered = append(filtered, c)
-			continue
+	current, filtered, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		removed = removed[:0] // reset per attempt
+		out := make([]alertConfig, 0, len(current))
+		for _, c := range current {
+			if !namesToRemove[c.Name] {
+				out = append(out, c)
+				continue
+			}
+			removed = append(removed, c.Name)
 		}
-		removed = append(removed, c.Name)
-	}
-
-	if err := p.saveConfigsLocked(filtered); err != nil {
+		return out, nil
+	})
+	if err != nil {
 		return fmt.Sprintf("Failed to persist config after bulk delete: %v", err), nil
 	}
 
@@ -291,18 +298,20 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 		namesToRemove[c.Name] = true
 	}
 
-	current := p.getConfiguration().AlertConfigs
-	filtered := make([]alertConfig, 0, len(current))
 	removed := make([]string, 0, len(matched))
-	for _, c := range current {
-		if !namesToRemove[c.Name] {
-			filtered = append(filtered, c)
-			continue
+	current, filtered, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		removed = removed[:0] // reset per attempt
+		out := make([]alertConfig, 0, len(current))
+		for _, c := range current {
+			if !namesToRemove[c.Name] {
+				out = append(out, c)
+				continue
+			}
+			removed = append(removed, c.Name)
 		}
-		removed = append(removed, c.Name)
-	}
-
-	if err := p.saveConfigsLocked(filtered); err != nil {
+		return out, nil
+	})
+	if err != nil {
 		return fmt.Sprintf("Failed to persist config after set delete: %v", err), nil
 	}
 
@@ -385,7 +394,6 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	p.configWriteMu.Lock()
 	defer p.configWriteMu.Unlock()
 
-	current := p.getConfiguration().AlertConfigs
 	// CL-02: scope resolution to this team+channel and confirm membership before
 	// touching anything — same guard as handleRemoveOne. Rotating another team's
 	// receiver is blocked by the webhook API's 403 anyway, but scoping stops the
@@ -395,33 +403,21 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	if !receiverNameInScope(scoped, resolved) {
 		return fmt.Sprintf("Receiver %q not found.", name), nil
 	}
-	targetIdx := -1
-	for i, c := range current {
+	// Read the target's current shape from the in-memory snapshot for the webhook
+	// side effects and display; the durable update below re-reads from KV and keys
+	// off the webhook ID, so a concurrent write can't make us rotate the wrong set.
+	var target alertConfig
+	found := false
+	for _, c := range scoped {
 		if c.Name == resolved {
-			targetIdx = i
+			target, found = c, true
 			break
 		}
 	}
-	if targetIdx == -1 {
+	if !found {
 		return fmt.Sprintf("Receiver %q not found.", name), nil
 	}
-
-	target := current[targetIdx]
 	oldHookID := target.WebhookID
-
-	// Find every receiver sharing this webhookID. For legacy receivers
-	// (empty GroupName, individual webhook) this is just the named one.
-	// For grouped receivers it's the whole group, including any in other
-	// channels — though with the current group-create logic, all members
-	// share team+channel so cross-channel sharing shouldn't arise. Still,
-	// the parser tolerates it via the same-team+channel+group invariant,
-	// so the rotation handler tolerates it too.
-	affectedIdx := make([]int, 0)
-	for i, c := range current {
-		if c.WebhookID == oldHookID {
-			affectedIdx = append(affectedIdx, i)
-		}
-	}
 
 	// Rotation resolves the receiver's existing channel; target.Team/Channel are
 	// already canonical, and a rotate never scaffolds a new channel, so only the
@@ -457,35 +453,53 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		p.API.LogWarn("could not delete old webhook during rotation (continuing)", "receiver", target.Name, "webhook", redactHookID(oldHookID), "err", err.Error())
 	}
 
-	updated := make([]alertConfig, len(current))
-	copy(updated, current)
+	// Durable update: repoint every receiver sharing the old webhook ID to the new
+	// one. Keyed off oldHookID (not indices from the stale snapshot) so it stays
+	// correct against the freshly-read KV list; the create/delete above already ran
+	// and are NOT replayed on a CAS retry.
 	now := time.Now().UTC()
-	for _, idx := range affectedIdx {
-		updated[idx].WebhookID = newHookID
-		updated[idx].LastRotatedAt = now
-		updated[idx].LastReminderAt = time.Time{}
-	}
-
-	if err := p.saveConfigsLocked(updated); err != nil {
+	_, after, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		out := make([]alertConfig, len(current))
+		copy(out, current)
+		for i := range out {
+			if out[i].WebhookID == oldHookID {
+				out[i].WebhookID = newHookID
+				out[i].LastRotatedAt = now
+				out[i].LastReminderAt = time.Time{}
+			}
+		}
+		return out, nil
+	})
+	if err != nil {
 		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
 		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v", err), nil
 	}
 
+	// The affected set is every receiver now carrying the new webhook ID.
+	affected := make([]alertConfig, 0, 1)
+	for _, c := range after {
+		if c.WebhookID == newHookID {
+			affected = append(affected, c)
+		}
+	}
+	if len(affected) == 0 {
+		// A concurrent rotate/remove already repointed or dropped these receivers
+		// between our snapshot and the durable write, so the webhook we just minted
+		// serves nothing — clean it up rather than leave an orphan.
+		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
+		return fmt.Sprintf("Receiver `%s` was modified concurrently; nothing was rotated. Re-run if still needed.", resolved), nil
+	}
+
 	p.auditLog("webhook.rotation.executed", args.UserId, target.Name, args.ChannelId,
-		fmt.Sprintf("affected=%d group=%q", len(affectedIdx), target.GroupName))
+		fmt.Sprintf("affected=%d group=%q", len(affected), target.GroupName))
 
 	// Single-receiver case (legacy or true individual): inline YAML,
 	// matches v1.0.2 behavior.
-	if len(affectedIdx) == 1 {
-		ac := updated[affectedIdx[0]]
-		return p.renderRotateResponse(ac, oldDeleted, oldHookID), nil
+	if len(affected) == 1 {
+		return p.renderRotateResponse(affected[0], oldDeleted, oldHookID), nil
 	}
 
 	// Group case: list affected receivers, DM the merged YAML bundle.
-	affected := make([]alertConfig, 0, len(affectedIdx))
-	for _, idx := range affectedIdx {
-		affected = append(affected, updated[idx])
-	}
 	return p.renderRotateGroupResponse(args.UserId, affected, target.GroupName, oldDeleted, oldHookID), nil
 }
 
@@ -882,57 +896,81 @@ func (p *Plugin) rollbackCreatedChannel(created bool, channelID string) {
 	}
 }
 
-// saveConfigsLocked marshals + validates + persists the receiver list to the
-// plugin KV store (CL-19), then refreshes the in-memory configuration so the
-// write is visible to readers without waiting for a config-change hook.
+// maxConfigWriteAttempts caps the compare-and-set retry loop in
+// updateConfigsAtomic. Contention on the receiver list is admin-initiated and
+// rare; a handful of attempts absorbs a genuine cross-pod race without spinning.
+const maxConfigWriteAttempts = 5
+
+// updateConfigsAtomic performs a cluster-safe read-modify-write of the receiver
+// list (CL-24) and returns the list as it was BEFORE the change and AFTER it.
 //
-// Why KV and not the plugin config map: entries hold webhook IDs (durable
-// bearer tokens for /hooks/<id>) and Alertmanager basic-auth passwords. Anything
-// in the config map is returned by GET /api/v4/config to delegated console roles
-// (sysconsole_read_plugins) unless flagged secret. The KV store is not exposed
-// there, so moving the list off the config map takes those secrets out of that
-// read surface entirely.
+// configWriteMu only serializes writers within ONE pod. In HA, slash commands
+// run on whichever pod serves the request, a KV write does NOT fire
+// OnConfigurationChange on the other pods, and SavePluginConfig/KVSet is a blind
+// overwrite — so two pods each computing from their own stale in-memory snapshot
+// would lose an update. This reads the list straight from KV, applies transform
+// to that fresh state, and commits with KVCompareAndSet (the write lands only if
+// KV still holds exactly what we read); on a lost race it reloads and retries.
 //
-// KVSet does NOT trigger OnConfigurationChange (only settings_schema writes do),
-// so this function updates the runtime configuration itself. The OTHER settings
-// (WebhookHost, MetricsToken, CA bundle, TTL, rotation days) stay in the config
-// map and are read from the current live configuration here — unchanged by this
-// write, so no splice-and-rewrite dance is needed anymore.
+// transform must be a PURE function of the list it is handed — it may run several
+// times, so it must not perform side effects (create/delete webhooks etc.). Do
+// those before (incorporating the result into the transform) or after, keyed off
+// the returned before/after lists.
 //
-// The caller MUST hold configWriteMu across its entire read-modify-write (from
-// the initial getConfiguration read through this save) — that's what makes the
-// RMW atomic and prevents lost updates (two callers computing from the same
-// stale snapshot, the second clobbering the first).
-func (p *Plugin) saveConfigsLocked(entries []alertConfig) error {
-	// Guard: TryLock succeeds only when the mutex is unlocked, so a success
-	// here means nobody holds it — a caller forgot to lock. Fail loud rather
-	// than silently reopen the race. Never false-positives: if this goroutine
-	// (or any other) holds the lock, TryLock returns false and we proceed.
+// The caller MUST hold configWriteMu across its whole RMW; the guard panics
+// otherwise. Holding it keeps intra-pod writers from needlessly losing CAS races
+// to each other — CAS then only ever retries on a genuine cross-pod conflict.
+func (p *Plugin) updateConfigsAtomic(transform func(current []alertConfig) ([]alertConfig, error)) (before, after []alertConfig, err error) {
+	// Guard: TryLock succeeds only when the mutex is unlocked, so a success here
+	// means nobody holds it — a caller forgot to lock. Fail loud rather than
+	// silently reopen the race.
 	if p.configWriteMu.TryLock() {
 		p.configWriteMu.Unlock()
-		panic("saveConfigsLocked called without configWriteMu held — lock configWriteMu across the full read-modify-write")
+		panic("updateConfigsAtomic called without configWriteMu held — lock configWriteMu across the full read-modify-write")
 	}
 
-	blob, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	// Validate before persisting so a bad write can't corrupt durable state.
-	parsed, err := parseAlertConfigs(string(blob))
-	if err != nil {
-		return fmt.Errorf("validation: %w", err)
-	}
+	for attempt := 0; attempt < maxConfigWriteAttempts; attempt++ {
+		oldBytes, appErr := p.API.KVGet(kvKeyAlertConfigs)
+		if appErr != nil {
+			return nil, nil, fmt.Errorf("read receiver list from KV: %w", appErr)
+		}
+		current, perr := parseAlertConfigs(string(oldBytes))
+		if perr != nil {
+			return nil, nil, fmt.Errorf("parse current receiver list: %w", perr)
+		}
 
-	if appErr := p.API.KVSet(kvKeyAlertConfigs, blob); appErr != nil {
-		return fmt.Errorf("persist receiver list to KV: %w", appErr)
-	}
+		next, terr := transform(current)
+		if terr != nil {
+			return nil, nil, terr
+		}
 
-	// Refresh the in-memory config from the just-written entries; other settings
-	// are carried over from the current live configuration (KV write left them
-	// untouched).
-	cur := p.getConfiguration()
-	p.setConfiguration(newConfiguration(parsed, cur.WebhookHost, cur.AssembledYAMLTTLHours, cur.AlertManagerCABundle, cur.MetricsToken, cur.WebhookRotationDays))
-	return nil
+		newBytes, merr := json.MarshalIndent(next, "", "  ")
+		if merr != nil {
+			return nil, nil, fmt.Errorf("marshal: %w", merr)
+		}
+		// Validate before persisting so a bad write can't corrupt durable state.
+		parsed, verr := parseAlertConfigs(string(newBytes))
+		if verr != nil {
+			return nil, nil, fmt.Errorf("validation: %w", verr)
+		}
+
+		// Commit only if KV still holds exactly what we read. A nil/empty oldBytes
+		// (fresh install) makes this an insert-if-absent, which is what we want.
+		set, appErr := p.API.KVCompareAndSet(kvKeyAlertConfigs, oldBytes, newBytes)
+		if appErr != nil {
+			return nil, nil, fmt.Errorf("persist receiver list to KV: %w", appErr)
+		}
+		if !set {
+			continue // another pod wrote between our read and write — reload + retry
+		}
+
+		// Refresh in-memory config from the committed write; the other settings
+		// live in the config map and are untouched by this KV write.
+		cur := p.getConfiguration()
+		p.setConfiguration(newConfiguration(parsed, cur.WebhookHost, cur.AssembledYAMLTTLHours, cur.AlertManagerCABundle, cur.MetricsToken, cur.WebhookRotationDays))
+		return current, parsed, nil
+	}
+	return nil, nil, fmt.Errorf("receiver list is being modified concurrently; please retry")
 }
 
 // renderRotateResponse builds the success message for /alertmanager

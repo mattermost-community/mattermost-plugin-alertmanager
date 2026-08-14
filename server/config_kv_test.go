@@ -1,37 +1,48 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
-// fakeKVAPI implements only the KV-store methods of plugin.API for the CL-19
-// round-trip test. Embedding the interface satisfies the full method set at
-// compile time; any method other than KVGet/KVSet panics if called, which is
-// fine because saveConfigsLocked / loadAlertConfigsFromKV touch only the KV
-// store. Nothing here writes to a plugin config map — that's the point of CL-19.
+// fakeKVAPI implements the KV-store methods updateConfigsAtomic /
+// loadAlertConfigsFromKV use. Embedding the interface satisfies the full method
+// set; only KVGet/KVCompareAndSet are exercised. casFailuresRemaining lets a test
+// simulate a cross-pod CAS conflict: KVCompareAndSet reports a lost race that
+// many times before actually committing, so the retry loop can be observed.
 type fakeKVAPI struct {
 	plugin.API
-	store map[string][]byte
-}
-
-func (f *fakeKVAPI) KVSet(key string, value []byte) *model.AppError {
-	f.store[key] = value
-	return nil
+	store                map[string][]byte
+	casFailuresRemaining int
+	casCalls             int
 }
 
 func (f *fakeKVAPI) KVGet(key string) ([]byte, *model.AppError) {
-	return f.store[key], nil // absent key returns nil, which loadAlertConfigsFromKV treats as empty
+	return f.store[key], nil // absent key returns nil, treated as empty
 }
 
-// TestAlertConfigsKVRoundTrip is the CL-19 regression: the receiver list (with
-// its webhook IDs and Alertmanager passwords) must persist to the plugin KV
-// store — not a config-map key readable via GET /api/v4/config — and round-trip
-// back with the secrets intact. It also confirms saveConfigsLocked refreshes the
-// in-memory configuration itself, since a KV write fires no OnConfigurationChange.
-func TestAlertConfigsKVRoundTrip(t *testing.T) {
+func (f *fakeKVAPI) KVCompareAndSet(key string, oldValue, newValue []byte) (bool, *model.AppError) {
+	f.casCalls++
+	if f.casFailuresRemaining > 0 {
+		f.casFailuresRemaining--
+		return false, nil // simulate another pod having written first
+	}
+	if !bytes.Equal(f.store[key], oldValue) {
+		return false, nil
+	}
+	f.store[key] = newValue
+	return true, nil
+}
+
+// TestUpdateConfigsAtomicRoundTrip is the CL-19 + CL-24 happy path: the receiver
+// list (with its webhook IDs and Alertmanager passwords) persists to the plugin
+// KV store — not a config-map key readable via GET /api/v4/config — via
+// compare-and-set, round-trips back with the secrets intact, and refreshes the
+// in-memory configuration (no OnConfigurationChange fires for a KV write).
+func TestUpdateConfigsAtomicRoundTrip(t *testing.T) {
 	api := &fakeKVAPI{store: map[string][]byte{}}
 	p := &Plugin{}
 	p.API = api
@@ -46,14 +57,20 @@ func TestAlertConfigsKVRoundTrip(t *testing.T) {
 	}}
 
 	p.configWriteMu.Lock()
-	err := p.saveConfigsLocked(entries)
+	before, after, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		return append(current, entries...), nil
+	})
 	p.configWriteMu.Unlock()
 	if err != nil {
-		t.Fatalf("saveConfigsLocked: %v", err)
+		t.Fatalf("updateConfigsAtomic: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("expected empty before-list on a fresh store, got %d", len(before))
+	}
+	if len(after) != 1 || after[0].Password != "s3cret" {
+		t.Fatalf("after-list wrong: %#v", after)
 	}
 
-	// The list is under the KV key, and that is the ONLY key written — no config
-	// map, no other keys that GET /api/v4/config could surface.
 	if _, ok := api.store[kvKeyAlertConfigs]; !ok {
 		t.Fatalf("receiver list not stored under KV key %q", kvKeyAlertConfigs)
 	}
@@ -61,21 +78,61 @@ func TestAlertConfigsKVRoundTrip(t *testing.T) {
 		t.Fatalf("expected exactly one KV key written, got %d: %v", len(api.store), api.store)
 	}
 
-	// saveConfigsLocked must refresh the in-memory config (KVSet fires no hook).
 	if got := p.getConfiguration().AlertConfigs; len(got) != 1 || got[0].WebhookID != "abc123" {
 		t.Fatalf("in-memory config not refreshed after save: %#v", got)
 	}
 
-	// Round-trips back through the loader with the secret fields intact.
 	loaded, err := p.loadAlertConfigsFromKV()
 	if err != nil {
 		t.Fatalf("loadAlertConfigsFromKV: %v", err)
 	}
-	if len(loaded) != 1 {
-		t.Fatalf("expected 1 entry from KV, got %d", len(loaded))
+	if len(loaded) != 1 || loaded[0].WebhookID != "abc123" || loaded[0].Password != "s3cret" || loaded[0].User != "svc" {
+		t.Fatalf("round-trip lost secret data: %#v", loaded)
 	}
-	if loaded[0].WebhookID != "abc123" || loaded[0].Password != "s3cret" || loaded[0].User != "svc" {
-		t.Fatalf("round-trip lost secret data: %#v", loaded[0])
+}
+
+// TestUpdateConfigsAtomicRetriesOnCASMiss is the CL-24 regression: when the CAS
+// loses a race (another pod wrote first), the loop reloads and retries rather
+// than clobbering the winner, and the transform re-runs against fresh state.
+func TestUpdateConfigsAtomicRetriesOnCASMiss(t *testing.T) {
+	api := &fakeKVAPI{store: map[string][]byte{}, casFailuresRemaining: 2}
+	p := &Plugin{}
+	p.API = api
+
+	transformRuns := 0
+	p.configWriteMu.Lock()
+	_, after, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		transformRuns++
+		return []alertConfig{{Name: "high-cpu-usage--t-c", Team: "t", Channel: "c", WebhookID: "h"}}, nil
+	})
+	p.configWriteMu.Unlock()
+	if err != nil {
+		t.Fatalf("expected eventual success after CAS retries, got %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("expected the write to commit after retries, got %#v", after)
+	}
+	// Two simulated conflicts + one success = three CAS attempts, three transforms.
+	if api.casCalls != 3 || transformRuns != 3 {
+		t.Fatalf("expected 3 CAS calls and 3 transform runs, got casCalls=%d runs=%d", api.casCalls, transformRuns)
+	}
+}
+
+// TestUpdateConfigsAtomicGivesUpUnderContention verifies the loop bounds itself:
+// persistent CAS conflicts return an error rather than spinning forever.
+func TestUpdateConfigsAtomicGivesUpUnderContention(t *testing.T) {
+	api := &fakeKVAPI{store: map[string][]byte{}, casFailuresRemaining: 999}
+	p := &Plugin{}
+	p.API = api
+
+	p.configWriteMu.Lock()
+	_, _, err := p.updateConfigsAtomic(noopTransform)
+	p.configWriteMu.Unlock()
+	if err == nil {
+		t.Fatal("expected an error under unrelenting CAS contention, got nil")
+	}
+	if api.casCalls != maxConfigWriteAttempts {
+		t.Fatalf("expected exactly %d CAS attempts, got %d", maxConfigWriteAttempts, api.casCalls)
 	}
 }
 

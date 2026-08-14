@@ -269,11 +269,15 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// firings = atomic-to-plugin-settings semantics. If the save fails, we
 	// roll back the shared webhook so the user isn't left with an orphan.
 	if len(newEntries) > 0 {
-		// slices.Concat allocates a fresh backing array — guards against
-		// the append-aliasing pitfall where reusing the source slice's
-		// capacity would mutate p.getConfiguration().AlertConfigs in place.
-		merged := slices.Concat(p.getConfiguration().AlertConfigs, newEntries)
-		if err := p.saveConfigsLocked(merged); err != nil {
+		// Append the new entries to the freshly-read KV list under compare-and-set
+		// (CL-24). slices.Concat allocates a fresh backing array — guards against the
+		// append-aliasing pitfall of reusing the source slice's capacity. A
+		// concurrent add of a colliding name surfaces as a validation failure inside
+		// updateConfigsAtomic, which rolls back the webhook + channel below.
+		_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+			return slices.Concat(current, newEntries), nil
+		})
+		if err != nil {
 			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
 			p.rollbackCreatedChannel(channelCreated, channelID)
 			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v", err), nil
@@ -727,8 +731,10 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		LastRotatedAt:       time.Now().UTC(),
 	}
 
-	merged := slices.Concat(p.getConfiguration().AlertConfigs, []alertConfig{entry})
-	if err := p.saveConfigsLocked(merged); err != nil {
+	_, _, err = p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		return slices.Concat(current, []alertConfig{entry}), nil
+	})
+	if err != nil {
 		_ = p.deleteIncomingWebhook(args.UserId, hookID)
 		p.rollbackCreatedChannel(channelCreated, channelID)
 		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v", err), nil
