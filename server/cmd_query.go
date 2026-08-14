@@ -14,6 +14,24 @@ import (
 	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
 
+// sanitizeInlineMarkdown strips the characters an attacker-controlled string
+// could use to break out of its context in a bot-rendered markdown post
+// (C-005): backtick (code-span breakout), CR/LF (heading/list injection), and
+// parens + angle brackets (disguised [x](y) links, ![x](y) images, <url>
+// autolinks). This is the Go-side counterpart to mdSanitizeDirective (CL-06):
+// /alertmanager alerts and /alertmanager silences render AM-supplied alert
+// summaries, silence comments, and createdBy values — controlled by anyone who
+// can post an alert or create a silence on the Alertmanager.
+func sanitizeInlineMarkdown(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '`', '\r', '\n', '(', ')', '<', '>':
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // derefStr returns *p, or "" if p is nil. Used throughout the silence
 // formatting code because the swagger-generated GettableSilence model
 // uses pointer fields for all required string properties (id, comment,
@@ -233,8 +251,10 @@ func formatAlertLine(a *alert.Alert) string {
 		summary = string(v)
 	}
 	resolved := strconv.FormatBool(a.Resolved())
+	// alertname, severity, and summary are all attacker-influenceable (whoever
+	// posts the alert sets them) and land in a bot-authored post — sanitize (C-005).
 	return fmt.Sprintf("- **%s** [%s] severity=`%s` resolved=`%s` — %s\n",
-		a.Name(), status, severity, resolved, summary)
+		sanitizeInlineMarkdown(a.Name()), status, sanitizeInlineMarkdown(severity), resolved, sanitizeInlineMarkdown(summary))
 }
 
 // handleListSilences lists active silences for receivers in the current
@@ -321,7 +341,7 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 		if m == nil {
 			continue
 		}
-		matchers = append(matchers, fmt.Sprintf("`%s=%q`", derefStr(m.Name), derefStr(m.Value)))
+		matchers = append(matchers, fmt.Sprintf("`%s=%q`", sanitizeInlineMarkdown(derefStr(m.Name)), sanitizeInlineMarkdown(derefStr(m.Value))))
 	}
 	var endsAt, startsAt time.Time
 	if s.EndsAt != nil {
@@ -334,11 +354,14 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 	id := derefStr(s.ID)
 	return fmt.Sprintf(
 		"- **ID:** `%s`\n  **By:** %s • **Created:** %s ago • **Ends in:** %s\n  **Matchers:** %s\n  **Comment:** %s\n  **Expire:** `/alertmanager expire_silence %s %s`\n\n",
-		id, derefStr(s.CreatedBy),
+		// CreatedBy and Comment are set by whoever created the silence on the AM —
+		// sanitize before rendering into the bot post (C-005). id is a validated
+		// UUID and configName is plugin-owned, so both are safe as-is.
+		id, sanitizeInlineMarkdown(derefStr(s.CreatedBy)),
 		durafmt.Parse(time.Since(startsAt)).LimitFirstN(2).String(),
 		endsIn,
 		strings.Join(matchers, " "),
-		derefStr(s.Comment),
+		sanitizeInlineMarkdown(derefStr(s.Comment)),
 		configName, id,
 	)
 }

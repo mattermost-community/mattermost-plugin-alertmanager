@@ -2,8 +2,37 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
+
+// TestSanitizeInlineMarkdown is the C-005 regression: AM-supplied alert
+// summaries and silence comments render into a bot post, so the strip must
+// neutralize code-span breakout, disguised links/images, autolinks, and
+// newline-injected structure while leaving benign text intact.
+func TestSanitizeInlineMarkdown(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"benign text untouched", "disk 90% on web-01", "disk 90% on web-01"},
+		{"backtick stripped (code-span breakout)", "a`b`c", "abc"},
+		{"disguised link broken", "[Reset MFA](https://evil)", "[Reset MFA]https://evil"},
+		{"image broken", "![x](https://evil/beacon)", "![x]https://evil/beacon"},
+		{"autolink broken", "<https://evil>", "https://evil"},
+		{"newlines stripped", "line1\r\n### heading", "line1### heading"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeInlineMarkdown(tc.in); got != tc.want {
+			t.Errorf("sanitizeInlineMarkdown(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		// Belt-and-suspenders: no dangerous char survives, ever.
+		if strings.ContainsAny(sanitizeInlineMarkdown(tc.in), "`()<>\r\n") {
+			t.Errorf("dangerous character survived for input %q", tc.in)
+		}
+	}
+}
 
 // TestGroupByAMURL pins the dedup logic for the alerts/silences/status
 // commands. Without this collapse step, a channel hosting 20 receivers
