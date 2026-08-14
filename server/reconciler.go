@@ -138,12 +138,10 @@ const reminderRepeatInterval = 7 * 24 * time.Hour
 // and we want them to start a fresh clock rather than fire reminders
 // day-one. This is a one-time migration per receiver.
 func (p *Plugin) checkRotationReminders(sysadminID string) error {
-	// Atomic read-modify-write: hold configWriteMu across the read + save.
-	// Called sequentially after reconcileOrphans by runBackgroundReconcile
-	// (which does not hold the lock), so this is the sole acquirer here.
-	p.configWriteMu.Lock()
-	defer p.configWriteMu.Unlock()
-
+	// Overdue detection and the reminder DMs below run WITHOUT configWriteMu
+	// (the DMs are network calls); a slightly stale detection just defers a
+	// reminder to the next 5-minute cycle. configWriteMu is taken only around the
+	// durable stamp write, which re-reads KV under compare-and-set (CL-24/CL-25).
 	cfg := p.getConfiguration()
 	if cfg.WebhookRotationDays <= 0 {
 		return nil
@@ -228,7 +226,8 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 	// name so a slash command adding/rotating on another pod between our read and
 	// this write is not clobbered. The DMs already went out and are not replayed.
 	if mutated || len(remindedNames) > 0 {
-		if _, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		p.configWriteMu.Lock()
+		_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
 			out := make([]alertConfig, len(current))
 			copy(out, current)
 			for i := range out {
@@ -240,7 +239,9 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 				}
 			}
 			return out, nil
-		}); err != nil {
+		})
+		p.configWriteMu.Unlock()
+		if err != nil {
 			return fmt.Errorf("persist rotation timestamps: %w", err)
 		}
 	}
@@ -294,13 +295,12 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 // it can no longer clobber a concurrent admin add/rotate — the old
 // small-window race is closed by the lock, not tolerated.
 func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
-	// Atomic read-modify-write: hold configWriteMu across the read + save so
-	// the reconciler can't clobber a concurrent admin add/remove (lost
-	// update). Called sequentially by runBackgroundReconcile and by the manual
-	// reconcile command; neither holds the lock, so this is the sole acquirer.
-	p.configWriteMu.Lock()
-	defer p.configWriteMu.Unlock()
-
+	// The webhook probing below makes serial loopback Client4 calls; it runs
+	// WITHOUT configWriteMu so a slow probe can't stall lifecycle commands
+	// (CL-25). Correctness doesn't need the lock here: updateConfigsAtomic
+	// re-reads KV under compare-and-set and applies the orphan decision to that
+	// fresh list, so a concurrent add/rotate is never clobbered. The lock is taken
+	// only around the durable write.
 	current := p.getConfiguration().AlertConfigs
 	if len(current) == 0 {
 		return nil, nil
@@ -357,7 +357,8 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 	// the KV-current list — not the possibly-stale in-memory one — means a
 	// concurrent admin add/rotate on another pod is never clobbered.
 	pruned := make([]string, 0, len(orphanSet))
-	if _, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+	p.configWriteMu.Lock()
+	_, _, err = p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
 		pruned = pruned[:0] // reset per attempt
 		out := make([]alertConfig, 0, len(current))
 		for _, c := range current {
@@ -368,7 +369,9 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 			out = append(out, c)
 		}
 		return out, nil
-	}); err != nil {
+	})
+	p.configWriteMu.Unlock()
+	if err != nil {
 		p.API.LogWarn("reconciler: failed to persist after pruning orphans",
 			"orphanCount", len(orphanSet), "err", err.Error())
 		return nil, fmt.Errorf("persist filtered config: %w", err)

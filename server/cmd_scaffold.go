@@ -275,7 +275,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		// concurrent add of a colliding name surfaces as a validation failure inside
 		// updateConfigsAtomic, which rolls back the webhook + channel below.
 		_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
-			return slices.Concat(current, newEntries), nil
+			merged := slices.Concat(current, newEntries)
+			if len(merged) > maxReceivers {
+				return nil, fmt.Errorf("receiver limit reached (%d registered, cap %d) — remove some before adding more", len(current), maxReceivers)
+			}
+			return merged, nil
 		})
 		if err != nil {
 			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
@@ -732,7 +736,11 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	}
 
 	_, _, err = p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
-		return slices.Concat(current, []alertConfig{entry}), nil
+		merged := slices.Concat(current, []alertConfig{entry})
+		if len(merged) > maxReceivers {
+			return nil, fmt.Errorf("receiver limit reached (%d registered, cap %d) — remove some before adding more", len(current), maxReceivers)
+		}
+		return merged, nil
 	})
 	if err != nil {
 		_ = p.deleteIncomingWebhook(args.UserId, hookID)

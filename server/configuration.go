@@ -47,6 +47,15 @@ type rawConfiguration struct {
 // :v1 suffix leaves room to change the on-disk shape without a key collision.
 const kvKeyAlertConfigs = "alertconfigs:v1"
 
+// maxReceivers caps the total number of registered receivers across the whole
+// install (CL-25). Every write re-marshals and re-validates the entire list, and
+// each entry re-verifies its team on the next config change — so an unbounded
+// list turns each subsequent write into an O(N) tax (O(N^2) to build up), bloats
+// the cluster-broadcast KV value, and slows the reconciler. Set far above any
+// real deployment (30 runbooks across a generous channel count) so genuine use
+// never hits it, but a scripted flood is stopped. Enforced in the add path.
+const maxReceivers = 2000
+
 // configuration is the parsed, validated, ready-to-serve plugin state.
 // AlertConfigs is the active list; nameIndex provides O(1) lookup for
 // slash commands that need to resolve an entry by name.
@@ -448,9 +457,18 @@ func (p *Plugin) OnConfigurationChange() error {
 		if entries, err = p.loadAlertConfigsFromKV(); err != nil {
 			return err
 		}
+		// Verify each DISTINCT team once (CL-25). Many entries share a team
+		// (all the runbooks scaffolded into one channel), and OnConfigurationChange
+		// fires on every config change — an unmemoized GetTeamByName per entry made
+		// each write O(N) plugin-RPC calls. Memoizing makes it O(distinct teams).
+		verifiedTeams := make(map[string]bool)
 		for _, ac := range entries {
+			if verifiedTeams[ac.Team] {
+				continue
+			}
 			_, appErr := p.API.GetTeamByName(ac.Team)
 			if appErr == nil {
+				verifiedTeams[ac.Team] = true
 				continue
 			}
 			// Tolerate transient errors (typically during early startup

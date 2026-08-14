@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -90,8 +91,20 @@ func (p *Plugin) ephemeralClient4(userID string) (*model.Client4, func(), error)
 
 	c := model.NewAPIv4Client(p.localBaseURL())
 	c.SetToken(tok.Token)
+	// NewAPIv4Client hands back a zero-value http.Client (Timeout 0 = wait
+	// forever). These are loopback self-calls, so give them a real ceiling
+	// (CL-25): a single hung call must not stall the reconciler — which probes
+	// serially and, before CL-25's lock-scope narrowing, held the config write
+	// lock while doing so — and wedge every lifecycle command with no recovery
+	// short of a plugin restart.
+	c.HTTPClient = &http.Client{Timeout: ephemeralClientTimeout}
 	return c, cleanup, nil
 }
+
+// ephemeralClientTimeout bounds each self-directed Client4 call the reconciler
+// makes over loopback. Generous for a local call, short enough that a wedged
+// Mattermost can't hang the reconciler indefinitely.
+const ephemeralClientTimeout = 10 * time.Second
 
 // localBaseURL returns the URL the plugin should use to reach its own
 // Mattermost process via Client4. Reads ServiceSettings.ListenAddress
