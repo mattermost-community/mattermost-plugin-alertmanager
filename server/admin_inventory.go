@@ -67,6 +67,18 @@ func (p *Plugin) renderInventoryCSV(w http.ResponseWriter, configs []alertConfig
 	}
 }
 
+// simSideEffectAllowed reports whether a simulate mode may run for the given
+// HTTP method. The side-effecting modes (webhook-test, end-to-end) require POST
+// so Mattermost's CSRF validation applies (CL-20); read-only modes are
+// unrestricted. Extracted so the method gate is unit-testable without the full
+// HTTP handler.
+func simSideEffectAllowed(method, mode string) bool {
+	if mode == "webhook-test" || mode == "end-to-end" {
+		return method == http.MethodPost
+	}
+	return true
+}
+
 // inventoryGroup represents one collapsible section on the inventory
 // page. Group key (channel / team / AM URL) varies by ?group= param.
 type inventoryGroup struct {
@@ -291,13 +303,15 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 	// channel filters the target receiver list to those in a specific
 	// channel (only relevant for webhook-test + end-to-end; simulate
 	// walks the route tree at the AM level).
-	simMode := strings.TrimSpace(r.URL.Query().Get("simulate_mode"))
-	simType := strings.TrimSpace(r.URL.Query().Get("simulate_type"))
-	simValue := strings.TrimSpace(r.URL.Query().Get("simulate_value"))
-	simChannel := strings.TrimSpace(r.URL.Query().Get("simulate_channel"))
-	simTeam := strings.TrimSpace(r.URL.Query().Get("simulate_team"))
-	simSeverity := strings.TrimSpace(r.URL.Query().Get("simulate_severity"))
-	simExtra := strings.TrimSpace(r.URL.Query().Get("simulate_extra"))
+	// Read via FormValue so the side-effecting modes can arrive as a POST body
+	// (see the CL-20 gate below); read-only simulate still works as a GET query.
+	simMode := strings.TrimSpace(r.FormValue("simulate_mode"))
+	simType := strings.TrimSpace(r.FormValue("simulate_type"))
+	simValue := strings.TrimSpace(r.FormValue("simulate_value"))
+	simChannel := strings.TrimSpace(r.FormValue("simulate_channel"))
+	simTeam := strings.TrimSpace(r.FormValue("simulate_team"))
+	simSeverity := strings.TrimSpace(r.FormValue("simulate_severity"))
+	simExtra := strings.TrimSpace(r.FormValue("simulate_extra"))
 
 	// Severity is a knob only for end-to-end (it sets the severity the
 	// synthetic alert fires at). Webhook-test ignores it, and simulate routes
@@ -321,10 +335,26 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		filteredConfigs := filterConfigsByChannel(configs, simTeam, simChannel)
 
 		switch simMode {
-		case "webhook-test":
-			simActionResult = p.runInventoryWebhookTest(targetSlugs, filteredConfigs)
-		case "end-to-end":
-			simActionResult = p.runInventoryEndToEnd(targetSlugs, simSeverity, simExtra, filteredConfigs, amStatus)
+		case "webhook-test", "end-to-end":
+			// CL-20: these modes cause side effects — webhook-test POSTs to real
+			// incoming webhooks, end-to-end fires synthetic alerts. Mattermost
+			// exempts GET from CSRF validation for plugin routes (and strips
+			// Referer), so a GET-driven link would let an attacker trigger these
+			// with a logged-in sysadmin's ambient session. Require POST, which the
+			// platform DOES CSRF-check (it only sets Mattermost-User-Id after that
+			// check passes). The page's Fire button submits these as a POST with
+			// X-Requested-With; a cross-site link cannot.
+			switch {
+			case !simSideEffectAllowed(r.Method, simMode):
+				simActionResult = inventoryActionResult{
+					Mode:  "error",
+					Error: "This action changes state (posts to webhooks / fires alerts). Run it with the Fire button, not by opening a link — the request must be a POST (CSRF protection).",
+				}
+			case simMode == "webhook-test":
+				simActionResult = p.runInventoryWebhookTest(targetSlugs, filteredConfigs)
+			default:
+				simActionResult = p.runInventoryEndToEnd(targetSlugs, simSeverity, simExtra, filteredConfigs, amStatus)
+			}
 		default:
 			// simulate (default)
 			switch {
@@ -1116,7 +1146,7 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
                 <li><strong>End-to-end</strong> — fires a synthetic alert through Alertmanager. Tests the full chain. Real chat posts result.</li>
             </ul>
         </div>
-        <form method="get" action="" style="display: flex; flex-direction: column; gap: 10px;">
+        <form id="simform" method="get" action="" style="display: flex; flex-direction: column; gap: 10px;">
             <input type="hidden" name="group" value="{{.GroupMode}}">
             <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
                 <div style="display: flex; flex-direction: column; gap: 4px;">
@@ -1340,6 +1370,45 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
     {{end}}
 
     <script>
+        // CL-20: the side-effecting simulate modes (webhook-test, end-to-end)
+        // must be submitted as a POST so Mattermost applies CSRF validation — a
+        // plain GET link would let a cross-site page fire them with the admin's
+        // ambient session. The read-only "simulate" mode stays a shareable GET.
+        // We keep the form method="get" (so read-only submits and deep links
+        // work) and, only for the two side-effecting modes, intercept submit and
+        // re-issue it as a fetch POST carrying X-Requested-With — the header
+        // Mattermost accepts as proof the request came from a real XHR, which a
+        // cross-site form/navigation cannot set. The response is the full page,
+        // so we swap the document with it.
+        (function () {
+            var form = document.getElementById('simform');
+            var modeSel = form ? form.querySelector('select[name="simulate_mode"]') : null;
+            if (!form || !modeSel) {
+                return;
+            }
+            form.addEventListener('submit', function (e) {
+                var mode = modeSel.value;
+                if (mode !== 'webhook-test' && mode !== 'end-to-end') {
+                    return; // read-only: let the normal GET submit proceed
+                }
+                e.preventDefault();
+                fetch(window.location.pathname, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: new URLSearchParams(new FormData(form))
+                }).then(function (resp) {
+                    return resp.text();
+                }).then(function (html) {
+                    document.open();
+                    document.write(html);
+                    document.close();
+                }).catch(function (err) {
+                    window.alert('Action failed: ' + err);
+                });
+            });
+        })();
+
         // Client-side filter: hide receiver rows whose text doesn't
         // include the query (case-insensitive substring match). Group
         // headers stay visible even when all their rows are filtered
