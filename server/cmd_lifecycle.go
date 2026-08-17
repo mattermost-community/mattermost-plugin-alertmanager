@@ -374,7 +374,8 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 		return p.handleRotateOverdue(args)
 	}
 
-	return p.handleRotateSingle(args, target)
+	summary, _, err := p.handleRotateSingle(args, target)
+	return summary, err
 }
 
 // handleRotateSingle rotates the underlying Mattermost webhook for one
@@ -387,7 +388,11 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 // alertmanager.yml must be updated for all of them, not just the one
 // the operator named. The response message lists the full affected set
 // and (for groups) DMs the merged YAML bundle.
-func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (string, error) {
+// The returned rotated bool is the authoritative success signal — true only when
+// a webhook was actually rotated. handleRotateOverdue keys its accounting off it
+// rather than string-matching the summary, so a copy-edit to the messages can't
+// silently miscount a failure as a success.
+func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summary string, rotated bool, err error) {
 	// Atomic read-modify-write. handleRotateOverdue calls this in a loop but
 	// does not hold configWriteMu itself, so locking per-call is deadlock-free
 	// and each rotation is an independent atomic update.
@@ -401,7 +406,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	scoped := p.configsForCurrentChannel(args)
 	resolved := resolveReceiverName(scoped, name, args.ChannelId, p)
 	if !receiverNameInScope(scoped, resolved) {
-		return fmt.Sprintf("Receiver %q not found.", name), nil
+		return fmt.Sprintf("Receiver %q not found.", name), false, nil
 	}
 	// Read the target's current shape from the in-memory snapshot for the webhook
 	// side effects and display; the durable update below re-reads from KV and keys
@@ -415,7 +420,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		}
 	}
 	if !found {
-		return fmt.Sprintf("Receiver %q not found.", name), nil
+		return fmt.Sprintf("Receiver %q not found.", name), false, nil
 	}
 	oldHookID := target.WebhookID
 
@@ -424,7 +429,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	// channel ID is needed here.
 	rc, err := p.resolveOrCreateChannel(target.Team, target.Channel, false, "")
 	if err != nil {
-		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), nil
+		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), false, nil
 	}
 	channelID := rc.channelID
 
@@ -440,7 +445,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	}
 	newHookID, err := p.createIncomingWebhook(args.UserId, channelID, newDisplayName)
 	if err != nil {
-		return fmt.Sprintf("Failed to create replacement webhook: %v", err), nil
+		return fmt.Sprintf("Failed to create replacement webhook: %v", err), false, nil
 	}
 
 	// Durable update: repoint every receiver sharing the old webhook ID to the new
@@ -465,7 +470,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	})
 	if err != nil {
 		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
-		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v", err), nil
+		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v", err), false, nil
 	}
 
 	// The affected set is every receiver now carrying the new webhook ID.
@@ -480,7 +485,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		// between our snapshot and the durable write, so the webhook we just minted
 		// serves nothing — clean it up rather than leave an orphan.
 		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
-		return fmt.Sprintf("Receiver `%s` was modified concurrently; nothing was rotated. Re-run if still needed.", resolved), nil
+		return fmt.Sprintf("Receiver `%s` was modified concurrently; nothing was rotated. Re-run if still needed.", resolved), false, nil
 	}
 
 	// The repoint committed — now retire the old webhook. Doing it here (not before
@@ -500,11 +505,11 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	// Single-receiver case (legacy or true individual): inline YAML,
 	// matches v1.0.2 behavior.
 	if len(affected) == 1 {
-		return p.renderRotateResponse(affected[0], oldDeleted, oldHookID), nil
+		return p.renderRotateResponse(affected[0], oldDeleted, oldHookID), true, nil
 	}
 
 	// Group case: list affected receivers, DM the merged YAML bundle.
-	return p.renderRotateGroupResponse(args.UserId, affected, target.GroupName, oldDeleted, oldHookID), nil
+	return p.renderRotateGroupResponse(args.UserId, affected, target.GroupName, oldDeleted, oldHookID), true, nil
 }
 
 // renderRotateGroupResponse builds the in-channel summary AND fires the
@@ -634,8 +639,8 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 	rotated := make([]alertConfig, 0, len(overdueNames))
 	failed := make([]string, 0)
 	for _, name := range reps {
-		summary, err := p.handleRotateSingle(args, name)
-		if err != nil || strings.HasPrefix(summary, "Failed") || strings.HasPrefix(summary, "Receiver") {
+		summary, ok, err := p.handleRotateSingle(args, name)
+		if err != nil || !ok {
 			// The whole group shares one webhook, so its rotation failed as a unit —
 			// name every overdue member so the operator sees the full still-overdue set.
 			failed = append(failed, strings.Join(overdueByWebhook[webhookByName[name]], ", ")+" — "+summary)
