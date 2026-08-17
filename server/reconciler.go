@@ -322,8 +322,8 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		if _, seen := hookStatus[ac.WebhookID]; seen {
 			continue
 		}
-		_, resp, err := c.GetIncomingWebhook(context.Background(), ac.WebhookID, "")
-		if err == nil {
+		_, resp, getErr := c.GetIncomingWebhook(context.Background(), ac.WebhookID, "")
+		if getErr == nil {
 			hookStatus[ac.WebhookID] = true
 			continue
 		}
@@ -334,7 +334,7 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		// Transient or permission error — don't cache this hookID's
 		// status. Receivers depending on it stay alive this cycle.
 		p.API.LogWarn("reconciler: error checking webhook (will retry next cycle)",
-			"receiver", ac.Name, "webhook", redactHookID(ac.WebhookID), "err", err.Error())
+			"receiver", ac.Name, "webhook", redactHookID(ac.WebhookID), "err", getErr.Error())
 	}
 
 	// Mark every receiver whose shared webhookID came back 404. Cached

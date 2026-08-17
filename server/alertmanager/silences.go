@@ -73,7 +73,7 @@ func ExpireSilence(silenceID, alertmanagerURL, user, password string) error {
 	// echoing the body would turn a non-200 into a content-disclosure oracle.
 	// Return a generic, status-only error instead (CL-08).
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Alertmanager returned status %d when expiring the silence", resp.StatusCode)
+		return fmt.Errorf("expiring silence: Alertmanager returned status %d", resp.StatusCode)
 	}
 	return nil
 }

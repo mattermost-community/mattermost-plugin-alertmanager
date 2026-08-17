@@ -998,7 +998,7 @@ func (p *Plugin) updateConfigsAtomic(transform func(current []alertConfig) ([]al
 		panic("updateConfigsAtomic called without configWriteMu held — lock configWriteMu across the full read-modify-write")
 	}
 
-	for attempt := 0; attempt < maxConfigWriteAttempts; attempt++ {
+	for range maxConfigWriteAttempts {
 		oldBytes, appErr := p.API.KVGet(kvKeyAlertConfigs)
 		if appErr != nil {
 			return nil, nil, fmt.Errorf("read receiver list from KV: %w", appErr)

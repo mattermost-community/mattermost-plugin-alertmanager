@@ -14,12 +14,12 @@ func TestClientConcurrentSwap(t *testing.T) {
 	const iters = 2000
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < iters; i++ {
+		for range iters {
 			SetClient(&http.Client{Transport: NewTransport(), CheckRedirect: RefuseRedirect})
 		}
 		close(done)
 	}()
-	for i := 0; i < iters; i++ {
+	for range iters {
 		if GetClient() == nil {
 			t.Fatal("GetClient returned nil during concurrent swap")
 		}

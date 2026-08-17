@@ -275,8 +275,8 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		// concurrent add of a colliding name surfaces as a validation failure inside
 		// updateConfigsAtomic, which rolls back the webhook + channel below.
 		_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
-			if err := enforceReceiverCap(len(current), len(newEntries)); err != nil {
-				return nil, err
+			if capErr := enforceReceiverCap(len(current), len(newEntries)); capErr != nil {
+				return nil, capErr
 			}
 			return slices.Concat(current, newEntries), nil
 		})
@@ -735,8 +735,8 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	}
 
 	_, _, err = p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
-		if err := enforceReceiverCap(len(current), 1); err != nil {
-			return nil, err
+		if capErr := enforceReceiverCap(len(current), 1); capErr != nil {
+			return nil, capErr
 		}
 		return slices.Concat(current, []alertConfig{entry}), nil
 	})
