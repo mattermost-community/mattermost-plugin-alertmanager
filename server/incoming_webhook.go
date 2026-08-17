@@ -195,9 +195,19 @@ func (p *Plugin) deleteIncomingWebhook(callerUserID, hookID string) error {
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
 			return nil
 		}
-		return fmt.Errorf("delete incoming webhook %q: %w", hookID, err)
+		return webhookDeleteError(hookID, err)
 	}
 	return nil
+}
+
+// webhookDeleteError wraps a webhook-delete failure WITHOUT the raw hook ID in
+// the message. The returned error flows to the logs via err.Error() at several
+// call sites — a raw ID here would undo the redaction those sites apply to the
+// dedicated log field (CL-13): a webhook ID is a durable bearer token and logs
+// reach a wider audience than the bound channel. The fingerprint still lets an
+// operator correlate the failure with the redacted field on the same line.
+func webhookDeleteError(hookID string, err error) error {
+	return fmt.Errorf("delete incoming webhook %s: %w", redactHookID(hookID), err)
 }
 
 // webhookURLForReceiver resolves the api_url with per-receiver
