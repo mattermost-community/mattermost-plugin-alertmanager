@@ -352,7 +352,17 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 	for i := range entries {
 		// Sanitize BEFORE IsValid: a hostile or legacy URL must be
 		// neutered, never rejected. See sanitizeAlertManagerURL.
-		entries[i].AlertManagerURL = strings.TrimRight(sanitizeAlertManagerURL(entries[i].AlertManagerURL), "/")
+		amURL := strings.TrimRight(sanitizeAlertManagerURL(entries[i].AlertManagerURL), "/")
+		// A stored value sanitize can't rescue (no scheme, no host, unparseable) is
+		// inert, never hostile — sanitize has already stripped everything exploitable.
+		// Blank it rather than fail the load: an error here propagates out of
+		// OnConfigurationChange and stops the plugin loading at all, which would turn
+		// a stored typo (or a value an attacker pre-planted before this check existed)
+		// into a permanent outage.
+		if amURL != "" && validateAlertManagerURL(amURL) != nil {
+			amURL = ""
+		}
+		entries[i].AlertManagerURL = amURL
 		if err := entries[i].IsValid(); err != nil {
 			return nil, fmt.Errorf("alertConfig[%d]: %w", i, err)
 		}

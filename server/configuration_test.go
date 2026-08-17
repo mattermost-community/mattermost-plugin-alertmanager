@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -457,5 +458,41 @@ func TestParseAlertConfigsAllowsWhitespaceOnlyAlertManagerURL(t *testing.T) {
 	}
 	if entries[0].AlertManagerURL != "" {
 		t.Fatalf("expected whitespace-only URL to sanitize to empty, got %q", entries[0].AlertManagerURL)
+	}
+}
+
+// TestParseAlertConfigsBlanksUnfixableStoredURL is the merge-blocker
+// regression guard: sanitizeAlertManagerURL runs first and neuters every
+// exploitable input, so by the time validateAlertManagerURL runs on the
+// load path the only values left that can fail are ones sanitize cannot
+// repair — a missing/non-http scheme or a missing host. Those are inert
+// (http.Client.Do fails on them; there's no SSRF value), so the load path
+// must blank them rather than hard-fail parseAlertConfigs, which would
+// propagate out of OnConfigurationChange and brick the whole plugin over
+// a benign stored typo.
+func TestParseAlertConfigsBlanksUnfixableStoredURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"scheme-less host:port is blanked, not rejected", "alertmanager:9093"},
+		{"scheme-less dotted host:port is blanked, not rejected", "am.example.com:9093"},
+		{"scheme with no host is blanked, not rejected", "ftp://x"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blob := fmt.Sprintf(`[{"name":"probe--alpha-ops","team":"alpha","channel":"ops","alertManagerURL":%q,"webhookID":"hook1"}]`, tc.input)
+			entries, err := parseAlertConfigs(blob)
+			if err != nil {
+				t.Fatalf("a config with an unfixable-but-inert alertManagerURL must still load, got error: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("expected 1 entry, got %d", len(entries))
+			}
+			if entries[0].AlertManagerURL != "" {
+				t.Fatalf("expected unfixable stored URL %q to be blanked, got %q", tc.input, entries[0].AlertManagerURL)
+			}
+		})
 	}
 }
