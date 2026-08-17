@@ -296,9 +296,12 @@ func TestParseAlertConfigs(t *testing.T) {
 	t.Run("shared webhookID across mismatched groups is rejected", func(t *testing.T) {
 		// Catches the bad-state cases: hand-edit error or plugin bug
 		// where one webhookID gets claimed by two different groups.
+		// Realistic 32-hex webhook ID so the redaction assertion has teeth (a
+		// 2-char token trivially wouldn't reappear in a sha256 fingerprint).
+		const sharedHook = "abcdef0123456789abcdef0123456789"
 		blob := `[
-			{"name":"x--alerts","team":"ops","channel":"alerts","webhookID":"w1","groupName":"compute"},
-			{"name":"y--alerts","team":"ops","channel":"alerts","webhookID":"w1","groupName":"database"}
+			{"name":"x--alerts","team":"ops","channel":"alerts","webhookID":"` + sharedHook + `","groupName":"compute"},
+			{"name":"y--alerts","team":"ops","channel":"alerts","webhookID":"` + sharedHook + `","groupName":"database"}
 		]`
 		_, err := parseAlertConfigs(blob)
 		if err == nil {
@@ -308,7 +311,7 @@ func TestParseAlertConfigs(t *testing.T) {
 			t.Fatalf("expected a webhook-sharing conflict error, got %q", err.Error())
 		}
 		// The raw webhook ID (a bearer token) must not leak into the error (CL-13).
-		if strings.Contains(err.Error(), "w1") {
+		if strings.Contains(err.Error(), sharedHook) {
 			t.Fatalf("error leaked the raw webhook ID: %q", err.Error())
 		}
 	})
