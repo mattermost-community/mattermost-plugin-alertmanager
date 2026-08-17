@@ -37,7 +37,7 @@ Set it in System Console → Plugins → Alertmanager → Webhook host override.
 ## Required: route alerts to the right receiver
 
 The plugin creates **one receiver per runbook slug, channel-suffixed**
-(e.g. `high-cpu-usage--alert-slo-channel`). For Alertmanager to
+(e.g. `high-cpu-usage--sre-alert-slo-channel`). For Alertmanager to
 actually route alerts to those receivers — instead of dumping
 everything on the fallback — your routing tree needs sub-routes that
 match labels.
@@ -73,13 +73,13 @@ route:
   routes:
     # ↓ PASTE FROM alertmanager-routes.yml HERE
     - matchers: [runbook="high-cpu-usage"]
-      receiver: high-cpu-usage--alert-slo-channel
+      receiver: high-cpu-usage--sre-alert-slo-channel
       continue: true
     - matchers: [runbook="high-memory-usage"]
-      receiver: high-memory-usage--alert-slo-channel
+      receiver: high-memory-usage--sre-alert-slo-channel
       continue: true
     - matchers: [runbook="pod-crashloopbackoff"]
-      receiver: pod-crashloopbackoff--alert-slo-channel
+      receiver: pod-crashloopbackoff--sre-alert-slo-channel
       continue: true
     # ... one route per receiver, 30 total for the standard set
 ```
@@ -139,7 +139,7 @@ namespace** as the `AlertmanagerConfig`. The URL is the one `/alertmanager add`
 DMs you.
 
 ```
-kubectl create secret generic alertmanager-webhook-high-cpu-usage \
+kubectl create secret generic alertmanager-webhook-sre-alert-slo-channel \
   --from-literal=url='<webhook URL from /alertmanager add>' \
   -n monitoring
 ```
@@ -150,7 +150,7 @@ Or declaratively (GitOps / air-gapped):
 apiVersion: v1
 kind: Secret
 metadata:
-  name: alertmanager-webhook-high-cpu-usage
+  name: alertmanager-webhook-sre-alert-slo-channel
   namespace: monitoring
 stringData:
   url: "<webhook URL from /alertmanager add>"
@@ -165,7 +165,7 @@ The operator-native equivalent of the plugin's generated `route:` + `receivers:`
 apiVersion: monitoring.coreos.com/v1alpha1
 kind: AlertmanagerConfig
 metadata:
-  name: mattermost-alertmanager
+  name: mattermost-alertmanager-sre-alert-slo-channel
   namespace: monitoring
 spec:
   route:
@@ -177,20 +177,26 @@ spec:
     routes:
       # one per receiver — matcher keys on the BASE slug, continue:true for fan-out
       - matchers: [{name: runbook, value: high-cpu-usage, matchType: "="}]
-        receiver: high-cpu-usage--alert-slo-channel
+        receiver: high-cpu-usage--sre-alert-slo-channel
         continue: true
       - matchers: [{name: runbook, value: high-memory-usage, matchType: "="}]
-        receiver: high-memory-usage--alert-slo-channel
+        receiver: high-memory-usage--sre-alert-slo-channel
         continue: true
       # ... one route per receiver
   receivers:
-    - name: high-cpu-usage--alert-slo-channel
+    - name: high-cpu-usage--sre-alert-slo-channel
       slackConfigs:
-        - apiURL: {name: alertmanager-webhook-high-cpu-usage, key: url}
+        - apiURL: {name: alertmanager-webhook-sre-alert-slo-channel, key: url}
           channel: "#alert-slo-channel"
           sendResolved: true
           username: alertmanagerbot
           iconURL: https://<your-mm-host>/plugins/com.mattermost.alertmanager/public/alertmanager-logo.png
+          # NOTE: simplified for readability. What the plugin actually GENERATES
+          # wraps every attacker-influenceable label/annotation in a sanitizer,
+          # e.g. `{{ .Labels.alertname | reReplaceAll "[\x60\r\n()<>]" "" | printf "%.256s" }}`
+          # — strips markdown/shell-breakout chars so a hostile alert can't inject
+          # links or code spans into the post. Prefer `/alertmanager add --format=crd`
+          # over hand-authoring so you get the hardened templates.
           title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}]'
           text: |-
             {{ range .Alerts -}}
