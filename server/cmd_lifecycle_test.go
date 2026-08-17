@@ -90,3 +90,42 @@ func TestRotationAgeOverdueMarker(t *testing.T) {
 		t.Errorf("expected overdue marker prefix, got %q", got)
 	}
 }
+
+// TestResolveReceiverName is the regression guard for security review
+// finding F-001. The function must never resolve a name that is not in
+// the scoped slice it was handed — the caller is authorized against the
+// invocation channel, so resolving outside that scope let a team_admin
+// of one team deregister another team's receiver.
+func TestResolveReceiverName(t *testing.T) {
+	inChannel := []alertConfig{
+		{Name: "high-cpu-usage--alpha-ops"},
+		{Name: "legacy-receiver"},
+	}
+
+	cases := []struct {
+		name     string
+		scoped   []alertConfig
+		supplied string
+		want     string
+		wantOK   bool
+	}{
+		{"exact suffixed name resolves", inChannel, "high-cpu-usage--alpha-ops", "high-cpu-usage--alpha-ops", true},
+		{"exact legacy unsuffixed name resolves", inChannel, "legacy-receiver", "legacy-receiver", true},
+		{"short base slug resolves to the full name", inChannel, "high-cpu-usage", "high-cpu-usage--alpha-ops", true},
+		{"unknown name does not resolve", inChannel, "no-such-receiver", "", false},
+		{"another team's full name does not resolve", inChannel, "high-cpu-usage--bravo-secops", "", false},
+		{"empty scope resolves nothing", nil, "high-cpu-usage", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := resolveReceiverName(tc.scoped, tc.supplied)
+			if ok != tc.wantOK {
+				t.Fatalf("resolveReceiverName(%q) ok = %v, want %v", tc.supplied, ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveReceiverName(%q) = %q, want %q", tc.supplied, got, tc.want)
+			}
+		})
+	}
+}

@@ -120,8 +120,10 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 	default:
 		// Treat as receiver name. Smart-resolve so short-form names
 		// work in the current channel.
-		all := p.getConfiguration().AlertConfigs
-		resolved := resolveReceiverName(all, rest[0], args.ChannelId, p)
+		resolved, ok := resolveReceiverName(scoped, rest[0])
+		if !ok {
+			return fmt.Sprintf("Receiver `%s` is not bound to this channel.", rest[0]), nil
+		}
 		var matched []alertConfig
 		for _, c := range scoped {
 			if c.Name == resolved {

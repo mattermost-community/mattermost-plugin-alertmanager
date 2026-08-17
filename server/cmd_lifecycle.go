@@ -82,7 +82,13 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	defer p.configWriteMu.Unlock()
 
 	current := p.getConfiguration().AlertConfigs
-	resolved := resolveReceiverName(current, name, args.ChannelId, p)
+	// Resolve against the caller's authorized scope only (F-001). `current`
+	// stays unscoped because the save below must rewrite the FULL list, but
+	// the name we act on has to come from the scoped set.
+	resolved, ok := resolveReceiverName(p.configsForCurrentChannel(args), name)
+	if !ok {
+		return fmt.Sprintf("Receiver %q is not bound to this channel.", name), nil
+	}
 	var hookID string
 	filtered := make([]alertConfig, 0, len(current))
 	for _, c := range current {
@@ -377,7 +383,11 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 	defer p.configWriteMu.Unlock()
 
 	current := p.getConfiguration().AlertConfigs
-	resolved := resolveReceiverName(current, name, args.ChannelId, p)
+	// Scoped resolution (F-001) — see the note in handleRemoveOne.
+	resolved, ok := resolveReceiverName(p.configsForCurrentChannel(args), name)
+	if !ok {
+		return fmt.Sprintf("Receiver %q is not bound to this channel.", name), nil
+	}
 	targetIdx := -1
 	for i, c := range current {
 		if c.Name == resolved {
@@ -584,42 +594,38 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 	return b.String(), nil
 }
 
-// resolveReceiverName takes a user-supplied receiver name and returns
-// the actual stored name, accepting either the full suffixed form
-// (high-cpu-usage--alert-slo-channel) or the short base slug
-// (high-cpu-usage). For short-name lookups, prefers a match in the
-// current channel; falls back to the unsuffixed legacy form anywhere.
-// Returns the original input unchanged if no match found — the caller
-// then surfaces a "not found" error.
+// resolveReceiverName maps a user-supplied receiver name onto a stored
+// name, accepting either the full suffixed form
+// (high-cpu-usage--alpha-ops) or the short base slug (high-cpu-usage).
 //
-// The plugin pointer is needed to resolve the current channel's slug
-// from its ID, which is what the receiver name is suffixed with.
-func resolveReceiverName(all []alertConfig, supplied, channelID string, p *Plugin) string {
-	// 1. Exact match — covers full suffixed names AND legacy unsuffixed names
-	for _, c := range all {
+// SECURITY: `scoped` MUST be the caller's authorized set — in practice
+// p.configsForCurrentChannel(args). Resolution never looks outside that
+// slice. Passing p.getConfiguration().AlertConfigs here reintroduces
+// security finding F-001: every caller authorizes the user against the
+// INVOCATION channel's team, so a global search let a team_admin of one
+// team name (and then delete or rotate) another team's receiver.
+//
+// Returns ok=false when nothing in scope matches, so a caller cannot
+// accidentally fall through to the raw user input and match a foreign
+// entry by exact name.
+func resolveReceiverName(scoped []alertConfig, supplied string) (string, bool) {
+	// 1. Exact match — covers full suffixed names AND legacy unsuffixed names.
+	for _, c := range scoped {
 		if c.Name == supplied {
-			return c.Name
+			return c.Name, true
 		}
 	}
-	// 2. Short-name match scoped to current team + channel. Team is part of
-	// the receiver name now, so the candidate needs the team slug too.
-	if ch, appErr := p.API.GetChannel(channelID); appErr == nil {
-		if team, teamErr := p.API.GetTeam(ch.TeamId); teamErr == nil {
-			candidate := receiverNameForChannel(supplied, team.Name, ch.Name)
-			for _, c := range all {
-				if c.Name == candidate {
-					return c.Name
-				}
-			}
-		}
-	}
-	// 3. Short-name fallback against base slug across all entries
-	for _, c := range all {
+	// 2. Short-name match on the base slug. Safe within a scoped slice:
+	// <slug>--<team>-<channel> is deterministic, so a base slug is unique
+	// per team+channel. (This replaces the old team/channel-aware candidate
+	// construction, which needed p.API and is redundant once the input is
+	// already scoped to the current team+channel.)
+	for _, c := range scoped {
 		if receiverBaseSlug(c.Name) == supplied {
-			return c.Name
+			return c.Name, true
 		}
 	}
-	return supplied
+	return "", false
 }
 
 // handleList: read-only summary of receivers bound to the current
