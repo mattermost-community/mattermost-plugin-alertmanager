@@ -1423,6 +1423,13 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
                 }).then(function (resp) {
                     return resp.text();
                 }).then(function (html) {
+                    // Not a DOM-XSS sink: 'html' is this same handler's response,
+                    // rendered by Go html/template (auto-escaping) from same-origin
+                    // server state — the only reflected user input (SimulateExtra) is
+                    // HTML-attribute-escaped, and the template.JS blobs are
+                    // json.Marshal'd server data, not raw input. document.write is
+                    // used (vs innerHTML) so the page's own <script> re-runs and the
+                    // cascade dropdowns re-initialize.
                     document.open();
                     document.write(html);
                     document.close();
