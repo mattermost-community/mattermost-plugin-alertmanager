@@ -392,6 +392,8 @@ func TestSanitizeAlertManagerURL(t *testing.T) {
 		{"fragment is stripped", "http://am.example.com/x#frag", "http://am.example.com/x"},
 		{"query is stripped", "http://am.example.com/x?a=b", "http://am.example.com/x"},
 		{"embedded credentials are stripped", "http://user:pass@am.example.com", "http://am.example.com"},
+		{"whitespace-only input becomes empty", "   \t\n  ", ""},
+		{"whitespace-padded valid URL is trimmed", " http://alertmanager:9093 ", "http://alertmanager:9093"},
 	}
 
 	for _, tc := range cases {
@@ -435,5 +437,25 @@ func TestParseAlertConfigsAllowsEmptyAlertManagerURL(t *testing.T) {
 	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops","webhookID":"hook1"}]`
 	if _, err := parseAlertConfigs(blob); err != nil {
 		t.Fatalf("an entry with no alertManagerURL must still load, got error: %v", err)
+	}
+}
+
+// TestParseAlertConfigsAllowsWhitespaceOnlyAlertManagerURL is the
+// regression guard for the exact bricking failure this task exists to
+// prevent: a whitespace-only alertManagerURL (a realistic System Console
+// typo) must sanitize down to "" and load, not surface
+// validateAlertManagerURL's "cannot be empty" error and take the whole
+// plugin down.
+func TestParseAlertConfigsAllowsWhitespaceOnlyAlertManagerURL(t *testing.T) {
+	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops","alertManagerURL":"   ","webhookID":"hook1"}]`
+	entries, err := parseAlertConfigs(blob)
+	if err != nil {
+		t.Fatalf("an entry with a whitespace-only alertManagerURL must still load, got error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].AlertManagerURL != "" {
+		t.Fatalf("expected whitespace-only URL to sanitize to empty, got %q", entries[0].AlertManagerURL)
 	}
 }

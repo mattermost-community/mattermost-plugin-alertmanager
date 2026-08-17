@@ -271,9 +271,9 @@ func validateAlertManagerURL(raw string) error {
 	return nil
 }
 
-// sanitizeAlertManagerURL strips the parts of a stored Alertmanager URL
-// that would let it redirect the plugin's appended API path, returning
-// the cleaned value.
+// sanitizeAlertManagerURL trims surrounding whitespace and strips the
+// parts of a stored Alertmanager URL that would let it redirect the
+// plugin's appended API path, returning the cleaned value.
 //
 // This is the load-path counterpart to validateAlertManagerURL. Entries
 // written before that check existed, or hand-edited into
@@ -282,7 +282,13 @@ func validateAlertManagerURL(raw string) error {
 // OnConfigurationChange, and an error there stops the plugin loading at
 // all. Rejecting would let a single bad entry brick the plugin, which
 // turns F-002 into a persistent denial of service.
+//
+// Trimming here (rather than loosening IsValid's empty check) keeps
+// normalization in one place: a whitespace-only stored value collapses
+// to "", which IsValid already tolerates as inert, instead of surviving
+// through to validateAlertManagerURL and failing the load.
 func sanitizeAlertManagerURL(raw string) string {
+	raw = strings.TrimSpace(raw)
 	if i := strings.IndexAny(raw, "?#"); i >= 0 {
 		raw = raw[:i]
 	}
