@@ -66,9 +66,12 @@ func (p *Plugin) handleRemove(args *model.CommandArgs) (string, error) {
 //
 // Lookup accepts either the full suffixed name (e.g.
 // high-cpu-usage--alert-slo-channel) or the short base slug
-// (high-cpu-usage). For short-name lookups, the receiver must be bound
-// to the current channel — disambiguates when the same slug exists in
-// multiple channels.
+// (high-cpu-usage) — but either form must resolve to a receiver bound
+// to the current channel (F-001). This applies to ALL lookups, not just
+// short-name ones: naming another channel's receiver by its full
+// suffixed name from here does not resolve it, so a caller cannot
+// remove or rotate a receiver bound to a channel they aren't in just by
+// knowing its full name.
 //
 // Webhook refcount (v1.0.3+): if the removed receiver shares its
 // WebhookID with other receivers (group webhook), the webhook stays
@@ -98,6 +101,13 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 		}
 		filtered = append(filtered, c)
 	}
+	// Looks unreachable (resolved came from configsForCurrentChannel, which
+	// reads the same config) but isn't: `current` and configsForCurrentChannel's
+	// internal read are two SEPARATE p.getConfiguration() calls, and
+	// configWriteMu (held above) does not gate OnConfigurationChange /
+	// setConfiguration — that's a different lock. A System Console save
+	// landing between the two reads can make `resolved` absent from `current`,
+	// and this guard is what aborts cleanly before acting on stale state.
 	if hookID == "" {
 		return fmt.Sprintf("Receiver %q not found.", name), nil
 	}
@@ -395,6 +405,13 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 			break
 		}
 	}
+	// Same two-read race as handleRemoveOne's hookID == "" guard: `current`
+	// and configsForCurrentChannel's internal read are two separate
+	// p.getConfiguration() calls, not gated against each other by
+	// configWriteMu (which OnConfigurationChange/setConfiguration don't
+	// participate in). A System Console save landing between the two reads
+	// can leave `resolved` absent from `current` — this guard aborts
+	// cleanly rather than rotating against a stale index.
 	if targetIdx == -1 {
 		return fmt.Sprintf("Receiver %q not found.", name), nil
 	}

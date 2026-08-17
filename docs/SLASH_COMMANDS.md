@@ -34,10 +34,12 @@ in the channel.
 > reverse proxy (`https://mon.example.com/alertmanager`). A query string or
 > fragment is rejected: those would change which endpoint the plugin actually
 > calls. Credentials must not be embedded in the URL — use the basic-auth
-> user/password fields instead.
+> user/password fields instead. The scheme must be `http://` or `https://`
+> (nothing else — no bare `host:port`, no `ftp://`), and a host is required.
 >
 > Valid: `http://alertmanager:9093`, `https://mon.example.com/alertmanager`
-> Rejected: `http://am.example.com/?x`, `http://am.example.com/#`, `http://user:pass@am.example.com`
+> Rejected: `http://am.example.com/?x`, `http://am.example.com/#`, `http://user:pass@am.example.com`,
+> `alertmanager:9093` (no scheme), `http://` (no host)
 
 ## How receiver names work
 
@@ -59,6 +61,12 @@ The short form resolves to a receiver bound to the current channel.
 If the same runbook is bound to multiple channels (fan-out
 scenarios), the short form picks the one bound to *this* channel —
 disambiguates without you specifying.
+
+**This applies to `remove` and `rotate` too, even with the full
+suffixed name.** Both commands only resolve a name within the
+invocation channel's team+channel scope — a sysadmin can no longer
+`remove`/`rotate` a receiver by name from a different channel than the
+one it's bound to. Run the command from the receiver's own channel.
 
 ## Why channel-suffixed names
 

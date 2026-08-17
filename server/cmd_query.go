@@ -33,8 +33,10 @@ func derefStr(p *string) string {
 // AM the org has ever wired up.
 //
 // Sysadmin scoping vs channel scoping are independent:
-//   - Mutating commands (add/remove/rotate) require sysadmin and can
-//     reference any config by name.
+//   - Mutating commands (add/remove/rotate) require sysadmin/team_admin
+//     AND resolve the receiver name only within the invocation channel's
+//     team+channel scope (via configsForCurrentChannel) — a name that
+//     exists in another channel is invisible to them (F-001).
 //   - View commands here use channel context for filtering, are open to
 //     all users (anyone in the channel sees the same Alertmanager state
 //     anyone else does).

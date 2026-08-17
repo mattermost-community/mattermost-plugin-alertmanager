@@ -124,17 +124,15 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		if !ok {
 			return fmt.Sprintf("Receiver `%s` is not bound to this channel.", rest[0]), nil
 		}
-		var matched []alertConfig
+		// ok guarantees resolved is present in scoped exactly once (names
+		// are unique), so a direct index find is sufficient — no need to
+		// re-scan for a match count.
 		for _, c := range scoped {
 			if c.Name == resolved {
-				matched = append(matched, c)
+				scoped = []alertConfig{c}
 				break
 			}
 		}
-		if len(matched) == 0 {
-			return fmt.Sprintf("Receiver `%s` is not bound to this channel.", rest[0]), nil
-		}
-		scoped = matched
 	}
 
 	// Run the cheap checks (a, b) on each receiver. AM status is the

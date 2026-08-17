@@ -160,6 +160,9 @@ consequences:
 - **A query string or fragment is rejected.** Either one would terminate the
   base URL early and silently redirect the plugin's request to a different
   endpoint, so `/alertmanager add` refuses them.
+- **The scheme must be `http://` or `https://`.** A bare `host:port` (no
+  scheme) or any other scheme (e.g. `ftp://`) is rejected.
+- **A host is required.** `http://` with nothing after it is rejected.
 
 Credentials must not be embedded in the URL. For an Alertmanager behind an auth
 proxy, set the `user` and `password` fields on the receiver entry instead.

@@ -157,7 +157,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	groupName, slugs, err := resolveAddTarget(target)
 	if err != nil {
-		return err.Error(), nil
+		return ":warning: " + err.Error(), nil
 	}
 	if len(slugs) == 0 {
 		return ":warning: Target `" + target + "` resolved to zero runbooks. Either the embedded runbook list is empty or the category map is misconfigured.", nil
