@@ -85,14 +85,19 @@ func csvSafe(s string) string {
 	return s
 }
 
-// simSideEffectAllowed reports whether a simulate mode may run for the given
-// HTTP method. The side-effecting modes (webhook-test, end-to-end) require POST
-// so Mattermost's CSRF validation applies (CL-20); read-only modes are
-// unrestricted. Extracted so the method gate is unit-testable without the full
-// HTTP handler.
-func simSideEffectAllowed(method, mode string) bool {
+// simSideEffectAllowed reports whether a simulate mode may run given the request
+// method and its X-Requested-With header. The side-effecting modes (webhook-test,
+// end-to-end) require BOTH a POST and X-Requested-With: XMLHttpRequest (CL-20).
+//
+// Requiring POST alone would lean entirely on the platform stripping
+// Mattermost-User-Id when a POST fails CSRF — a Mattermost internal we can't
+// verify from here. Also requiring X-Requested-With makes the gate self-contained:
+// a cross-site <form> or top-level navigation cannot set a custom header, and the
+// page's own Fire button sends it via fetch. Read-only modes are unrestricted.
+// Extracted so the gate is unit-testable without the full HTTP handler.
+func simSideEffectAllowed(method, requestedWith, mode string) bool {
 	if mode == "webhook-test" || mode == "end-to-end" {
-		return method == http.MethodPost
+		return method == http.MethodPost && requestedWith == "XMLHttpRequest"
 	}
 	return true
 }
@@ -363,10 +368,10 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 			// check passes). The page's Fire button submits these as a POST with
 			// X-Requested-With; a cross-site link cannot.
 			switch {
-			case !simSideEffectAllowed(r.Method, simMode):
+			case !simSideEffectAllowed(r.Method, r.Header.Get("X-Requested-With"), simMode):
 				simActionResult = inventoryActionResult{
 					Mode:  "error",
-					Error: "This action changes state (posts to webhooks / fires alerts). Run it with the Fire button, not by opening a link — the request must be a POST (CSRF protection).",
+					Error: "This action changes state (posts to webhooks / fires alerts). Run it with the Fire button, not by opening a link — the request must be a POST issued by the page (CSRF protection).",
 				}
 			case simMode == "webhook-test":
 				simActionResult = p.runInventoryWebhookTest(targetSlugs, filteredConfigs)
