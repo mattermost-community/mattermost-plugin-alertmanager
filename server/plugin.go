@@ -47,8 +47,9 @@ type Plugin struct {
 
 	// configWriteMu serializes config read-modify-write cycles across
 	// concurrent callers (slash commands + background reconciler). The
-	// lock must be held from the initial getConfiguration read through
-	// the saveConfigs call to prevent lost updates. See saveConfigs.
+	// lock must be held across the whole updateConfigsAtomic call to keep
+	// intra-pod writers from needlessly losing compare-and-set races to
+	// each other. See updateConfigsAtomic.
 	configWriteMu sync.Mutex
 
 	// reconcilerStatusLock guards reconcilerLastRun and

@@ -185,10 +185,12 @@ func (r *inventoryRow) computeHealth() {
 	r.HealthClass = "ok"
 }
 
-// renderInventoryHTML is the main page renderer. Reads ?group= for the
-// grouping mode (channel|team|am, default channel).
+// renderInventoryHTML is the main page renderer. Reads the grouping mode
+// (channel|team|am, default channel) from group= — via FormValue so it survives
+// the CSRF-driven POST swap (which drops the query string) the same way the
+// simulate_* fields do.
 func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, configs []alertConfig) {
-	groupMode := r.URL.Query().Get("group")
+	groupMode := r.FormValue("group")
 	if groupMode != "team" && groupMode != "am" {
 		groupMode = "channel"
 	}
