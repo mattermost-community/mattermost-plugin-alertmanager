@@ -304,8 +304,12 @@ func TestParseAlertConfigs(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for mismatched groups sharing webhookID")
 		}
-		if !strings.Contains(err.Error(), "webhookID") {
-			t.Fatalf("expected webhookID error, got %q", err.Error())
+		if !strings.Contains(err.Error(), "sharing requires matching team+channel+group") {
+			t.Fatalf("expected a webhook-sharing conflict error, got %q", err.Error())
+		}
+		// The raw webhook ID (a bearer token) must not leak into the error (CL-13).
+		if strings.Contains(err.Error(), "w1") {
+			t.Fatalf("error leaked the raw webhook ID: %q", err.Error())
 		}
 	})
 

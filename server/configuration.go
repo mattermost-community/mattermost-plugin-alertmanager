@@ -403,8 +403,12 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 		}
 		if existing, seen := seenWebhooks[entries[i].WebhookID]; seen {
 			if existing != owner {
-				return nil, fmt.Errorf("alertConfig[%d] name=%q: webhookID %q is shared with a receiver in team=%q channel=%q group=%q; sharing requires matching team+channel+group (got team=%q channel=%q group=%q)",
-					i, entries[i].Name, entries[i].WebhookID,
+				// Redact the webhook ID (a bearer token) — this error surfaces to the
+				// admin and the logs (CL-13). The conflict is already identifiable by
+				// name + team/channel/group; the fingerprint just correlates the two
+				// entries that collide.
+				return nil, fmt.Errorf("alertConfig[%d] name=%q: webhook %s is shared with a receiver in team=%q channel=%q group=%q; sharing requires matching team+channel+group (got team=%q channel=%q group=%q)",
+					i, entries[i].Name, redactHookID(entries[i].WebhookID),
 					existing.team, existing.channel, existing.group,
 					owner.team, owner.channel, owner.group)
 			}
