@@ -542,6 +542,29 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 	return b.String()
 }
 
+// representativeOverdueNames dedups overdue receiver names by their shared
+// webhook ID, returning one representative per distinct webhook in first-seen
+// order. A group webhook is rotated as a unit (handleRotateSingle repoints every
+// member), so rotating one member covers the whole group; without this, a shared
+// webhook would be rotated once per overdue member — needless churn and duplicate
+// DMs. Names with an unknown (missing-from-map) webhook are treated as their own
+// group so they're never silently dropped.
+func representativeOverdueNames(overdueNames []string, webhookByName map[string]string) []string {
+	seen := make(map[string]bool, len(overdueNames))
+	reps := make([]string, 0, len(overdueNames))
+	for _, name := range overdueNames {
+		hook, ok := webhookByName[name]
+		if ok && seen[hook] {
+			continue
+		}
+		if ok {
+			seen[hook] = true
+		}
+		reps = append(reps, name)
+	}
+	return reps
+}
+
 // handleRotateOverdue rotates every receiver bound to the calling
 // channel whose LastRotatedAt is older than WebhookRotationDays.
 // One DM at the end with the merged updated YAML — same format as
@@ -581,20 +604,39 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf(":white_check_mark: No receivers in this channel are past the %d-day rotation threshold.", cfg.WebhookRotationDays), nil
 	}
 
+	// Dedup by shared webhook before rotating: a group webhook serves multiple
+	// receivers and handleRotateSingle rotates the WHOLE group at once, so
+	// iterating every overdue member would rotate a shared webhook once per member
+	// — redundant churn (extra create/delete) and a duplicate DM per member. Rotate
+	// each distinct overdue webhook once via a representative.
+	webhookByName := make(map[string]string, len(scoped))
+	for _, c := range scoped {
+		webhookByName[c.Name] = c.WebhookID
+	}
+	reps := representativeOverdueNames(overdueNames, webhookByName)
+
 	rotated := make([]alertConfig, 0, len(overdueNames))
 	failed := make([]string, 0)
-	for _, name := range overdueNames {
+	for _, name := range reps {
 		summary, err := p.handleRotateSingle(args, name)
 		if err != nil || strings.HasPrefix(summary, "Failed") || strings.HasPrefix(summary, "Receiver") {
 			failed = append(failed, name+" — "+summary)
 			continue
 		}
-		// Pull the updated entry from the current config so the
-		// summary DM has the new WebhookID baked in.
-		for _, c := range p.getConfiguration().AlertConfigs {
+		// Rotating the representative rotated its whole group. Collect every entry
+		// now sharing the representative's NEW webhook so the merged DM/summary
+		// still lists all affected receivers, not just the representatives.
+		fresh := p.getConfiguration().AlertConfigs
+		var newHook string
+		for _, c := range fresh {
 			if c.Name == name {
-				rotated = append(rotated, c)
+				newHook = c.WebhookID
 				break
+			}
+		}
+		for _, c := range fresh {
+			if c.WebhookID == newHook {
+				rotated = append(rotated, c)
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -104,5 +105,57 @@ func TestOldWebhookStatusLine(t *testing.T) {
 	}
 	if !strings.Contains(warn, "hook123") || !strings.Contains(warn, "may still be live") {
 		t.Fatalf("failed-delete case should warn and name the webhook: %q", warn)
+	}
+}
+
+// TestRepresentativeOverdueNames is the group-webhook double-rotation guard: only
+// one overdue receiver per shared webhook is rotated (the rest ride along when the
+// group rotates), while distinct webhooks each get a representative and order is
+// preserved.
+func TestRepresentativeOverdueNames(t *testing.T) {
+	cases := []struct {
+		name    string
+		overdue []string
+		byHook  map[string]string
+		want    []string
+	}{
+		{
+			name:    "two share a webhook -> one representative",
+			overdue: []string{"a", "b"},
+			byHook:  map[string]string{"a": "hookX", "b": "hookX"},
+			want:    []string{"a"},
+		},
+		{
+			name:    "mixed groups -> one rep per distinct webhook, first-seen order",
+			overdue: []string{"a", "b", "c"},
+			byHook:  map[string]string{"a": "hookX", "b": "hookX", "c": "hookY"},
+			want:    []string{"a", "c"},
+		},
+		{
+			name:    "all distinct -> all kept",
+			overdue: []string{"a", "b"},
+			byHook:  map[string]string{"a": "h1", "b": "h2"},
+			want:    []string{"a", "b"},
+		},
+		{
+			name:    "unknown webhook is its own group, never dropped",
+			overdue: []string{"a", "b"},
+			byHook:  map[string]string{"a": "h1"}, // b missing from the map
+			want:    []string{"a", "b"},
+		},
+		{
+			name:    "empty",
+			overdue: nil,
+			byHook:  map[string]string{},
+			want:    []string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := representativeOverdueNames(tc.overdue, tc.byHook)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("representativeOverdueNames = %#v, want %#v", got, tc.want)
+			}
+		})
 	}
 }
