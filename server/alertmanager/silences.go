@@ -6,11 +6,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"time"
 
 	"github.com/prometheus/alertmanager/api/v2/models"
 )
+
+// silenceIDPattern restricts a caller-supplied silence ID to the shape
+// Alertmanager actually issues (a UUID or a ULID), before it is
+// interpolated into the request URL. ExpireSilence builds its request
+// URL by string concatenation (alertmanagerURL + "/api/v2/silence/" +
+// silenceID), so an unvalidated silenceID is as much a path-control
+// vector as the base URL half of security finding F-002 — a caller who
+// controls both halves could smuggle a query string, a fragment, or
+// dot-segment path traversal into the request. 1-64 chars of
+// [A-Za-z0-9-] comfortably fits a 36-char UUID and a 26-char ULID.
+// Compiled once at package init rather than per call.
+var silenceIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 // silenceEndsAt extracts EndsAt as a time.Time, with zero value if nil.
 // v2 API uses *strfmt.DateTime (pointer to a time.Time alias); the
@@ -53,6 +66,9 @@ func ListSilences(alertmanagerURL, user, password string) ([]*models.GettableSil
 func ExpireSilence(silenceID, alertmanagerURL, user, password string) error {
 	if silenceID == "" {
 		return fmt.Errorf("silence ID cannot be empty")
+	}
+	if !silenceIDPattern.MatchString(silenceID) {
+		return fmt.Errorf("invalid silence ID %q: must be 1-64 characters of [A-Za-z0-9-]", silenceID)
 	}
 
 	expireURL := fmt.Sprintf("%s/api/v2/silence/%s", alertmanagerURL, silenceID)
