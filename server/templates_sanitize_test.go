@@ -35,9 +35,45 @@ func (k sanKV) SortedPairs() []sanPair {
 	return pairs
 }
 
+// Remove and Names mirror github.com/prometheus/alertmanager/template KV so the
+// notification TITLE (which does `.CommonLabels.Remove .GroupLabels.Names` then
+// ranges `.SortedPairs`) executes exactly as Alertmanager would.
+func (k sanKV) Remove(names []string) sanKV {
+	skip := make(map[string]bool, len(names))
+	for _, n := range names {
+		skip[n] = true
+	}
+	out := sanKV{}
+	for key, v := range k {
+		if !skip[key] {
+			out[key] = v
+		}
+	}
+	return out
+}
+
+func (k sanKV) Names() []string {
+	names := make([]string, 0, len(k))
+	for key := range k {
+		names = append(names, key)
+	}
+	sort.Strings(names)
+	return names
+}
+
 type sanAlert struct {
 	Labels      sanKV
 	Annotations sanKV
+}
+
+// sanTitleData is the slice of Alertmanager's data model the title template
+// touches: .Status, .CommonLabels / .GroupLabels (KV with Remove/Names/len), and
+// .Alerts.Firing (for the "(N firing)" count).
+type sanTitleData struct {
+	Status       string
+	CommonLabels sanKV
+	GroupLabels  sanKV
+	Alerts       struct{ Firing []sanAlert }
 }
 
 // amLikeFuncMap reproduces the Alertmanager template funcs the notification
@@ -66,6 +102,77 @@ func extractTextTemplate(t *testing.T, receiverYAML string) string {
 		t.Fatalf("expected one receiver with one slack_config, got %#v", recv)
 	}
 	return recv[0].SlackConfigs[0].Text
+}
+
+// extractTitleTemplate pulls the slack_configs[0].title block out of a rendered
+// file-format receiver — that string is the live Alertmanager title template.
+func extractTitleTemplate(t *testing.T, receiverYAML string) string {
+	t.Helper()
+	var recv []struct {
+		SlackConfigs []struct {
+			Title string `yaml:"title"`
+		} `yaml:"slack_configs"`
+	}
+	if err := yaml.Unmarshal([]byte(receiverYAML), &recv); err != nil {
+		t.Fatalf("rendered receiver is not valid YAML: %v\n%s", err, receiverYAML)
+	}
+	if len(recv) != 1 || len(recv[0].SlackConfigs) != 1 {
+		t.Fatalf("expected one receiver with one slack_config, got %#v", recv)
+	}
+	return recv[0].SlackConfigs[0].Title
+}
+
+// TestReceiverTitleSanitizesHostileAlert is the title-field CL-06 regression
+// (found in review): the notification title renders .CommonLabels.alertname /
+// severity and the diff-label pairs, all attacker-influenceable. Execute the
+// emitted title template against a hostile group and assert no injection
+// survives while benign content still renders. The title carries no literal
+// backticks, so ANY backtick in the output is injected.
+func TestReceiverTitleSanitizesHostileAlert(t *testing.T) {
+	yamlOut := renderReceiverYAML("no-such-runbook--team-chan", "https://mm.example/hooks/x", "alerts", "https://mm.example/runbook", "https://mm.example/icon.png")
+	titleTmpl := extractTitleTemplate(t, yamlOut)
+
+	tmpl, err := template.New("title").Funcs(amLikeFuncMap).Parse(titleTmpl)
+	if err != nil {
+		t.Fatalf("emitted title template does not parse (would break AM rendering): %v\n%s", err, titleTmpl)
+	}
+
+	hostile := sanTitleData{
+		Status: "firing",
+		CommonLabels: sanKV{
+			"alertname": "AL[x](https://evil)\nRT", // link + newline injection
+			"severity":  "crit`ical",               // backtick breakout, then toUpper'd
+			"zzz_evil":  "v1`(x)v2",                // rendered as a diff-label pair
+		},
+		// GroupLabels ⊂ CommonLabels; Remove(GroupLabels.Names) leaves severity +
+		// zzz_evil to render in the "(k=v, ...)" tail.
+		GroupLabels: sanKV{"alertname": "AL[x](https://evil)\nRT"},
+	}
+	hostile.Alerts.Firing = []sanAlert{{}, {}} // 2 firing → the "(2 firing)" branch
+
+	var sb strings.Builder
+	if err := tmpl.Execute(&sb, hostile); err != nil {
+		t.Fatalf("executing emitted title template failed: %v", err)
+	}
+	out := sb.String()
+
+	if strings.Contains(out, "](") {
+		t.Errorf("disguised markdown link survived in title:\n%s", out)
+	}
+	if strings.Contains(out, "`") {
+		t.Errorf("backtick survived in title (none are emitted literally):\n%s", out)
+	}
+	if strings.Contains(out, "\n") {
+		t.Errorf("newline injection survived in title:\n%q", out)
+	}
+	// Benign content preserved: severity uppercased, alertname text kept (brackets
+	// stay, parens stripped).
+	if !strings.Contains(out, "CRITICAL") {
+		t.Errorf("sanitized severity not rendered/uppercased:\n%s", out)
+	}
+	if !strings.Contains(out, "AL[x]https://evilRT") {
+		t.Errorf("sanitized alertname not rendered as expected:\n%s", out)
+	}
 }
 
 // TestReceiverTextSanitizesHostileAlert is the CL-06 regression: it renders a

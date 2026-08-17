@@ -52,7 +52,7 @@ const crdFallbackReceiver = `    - name: {{NAME}}
           sendResolved: true
           username: 'alertmanagerbot'
           iconURL: '{{ICON_URL}}'
-          title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}] (no runbook-specific template)'
+          title: '[{{ .Status | toUpper }}:{{SAN_TITLE_ALERTNAME}}] (no runbook-specific template)'
           text: |-
             {{ range .Alerts -}}
             **Alert:** {{SAN_ALERTNAME}}{{ if .Labels.severity }} - {{SAN_SEVERITY}}{{ end }}{{ "\n" }}

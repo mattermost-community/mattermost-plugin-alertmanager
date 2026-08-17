@@ -40,8 +40,14 @@ const (
 // reReplaceAll is Alertmanager's own template func; printf is a text/template
 // builtin — both evaluate at delivery time inside Alertmanager, never here.
 func mdSanitizeDirective(expr string, maxRunes int) string {
-	return fmt.Sprintf(`{{ %s | reReplaceAll "[\x60\r\n()<>]" "" | printf "%%.%ds" }}`, expr, maxRunes)
+	return fmt.Sprintf(`{{ %s | reReplaceAll "%s" "" | printf "%%.%ds" }}`, expr, mdSanitizeStripClass, maxRunes)
 }
+
+// mdSanitizeStripClass is the regex character class of markdown/shell-breakout
+// characters both mdSanitizeDirective and the title-context directives strip:
+// backtick (\x60), CR, LF, parens, and angle brackets. Kept in one place so the
+// body and title sinks can never drift to different rules.
+const mdSanitizeStripClass = `[\x60\r\n()<>]`
 
 // sanitizerReplacer expands the {{SAN_*}} placeholder tokens the shared
 // notification templates carry into the concrete mdSanitizeDirective pipelines.
@@ -56,6 +62,17 @@ var sanitizerReplacer = strings.NewReplacer(
 	"{{SAN_LABELVALUE}}", mdSanitizeDirective(".Value", sanitizeLabelValueMaxRunes),
 	"{{SAN_DASHBOARD_URL}}", mdSanitizeDirective(".Annotations.dashboard_url", sanitizeURLMaxRunes),
 	"{{SAN_RUNBOOK_URL}}", mdSanitizeDirective(".Annotations.runbook_url", sanitizeURLMaxRunes),
+
+	// Title-context tokens. The title renders .CommonLabels.* (not .Labels.*) and
+	// the diff-label pairs iterate $label from .CommonLabels.Remove; both are
+	// attacker-influenceable and must be sanitized just like the body (title gap
+	// found in review of CL-06). The severity variant folds in `toUpper` (the title
+	// uppercases severity), and the diff-label variants carry the whitespace-trim
+	// markers the surrounding template relies on.
+	"{{SAN_TITLE_ALERTNAME}}", mdSanitizeDirective(".CommonLabels.alertname", sanitizeAlertNameMaxRunes),
+	"{{SAN_TITLE_SEVERITY}}", fmt.Sprintf(`{{ .CommonLabels.severity | reReplaceAll "%s" "" | printf "%%.%ds" | toUpper }}`, mdSanitizeStripClass, sanitizeSeverityMaxRunes),
+	"{{SAN_TITLE_LABELNAME}}", fmt.Sprintf(`{{- $label.Name | reReplaceAll "%s" "" | printf "%%.%ds" }}`, mdSanitizeStripClass, sanitizeLabelNameMaxRunes),
+	"{{SAN_TITLE_LABELVALUE}}", fmt.Sprintf(`{{ $label.Value | reReplaceAll "%s" "" | printf "%%.%ds" -}}`, mdSanitizeStripClass, sanitizeLabelValueMaxRunes),
 )
 
 // One canonical slack_configs format, baked in. Every receiver gets it.
@@ -139,21 +156,21 @@ const receiverBodyTemplate = `      # Sidebar color. Mattermost honors Slack-nam
       title: |-
         {{- if eq .Status "firing" -}}
           {{- if .CommonLabels.severity -}}
-            [{{ .CommonLabels.severity | toUpper }}:{{ .CommonLabels.alertname }}]
+            [{{SAN_TITLE_SEVERITY}}:{{SAN_TITLE_ALERTNAME}}]
           {{- else -}}
-            [ALERT:{{ .CommonLabels.alertname }}]
+            [ALERT:{{SAN_TITLE_ALERTNAME}}]
           {{- end -}}
           {{- $count := len .Alerts.Firing -}}
           {{- if gt $count 1 }} ({{ $count }} firing){{- end -}}
         {{- else -}}
-          [✓ RESOLVED:{{ .CommonLabels.alertname }}]
+          [✓ RESOLVED:{{SAN_TITLE_ALERTNAME}}]
         {{- end -}}
         {{- if gt (len .CommonLabels) (len .GroupLabels) -}}
           {{ " " }}(
           {{- with .CommonLabels.Remove .GroupLabels.Names }}
             {{- range $index, $label := .SortedPairs -}}
               {{ if $index }}, {{ end }}
-              {{- $label.Name }}="{{ $label.Value -}}"
+              {{SAN_TITLE_LABELNAME}}="{{SAN_TITLE_LABELVALUE}}"
             {{- end }}
           {{- end -}}
           )
