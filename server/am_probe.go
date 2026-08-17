@@ -175,7 +175,7 @@ func doAMProbe(amURL string) amReachabilityEntry {
 		return amReachabilityEntry{Reachable: false, Status: "bad URL", CheckedAt: time.Now()}
 	}
 
-	resp, err := alertmanager.Client.Do(req)
+	resp, err := alertmanager.GetClient().Do(req)
 	if err != nil {
 		status := "unreachable"
 		if ctx.Err() == context.DeadlineExceeded {
@@ -217,9 +217,13 @@ func doAMProbe(amURL string) amReachabilityEntry {
 // receiver list entries — slack_configs sub-blocks lead with
 // `api_url:` and route entries lead with `matchers:`, neither of
 // which would match this regex.
+// amReceiverNameRegex matches a receiver list entry's name in an AM-loaded YAML
+// body. Compiled once at package load rather than per call (this runs on every
+// inventory-page probe).
+var amReceiverNameRegex = regexp.MustCompile(`(?m)^\s+-\s+name:\s+([^\s]+)`)
+
 func extractAMReceiverNames(configBody string) []string {
-	re := regexp.MustCompile(`(?m)^\s+-\s+name:\s+([^\s]+)`)
-	matches := re.FindAllStringSubmatch(configBody, -1)
+	matches := amReceiverNameRegex.FindAllStringSubmatch(configBody, -1)
 	seen := make(map[string]bool)
 	var out []string
 	for _, m := range matches {

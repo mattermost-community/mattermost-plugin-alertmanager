@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -31,14 +32,29 @@ func RefuseRedirect(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-// Client is the HTTP client used for all outbound Alertmanager API calls. It
+// client is the HTTP client used for all outbound Alertmanager API calls. It
 // trusts system root CAs, disables response compression (defense in depth for
 // the size-limited decode), and refuses redirects (see RefuseRedirect). The
-// plugin replaces this with a CA-bundle-aware client when the
-// AlertManagerCABundle setting is set — see updateAlertmanagerHTTPClient in the
-// main package. Exposing it as a package variable keeps the call sites stable
-// while letting config changes take effect.
-var Client = &http.Client{Transport: NewTransport(), CheckRedirect: RefuseRedirect}
+// plugin swaps it for a CA-bundle-aware client when the AlertManagerCABundle
+// setting changes (updateAlertmanagerHTTPClient in the main package).
+//
+// Held in an atomic.Pointer because that swap happens on the config-change
+// goroutine while slash-command / probe goroutines read it concurrently — a
+// plain package var would be a data race on the pointer word. Callers go through
+// GetClient()/SetClient() and must not cache the returned client across calls.
+var client atomic.Pointer[http.Client]
+
+func init() {
+	client.Store(&http.Client{Transport: NewTransport(), CheckRedirect: RefuseRedirect})
+}
+
+// GetClient returns the current Alertmanager HTTP client. Do not cache it — a
+// CA-bundle config change may swap it via SetClient.
+func GetClient() *http.Client { return client.Load() }
+
+// SetClient atomically replaces the Alertmanager HTTP client. Called from
+// OnConfigurationChange when the CA bundle setting changes.
+func SetClient(c *http.Client) { client.Store(c) }
 
 // httpBackoff returns the backoff policy used for Alertmanager API calls.
 // Total elapsed time is capped at 30s so a slow/flaky Alertmanager doesn't
@@ -75,18 +91,23 @@ func httpRetry(method, url, user, password string) (*http.Response, error) {
 			req.SetBasicAuth(user, password)
 		}
 
-		resp, err = Client.Do(req) // nolint: bodyclose
+		resp, err = GetClient().Do(req) // nolint: bodyclose
 		if err != nil {
 			return err
 		}
 
+		// On a retryable status, close THIS attempt's body before returning the
+		// error — backoff will re-issue and overwrite resp, so an unclosed body
+		// here leaks the connection until GC.
 		switch method {
 		case http.MethodGet:
 			if resp.StatusCode != http.StatusOK {
+				_ = resp.Body.Close()
 				return fmt.Errorf("status code is %d not 200", resp.StatusCode)
 			}
 		case http.MethodPost:
 			if resp.StatusCode == http.StatusBadRequest {
+				_ = resp.Body.Close()
 				return fmt.Errorf("status code is %d not 3xx", resp.StatusCode)
 			}
 		}

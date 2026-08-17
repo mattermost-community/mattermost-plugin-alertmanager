@@ -469,7 +469,7 @@ func doValidateAMStatus(amURL string) (out struct {
 		out.statusText = "bad URL"
 		return out
 	}
-	resp, err := alertmanager.Client.Do(req)
+	resp, err := alertmanager.GetClient().Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			out.statusText = "timeout"
@@ -627,7 +627,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := alertmanager.Client.Do(req)
+	resp, err := alertmanager.GetClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("POST to AM failed: %w", err)
 	}
