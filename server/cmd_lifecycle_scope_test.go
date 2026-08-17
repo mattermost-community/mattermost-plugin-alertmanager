@@ -91,6 +91,31 @@ func TestRemoveOneShortNameResolvesInChannelOnly(t *testing.T) {
 	}
 }
 
+// TestGroupOverdueByWebhook pins the failure-accounting fix: when a group
+// rotation fails, every overdue member sharing that webhook must be recoverable
+// (so all are reported, not just the representative). Pairs with
+// representativeOverdueNames — one dedups to the rep, this expands back to the group.
+func TestGroupOverdueByWebhook(t *testing.T) {
+	overdue := []string{"a", "b", "c", "d"}
+	byName := map[string]string{"a": "hookX", "b": "hookX", "c": "hookY", "d": "hookX"}
+
+	got := groupOverdueByWebhook(overdue, byName)
+
+	// A representative failing on hookX must surface a, b, AND d (first-seen order).
+	if want := []string{"a", "b", "d"}; !reflect.DeepEqual(got["hookX"], want) {
+		t.Fatalf("hookX group = %#v, want %#v", got["hookX"], want)
+	}
+	if want := []string{"c"}; !reflect.DeepEqual(got["hookY"], want) {
+		t.Fatalf("hookY group = %#v, want %#v", got["hookY"], want)
+	}
+	// The representative's own webhook resolves to its full group — the exact
+	// lookup handleRotateOverdue does on a failure.
+	rep := representativeOverdueNames(overdue, byName)[0] // "a" (hookX)
+	if want := []string{"a", "b", "d"}; !reflect.DeepEqual(got[byName[rep]], want) {
+		t.Fatalf("failed-rep %q group lookup = %#v, want %#v", rep, got[byName[rep]], want)
+	}
+}
+
 // TestOldWebhookStatusLine is the B-003 regression: a successful delete says the
 // old URL is dead; a failed delete must warn that it may still be live and name
 // the webhook to remove by hand — never a false "no longer works".

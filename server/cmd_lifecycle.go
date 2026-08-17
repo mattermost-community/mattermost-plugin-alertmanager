@@ -565,6 +565,18 @@ func representativeOverdueNames(overdueNames []string, webhookByName map[string]
 	return reps
 }
 
+// groupOverdueByWebhook groups overdue receiver names by their shared webhook ID
+// (in first-seen order per hook), so a failed group rotation can report every
+// member of the group, not just the representative that was actually attempted.
+func groupOverdueByWebhook(overdueNames []string, webhookByName map[string]string) map[string][]string {
+	byHook := make(map[string][]string, len(overdueNames))
+	for _, name := range overdueNames {
+		hook := webhookByName[name]
+		byHook[hook] = append(byHook[hook], name)
+	}
+	return byHook
+}
+
 // handleRotateOverdue rotates every receiver bound to the calling
 // channel whose LastRotatedAt is older than WebhookRotationDays.
 // One DM at the end with the merged updated YAML — same format as
@@ -617,11 +629,7 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 	// Reverse map so a FAILED group rotation still reports every overdue member,
 	// not just the representative — otherwise the dedup would hide that the group's
 	// other receivers are also still past threshold.
-	overdueByWebhook := make(map[string][]string, len(reps))
-	for _, name := range overdueNames {
-		hook := webhookByName[name]
-		overdueByWebhook[hook] = append(overdueByWebhook[hook], name)
-	}
+	overdueByWebhook := groupOverdueByWebhook(overdueNames, webhookByName)
 
 	rotated := make([]alertConfig, 0, len(overdueNames))
 	failed := make([]string, 0)

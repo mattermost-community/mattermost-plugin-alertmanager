@@ -17,6 +17,12 @@ type fakeChannelAPI struct {
 	existingChannels map[string]*model.Channel // keyed by "<teamID>/<channelName>"
 	created          []*model.Channel
 	deleted          []string
+	addedMembers     []string // "<channelID>/<userID>" recorded by AddChannelMember
+}
+
+func (f *fakeChannelAPI) AddChannelMember(channelID, userID string) (*model.ChannelMember, *model.AppError) {
+	f.addedMembers = append(f.addedMembers, channelID+"/"+userID)
+	return &model.ChannelMember{ChannelId: channelID, UserId: userID}, nil
 }
 
 func (f *fakeChannelAPI) GetTeamByName(name string) (*model.Team, *model.AppError) {
@@ -74,6 +80,42 @@ func TestResolveOrCreateChannelReportsCreated(t *testing.T) {
 	}
 	if len(api.created) != 1 {
 		t.Fatalf("expected exactly one channel created, got %d", len(api.created))
+	}
+}
+
+// TestResolveOrCreateChannelPrivate covers the --private feature: a newly-created
+// channel is PRIVATE and the caller is added as a member (a private channel is
+// invisible to non-members and the webhook is minted with the caller's token). A
+// pre-existing channel is returned as-is with no membership change.
+func TestResolveOrCreateChannelPrivate(t *testing.T) {
+	api := &fakeChannelAPI{
+		teams: map[string]*model.Team{"ateam": {Id: "teamA", Name: "ateam"}},
+		existingChannels: map[string]*model.Channel{
+			"teamA/existing": {Id: "chExisting", Name: "existing", TeamId: "teamA"},
+		},
+	}
+	p := &Plugin{}
+	p.API = api
+
+	// New private channel: created private, caller added.
+	rc, err := p.resolveOrCreateChannel("ateam", "secret", true, "u1")
+	if err != nil || !rc.created {
+		t.Fatalf("private create: %#v err=%v (want created=true)", rc, err)
+	}
+	if len(api.created) != 1 || api.created[0].Type != model.ChannelTypePrivate {
+		t.Fatalf("expected one PRIVATE channel, got %#v", api.created)
+	}
+	if want := "new-secret/u1"; len(api.addedMembers) != 1 || api.addedMembers[0] != want {
+		t.Fatalf("caller not added to new private channel: %#v (want %q)", api.addedMembers, want)
+	}
+
+	// Pre-existing channel: no create, no membership change (even with private=true).
+	rc, err = p.resolveOrCreateChannel("ateam", "existing", true, "u1")
+	if err != nil || rc.created || rc.channelID != "chExisting" {
+		t.Fatalf("pre-existing with --private: %#v err=%v (want chExisting, created=false)", rc, err)
+	}
+	if len(api.created) != 1 || len(api.addedMembers) != 1 {
+		t.Fatalf("pre-existing channel should not create or add members: created=%d added=%d", len(api.created), len(api.addedMembers))
 	}
 }
 
