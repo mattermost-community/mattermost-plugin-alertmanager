@@ -16,6 +16,7 @@ const (
 		"_All commands listed in alphabetical order to match the autocomplete dropdown._\n\n" +
 		"- `/alertmanager about` — plugin build info, configured settings, reconciler health, jump-off links\n" +
 		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=]` — create receivers for a group set OR an individual runbook slug. Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`).\n" +
+		"- `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]` — create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. Unlike `add`, it does NOT generate a `runbook=` route — you wire the matcher manually (the DM'd/exported config includes a commented stub). Use for custom alerts that don't map to a shipped runbook. See `/alertmanager docs configuration`.\n" +
 		"- `/alertmanager alerts` — list currently firing alerts (grouped by Alertmanager URL — one section per backend, not per receiver)\n" +
 		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
 		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: alerts, requirements, architecture, configuration, development, kubernetes, slash_commands)\n" +
@@ -105,6 +106,20 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "--format=crd", HelpText: "Prometheus Operator: an AlertmanagerConfig (v1alpha1) + Secret to `kubectl apply`. Combine with --namespace= (default monitoring). See /alertmanager docs kubernetes."},
 	})
 	root.AddCommand(add)
+
+	// add-custom: one generic (non-runbook) receiver with a user-chosen name.
+	// Same team/channel/am-url guidance as `add`; the final arg is a free-text
+	// custom name instead of a runbook target, and no route is auto-generated.
+	addCustom := model.NewAutocompleteData("add-custom", "[team] [channel] [am-url] [name]", "Create ONE generic (non-runbook) receiver with a custom name. No auto route — you wire the matcher manually. (sysadmin/team_admin)")
+	addCustom.AddDynamicListArgument("Mattermost team URL slug — tab through your teams", teamFetchURL, true)
+	addCustom.AddDynamicListArgument("Mattermost channel URL slug — public channels in the chosen team (or type a new name to auto-create)", channelFetchURL, true)
+	addCustom.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
+		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
+		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes — cluster-internal service DNS. Change 'monitoring' to the namespace your Alertmanager actually runs in."},
+		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash."},
+	})
+	addCustom.AddTextArgument("Custom receiver name: lowercase [a-z0-9_-], no `--`, not a runbook slug or category set. Full name becomes `<name>--<team>-<channel>` (max 190 chars).", "[name]", "")
+	root.AddCommand(addCustom)
 
 	root.AddCommand(model.NewAutocompleteData("alerts", "", "List currently firing alerts (grouped by Alertmanager URL)"))
 
@@ -236,6 +251,9 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 		return p.handleAbout(args)
 	case "add":
 		msg, err := p.handleAdd(args)
+		return joinErr(msg, err)
+	case "add-custom":
+		msg, err := p.handleAddCustom(args)
 		return joinErr(msg, err)
 	case "alerts":
 		msg, err := p.handleAlerts(args)

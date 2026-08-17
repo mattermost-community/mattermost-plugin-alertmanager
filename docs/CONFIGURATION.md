@@ -208,6 +208,75 @@ inhibit_rules:
 | `time_intervals` / `mute_time_intervals` | Scheduled silence windows (maintenance hours, weekends) |
 | `templates` | External template files. Not needed — plugin bakes templates inline in each receiver's `slack_configs` |
 
+## Custom (non-runbook) receivers
+
+The `/alertmanager add` flow binds receivers to shipped **runbooks**: the
+plugin emits a `runbook=<slug>` route and your Prometheus rule sets that
+`runbook` label so the alert lands in the right channel with the runbook's
+diagnostics inline.
+
+Sometimes you have an alert with **no runbook** — a bespoke rule you wrote
+that doesn't map to the shipped catalog. For that, use `add-custom`:
+
+```
+/alertmanager add-custom <team> <channel> <am-url> <name>
+```
+
+This creates a single receiver named `<name>--<team>-<channel>` with its own
+Mattermost webhook, tracked and rotated like any other receiver. Two things
+differ from `add`:
+
+1. **No runbook content.** The chat post is the raw alert — there's no runbook
+   behind the custom name, so no diagnostics/links are rendered.
+2. **You wire the route manually.** The plugin can't know which labels your
+   custom alert carries, so it does **not** generate a matcher. It's on you to
+   route alerts to the receiver.
+
+### Wiring the route (the one manual step)
+
+Run `/alertmanager export`. The DM'd config includes the receiver block plus a
+commented route stub:
+
+```yaml
+# Custom (non-runbook) receivers — created via /alertmanager add-custom.
+# The plugin cannot know which labels your custom alerts carry, so no
+# matcher is generated. Uncomment each block and fill in the matcher(s)
+# your Prometheus rules actually emit, then paste under `route.routes:`.
+#  - matchers: [ <your labels, e.g. alertname="MyCustomAlert", severity="critical"> ]
+#    receiver: my-name--my-team-my-channel
+#    continue: true
+```
+
+Uncomment it, set the matcher(s) to labels your rule emits (e.g. `alertname`,
+`severity`, `team`), and paste under `route.routes:` in your `alertmanager.yml`
+alongside the plugin-generated runbook routes. Keep `continue: true` so the
+route composes cleanly with the others.
+
+> **Silent-failure caveat:** because the route is manual, the plugin can confirm
+> the *receiver* is loaded in Alertmanager (the inventory "OK" badge) but it
+> **cannot** confirm any route actually targets it. If you never add the matcher,
+> the receiver exists and looks healthy yet receives zero alerts. After wiring,
+> use `/alertmanager validate --simulate <labels>` to confirm an alert with your
+> labels dispatches to the custom receiver.
+
+### Prometheus Operator (`--format=crd`)
+
+`/alertmanager export --format=crd` emits the custom receiver into the
+`AlertmanagerConfig` (so its Secret + receiver exist), but — like the file
+format — generates **no** route for it. The plugin's generated CR gates entry on
+the `runbook` label a custom alert doesn't carry, so a custom receiver can't be
+reached through this CR without edits: add your own sub-route under `spec.route.routes`
+**and** widen the parent route's `matchers` to admit your alert's labels (the
+export leaves a commented stub showing where). For anything beyond a quick tweak,
+route the alert to the receiver from your own top-level Alertmanager config instead.
+
+### Naming rules
+
+The custom `<name>` must be lowercase `[a-z0-9_-]`, contain no `--` (the reserved
+`<slug>--<team>-<channel>` separator), and must not collide with a runbook slug or
+a category set name (`all`, `compute`, `application`, …). The assembled
+`<name>--<team>-<channel>` is capped at 190 characters.
+
 ## What your Prometheus rules need
 
 For the plugin-generated routes to dispatch alerts to the right

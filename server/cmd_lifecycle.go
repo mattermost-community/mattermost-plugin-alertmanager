@@ -474,7 +474,7 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
 	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
 	for _, ac := range affected {
-		y.WriteString(renderReceiverYAML(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL))
+		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
 		y.WriteString("\n")
 	}
 	routesYAML := assembleRoutesYAML(affected)
@@ -557,7 +557,7 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
 	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
 	for _, ac := range rotated {
-		y.WriteString(renderReceiverYAML(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL))
+		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
 		y.WriteString("\n")
 	}
 	routesYAML := assembleRoutesYAML(rotated)
@@ -729,7 +729,7 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 		), nil
 	}
 
-	yaml := renderReceiverYAML(match.Name, p.webhookURLForReceiver(*match), match.Channel, p.runbookDefaultURL(receiverBaseSlug(match.Name)), p.siteURL()+webhookIconURL)
+	yaml := renderReceiverYAMLForKind(match.Name, p.webhookURLForReceiver(*match), match.Channel, p.runbookDefaultURL(receiverBaseSlug(match.Name)), p.siteURL()+webhookIconURL, match.Custom)
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("**Receiver `%s`**\n\n", match.Name))
@@ -841,7 +841,7 @@ func (p *Plugin) saveConfigsLocked(entries []alertConfig) error {
 // rotate. The receiver's slack_configs YAML embeds the new webhook URL,
 // so the admin re-pastes the whole block to update alertmanager.yml.
 func (p *Plugin) renderRotateResponse(ac alertConfig) string {
-	yaml := renderReceiverYAML(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL)
+	yaml := renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom)
 	return fmt.Sprintf(
 		":key: Rotated webhook for `%s`. **The old webhook URL no longer works.**\n\n"+
 			"**Update your `alertmanager.yml`:**\n\n```yaml\n%s```\n\n"+

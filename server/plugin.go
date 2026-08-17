@@ -220,6 +220,32 @@ func (p *Plugin) requireChannelTeamAdmin(userID, channelID string) error {
 	return fmt.Errorf("this command requires team_admin (in this channel's team) or system_admin privilege")
 }
 
+// requireTeamAdminBySlug authorizes the caller for a team identified by its URL
+// slug — the DESTINATION team of add/add-custom — rather than the invocation
+// channel's team. Without this, a team_admin of team A could invoke the command
+// from team A and cause a channel to be created (and a webhook bound) in team B.
+// System admins bypass; otherwise the caller must be a team_admin of that team.
+func (p *Plugin) requireTeamAdminBySlug(userID, teamSlug string) error {
+	if p.client == nil {
+		return fmt.Errorf("plugin not fully initialized")
+	}
+	if p.client.User.HasPermissionTo(userID, model.PermissionManageSystem) {
+		return nil
+	}
+	team, appErr := p.API.GetTeamByName(teamSlug)
+	if appErr != nil {
+		return fmt.Errorf("team `%s` not found", teamSlug)
+	}
+	member, appErr := p.API.GetTeamMember(team.Id, userID)
+	if appErr != nil {
+		return fmt.Errorf("you must be a team_admin of team `%s` (or system_admin) to target it", teamSlug)
+	}
+	if slices.Contains(strings.Fields(member.Roles), "team_admin") {
+		return nil
+	}
+	return fmt.Errorf("this command requires team_admin of team `%s` or system_admin", teamSlug)
+}
+
 // auditLog emits a structured plugin audit record for a mutating
 // action via Mattermost's LogAuditRec API. These records land in the
 // MM audit log (separate from regular plugin logs) so security teams

@@ -97,7 +97,7 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	y.WriteString(fmt.Sprintf("# Receivers: %d\n", len(scoped)))
 	y.WriteString("\n")
 	for _, ac := range scoped {
-		y.WriteString(renderReceiverYAML(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL))
+		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
 		y.WriteString("\n")
 	}
 
@@ -188,7 +188,7 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 		// Render the receivers + routes we'd add, then build the diff.
 		var newRecvs, newRoutes strings.Builder
 		for _, ac := range toAdd {
-			newRecvs.WriteString(renderReceiverYAML(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL))
+			newRecvs.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
 			newRecvs.WriteString("\n")
 		}
 		newRoutes.WriteString(assembleRoutesYAML(toAdd))

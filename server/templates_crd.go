@@ -88,8 +88,7 @@ spec:
     groupWait: 30s
     groupInterval: 5m
     repeatInterval: 4h
-    routes:
-{{SUBROUTES}}  receivers:
+{{ROUTES_BLOCK}}  receivers:
 {{RECEIVERS}}`
 
 // crdReceiverSpec is one receiver to render into an AlertmanagerConfig.
@@ -100,6 +99,7 @@ type crdReceiverSpec struct {
 	channel           string // destination channel (with or without leading #)
 	runbookDefaultURL string // plugin-hosted runbook fallback URL
 	iconURL           string // bot avatar URL
+	custom            bool   // add-custom (non-runbook) receiver: no auto route, no runbook link
 }
 
 // indentBlock prefixes every non-empty line of s with prefix. Blank lines stay
@@ -132,14 +132,20 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	).Replace(crdReceiverHeader)
 
 	// Same body as the file format, shifted to the CRD's nesting depth. Fill
-	// the diagnostics block at the deeper column so the YAML literal aligns.
-	body := indentBlock(receiverBodyTemplate, crdBodyIndent)
-	diagText := formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
-	if diagText != "" {
-		diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
+	// {{RUNBOOK_SECTION}} BEFORE re-indenting so its continuation lines pick up
+	// the CRD body indent uniformly. Custom receivers omit the runbook fallback.
+	body := strings.Replace(receiverBodyTemplate, "{{RUNBOOK_SECTION}}", runbookSection(spec.runbookDefaultURL, spec.custom), 1)
+	body = indentBlock(body, crdBodyIndent)
+	// Custom receivers carry no runbook content (Custom is authoritative), so skip
+	// the diagnostics lookup — see the matching guard in renderReceiverYAMLForKind.
+	diagText := ""
+	if !spec.custom {
+		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
+		if diagText != "" {
+			diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
+		}
 	}
 	body = strings.NewReplacer(
-		"{{RUNBOOK_DEFAULT}}", spec.runbookDefaultURL,
 		"{{QUICK_DIAGNOSTICS}}", diagText,
 	).Replace(body)
 
@@ -169,12 +175,22 @@ func renderCRDFallbackReceiver(spec crdReceiverSpec) string {
 func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs []crdReceiverSpec) string {
 	var subroutes, receivers strings.Builder
 	slugs := make([]string, 0, len(specs))
+	var customNames []string
 
 	for _, s := range specs {
 		// The fallback receiver (no runbook slug) gets no sub-route and a
 		// simple body — it is only the parent route's catch-all.
 		if s.slug == "" {
 			receivers.WriteString(renderCRDFallbackReceiver(s))
+			continue
+		}
+		if s.custom {
+			// Custom (add-custom) receiver: no runbook label, so emit NO auto
+			// matcher and keep it OUT of the parent =~ gate. The receiver is still
+			// defined; the commented stub is emitted after the loop, once we know
+			// whether routes: is the empty array (which changes the instruction).
+			customNames = append(customNames, s.name)
+			receivers.WriteString(renderCRDReceiver(s))
 			continue
 		}
 		slugs = append(slugs, s.slug)
@@ -184,7 +200,47 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		receivers.WriteString(renderCRDReceiver(s))
 	}
 
-	parentMatch := "^(" + strings.Join(slugs, "|") + ")$"
+	// Emit commented, ready-to-uncomment sub-route stubs for any custom receivers.
+	// The instruction differs by context: in a custom-only group `routes:` is the
+	// empty array `[]` (schema validity), so the operator must switch it back to
+	// `routes:` before adding a list item — spell that out so uncommenting a stub
+	// can't silently produce invalid YAML.
+	if len(customNames) > 0 {
+		if len(slugs) == 0 {
+			subroutes.WriteString("      # Custom (non-runbook) receivers only — `routes:` is the empty array `[]`\n")
+			subroutes.WriteString("      # below (schema validity). To route to one, change `routes: []` to\n")
+			subroutes.WriteString("      # `routes:`, uncomment a block, set its matchers, AND widen the parent\n")
+			subroutes.WriteString("      # route's matchers above to admit those labels:\n")
+		} else {
+			subroutes.WriteString("      # Custom (non-runbook) receivers below have no matcher generated. Uncomment\n")
+			subroutes.WriteString("      # a block, set its matchers, and widen the parent route's matchers to admit them:\n")
+		}
+		for _, name := range customNames {
+			fmt.Fprintf(&subroutes,
+				"      #  - matchers: [{name: alertname, value: \"MyCustomAlert\", matchType: \"=\"}]\n"+
+					"      #    receiver: %s\n      #    continue: true\n", name)
+		}
+	}
+
+	// Gate the parent route on the group's runbook slugs. A custom-only group has
+	// no runbook slugs, which would yield "^()$" — and because Alertmanager treats
+	// an absent `runbook` label as "", that empty regex matches EVERY non-runbook
+	// alert and dumps it into this group's fallback receiver (broad auto-routing).
+	// Use a sentinel no real slug (nor an absent label) can match, so the CR stays
+	// inert until the operator wires a route for the custom receiver.
+	parentMatch := "^__mm_no_runbook_routes__$"
+	if len(slugs) > 0 {
+		parentMatch = "^(" + strings.Join(slugs, "|") + ")$"
+	}
+
+	// Emit the routes: key. With live sub-routes, list them under `routes:`. A
+	// custom-only group has none — emit an explicit empty array (the schema types
+	// spec.route.routes as an array; a comment-only body would decode to null and
+	// fail schema validation) and keep the editable stub as trailing comments.
+	routesBlock := "    routes:\n" + subroutes.String()
+	if len(slugs) == 0 {
+		routesBlock = "    routes: []\n" + subroutes.String()
+	}
 
 	return strings.NewReplacer(
 		"{{API_VERSION}}", TargetAlertmanagerConfigAPIVersion,
@@ -192,7 +248,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		"{{NAMESPACE}}", namespace,
 		"{{FALLBACK}}", fallbackReceiver,
 		"{{PARENT_MATCH}}", parentMatch,
-		"{{SUBROUTES}}", subroutes.String(),
+		"{{ROUTES_BLOCK}}", routesBlock,
 		"{{RECEIVERS}}", receivers.String(),
 	).Replace(crdEnvelope)
 }
