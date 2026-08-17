@@ -29,6 +29,16 @@ URLs (channel-bound bearer tokens) or change durable state. Pure-read
 commands (`list`, `alerts`, `status`, `about`) are open to any user
 in the channel.
 
+> **`<am-url>` format.** Give the Alertmanager **base** URL — the plugin appends
+> `/api/v2/...` itself. A path prefix is fine when Alertmanager sits behind a
+> reverse proxy (`https://mon.example.com/alertmanager`). A query string or
+> fragment is rejected: those would change which endpoint the plugin actually
+> calls. Credentials must not be embedded in the URL — use the basic-auth
+> user/password fields instead.
+>
+> Valid: `http://alertmanager:9093`, `https://mon.example.com/alertmanager`
+> Rejected: `http://am.example.com/?x`, `http://am.example.com/#`, `http://user:pass@am.example.com`
+
 ## How receiver names work
 
 The plugin names receivers `<runbook-slug>--<team-slug>-<channel-slug>`,

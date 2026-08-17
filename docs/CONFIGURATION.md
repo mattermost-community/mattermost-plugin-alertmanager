@@ -148,6 +148,22 @@ entries. Hook IDs are baked into the rendered `api_url` values; the
 plugin remembers them so future `/alertmanager rotate` or
 `/alertmanager remove` can find the right webhook to act on.
 
+### Alertmanager URL format
+
+The plugin stores the Alertmanager **base** URL and appends the API path
+(`/api/v2/alerts`, `/api/v2/status`, …) when it queries the backend. Two
+consequences:
+
+- **A path prefix works.** If Alertmanager runs behind a reverse proxy with
+  `--web.external-url=https://mon.example.com/alertmanager`, use that full URL.
+  The plugin's appended path lands under the prefix.
+- **A query string or fragment is rejected.** Either one would terminate the
+  base URL early and silently redirect the plugin's request to a different
+  endpoint, so `/alertmanager add` refuses them.
+
+Credentials must not be embedded in the URL. For an Alertmanager behind an auth
+proxy, set the `user` and `password` fields on the receiver entry instead.
+
 ## What your `alertmanager.yml` needs around the plugin's output
 
 The plugin generates the `receivers:` and the `route.routes:` block.
