@@ -19,7 +19,7 @@ import (
 // config map is readable via GET /api/v4/config by delegated console roles
 // (sysconsole_read_plugins) unless flagged secret. It lives in the plugin KV
 // store instead (kvKeyAlertConfigs), which the config API does not expose. See
-// loadAlertConfigsFromKV / saveConfigsLocked (CL-19).
+// loadAlertConfigsFromKV (read) and updateConfigsAtomic (write) (CL-19).
 //
 // WebhookHost is the optional override for the host:port portion of the
 // Mattermost webhook URL when rendered into alertmanager.yml. See
@@ -421,6 +421,13 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 // an error — it returns an empty list. Parse/validation errors ARE surfaced so a
 // corrupt blob fails the config swap loudly rather than silently dropping
 // receivers.
+//
+// Intentional clean break, NOT a bug: the receiver list moved from the plugin
+// config map to the KV store with NO migration reader. An install upgrading from
+// a config-map build therefore comes up with an empty list and re-adds its
+// receivers via /alertmanager add. This is a deliberate dev/redeploy boundary
+// (see the BREAKING CHANGE note and docs/CONFIGURATION.md); a migration shim was
+// explicitly out of scope. Do not "fix" this by reading the old config value.
 func (p *Plugin) loadAlertConfigsFromKV() ([]alertConfig, error) {
 	data, appErr := p.API.KVGet(kvKeyAlertConfigs)
 	if appErr != nil {

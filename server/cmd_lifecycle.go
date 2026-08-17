@@ -958,8 +958,9 @@ func (p *Plugin) updateConfigsAtomic(transform func(current []alertConfig) ([]al
 			return nil, nil, fmt.Errorf("validation: %w", verr)
 		}
 
-		// Commit only if KV still holds exactly what we read. A nil/empty oldBytes
-		// (fresh install) makes this an insert-if-absent, which is what we want.
+		// Commit only if KV still holds exactly what we read. A nil oldBytes (fresh
+		// install — KVGet returns nil, never an empty slice, for an absent key)
+		// makes this an insert-if-absent, which is what we want.
 		set, appErr := p.API.KVCompareAndSet(kvKeyAlertConfigs, oldBytes, newBytes)
 		if appErr != nil {
 			return nil, nil, fmt.Errorf("persist receiver list to KV: %w", appErr)

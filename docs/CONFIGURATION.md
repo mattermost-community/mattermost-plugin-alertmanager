@@ -113,8 +113,18 @@ and any Alertmanager basic-auth passwords, and the KV store — unlike
 plugin config — is not returned by `GET /api/v4/config`, so those
 secrets aren't exposed to delegated System Console roles
 (`sysconsole_read_plugins`). It is managed entirely by slash commands;
-there is no System Console field to hand-edit it. The stored JSON shape
-is:
+there is no System Console field to hand-edit it.
+
+> **Breaking change / upgrade note.** Earlier builds stored this list in the
+> plugin config map (`alertconfigsjson`). The move to the KV store is a clean
+> break with **no automatic migration** — after upgrading, `/alertmanager list`
+> starts empty and you re-create receivers with `/alertmanager add`. The old
+> config value is ignored (and the underlying Mattermost webhooks it referenced
+> are orphaned — delete them under System Console → Integrations → Incoming
+> Webhooks if you're not re-adding). This is intentional; the plugin is not
+> deployed in long-lived installs that would need a data migration.
+
+The stored JSON shape is:
 
 ```json
 [
