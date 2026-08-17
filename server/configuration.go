@@ -56,6 +56,16 @@ const kvKeyAlertConfigs = "alertconfigs:v1"
 // never hits it, but a scripted flood is stopped. Enforced in the add path.
 const maxReceivers = 2000
 
+// enforceReceiverCap returns an error when appending `adding` receivers to a list
+// that already holds `existing` would exceed maxReceivers (CL-25). Called inside
+// the add transforms so the check runs against the freshly-read KV count.
+func enforceReceiverCap(existing, adding int) error {
+	if existing+adding > maxReceivers {
+		return fmt.Errorf("receiver limit reached (%d registered, cap %d) — remove some before adding more", existing, maxReceivers)
+	}
+	return nil
+}
+
 // configuration is the parsed, validated, ready-to-serve plugin state.
 // AlertConfigs is the active list; nameIndex provides O(1) lookup for
 // slash commands that need to resolve an entry by name.
