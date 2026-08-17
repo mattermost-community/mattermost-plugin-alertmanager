@@ -224,6 +224,45 @@ func validateWebhookHost(raw string) error {
 	return nil
 }
 
+// validateAlertManagerURL checks a user-supplied Alertmanager base URL
+// before it is persisted. The plugin builds request URLs by string
+// concatenation (amURL + "/api/v2/alerts"), so anything that can
+// terminate the base URL early lets the caller redirect the request to
+// an arbitrary endpoint on an arbitrary host — security finding F-002.
+//
+// The '?' and '#' check runs against the STRING, not the parsed URL, and
+// that is deliberate: url.Parse("http://h/x#") reports Fragment=="" and
+// RawQuery=="", so a component-only check misses it entirely — yet the
+// appended "/api/v2/alerts" becomes a fragment and is never sent.
+//
+// A path prefix IS allowed. Alertmanager behind a reverse proxy with
+// --web.external-url=https://host/alertmanager is a supported setup, and
+// concatenation preserves the prefix correctly. Unlike WebhookHost, this
+// field is not a bare host.
+func validateAlertManagerURL(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return errors.New("Alertmanager URL cannot be empty")
+	}
+	if strings.ContainsAny(trimmed, "?#") {
+		return errors.New("Alertmanager URL cannot contain '?' or '#' — it must be a base URL the plugin can append /api/v2/... to")
+	}
+	u, err := neturl.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("Alertmanager URL is not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("Alertmanager URL must use http:// or https:// (got %q)", u.Scheme)
+	}
+	if u.Host == "" {
+		return errors.New("Alertmanager URL has no host portion")
+	}
+	if u.User != nil {
+		return errors.New("Alertmanager URL must not embed credentials — set the basic-auth user/password fields instead")
+	}
+	return nil
+}
+
 // resolveWebhookHost collapses the two System Console fields that can set the
 // global webhook host into the single effective value the rest of the plugin
 // uses (stored in configuration.WebhookHost, read by renderReceiverAPIURL).

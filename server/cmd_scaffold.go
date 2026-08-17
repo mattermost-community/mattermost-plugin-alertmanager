@@ -147,6 +147,9 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	}
 
 	team, channel, amURL := rest[0], rest[1], strings.TrimRight(rest[2], "/")
+	if err := validateAlertManagerURL(amURL); err != nil {
+		return fmt.Sprintf(":warning: %v", err), nil
+	}
 	target := "all"
 	if len(rest) == 4 {
 		target = strings.ToLower(rest[3])

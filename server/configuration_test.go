@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -293,4 +294,87 @@ func TestParseAlertConfigs(t *testing.T) {
 			t.Fatalf("expected index in error, got %q", err.Error())
 		}
 	})
+}
+
+// TestValidateAlertManagerURL guards the value that becomes the prefix of
+// every outbound request the plugin makes on a user's behalf. See F-002.
+func TestValidateAlertManagerURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+		errFrag string
+	}{
+		{"plain host and port is valid", "http://alertmanager:9093", false, ""},
+		{"https host is valid", "https://am.example.com", false, ""},
+		{"cluster DNS name is valid", "http://alertmanager.monitoring.svc.cluster.local:9093", false, ""},
+		{"path prefix is valid (reverse-proxied AM)", "https://mon.example.com/alertmanager", false, ""},
+		{"empty is rejected", "", true, "empty"},
+		{"whitespace-only is rejected", "   ", true, "empty"},
+		{"missing scheme is rejected", "am.example.com:9093", true, "http"},
+		{"ftp scheme is rejected", "ftp://am.example.com", true, "http"},
+		{"file scheme is rejected", "file:///etc/passwd", true, "http"},
+		{"no host is rejected", "http://", true, "host"},
+		{"trailing fragment marker is rejected", "http://169.254.169.254/latest/meta-data/#", true, "'?' or '#'"},
+		{"trailing query marker is rejected", "http://evil.internal/x?", true, "'?' or '#'"},
+		{"embedded fragment is rejected", "http://am.example.com/#section", true, "'?' or '#'"},
+		{"embedded query is rejected", "http://am.example.com/?a=b", true, "'?' or '#'"},
+		{"embedded credentials are rejected", "http://user:pass@am.example.com", true, "credentials"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAlertManagerURL(tc.input)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error for %q, got %v", tc.input, err)
+			}
+			if tc.errFrag != "" && err != nil && !strings.Contains(err.Error(), tc.errFrag) {
+				t.Fatalf("error %q does not contain expected fragment %q", err.Error(), tc.errFrag)
+			}
+		})
+	}
+}
+
+// TestAlertManagerURLCannotTruncateAppendedPath asserts the property that
+// actually matters, rather than trusting the field-by-field checks: for
+// any base URL validateAlertManagerURL accepts, appending the plugin's
+// API path must still produce a request to that path. A trailing '#' or
+// '?' silently breaks this and is invisible to a parsed-component check
+// (url.Parse reports empty Fragment and RawQuery for both).
+func TestAlertManagerURLCannotTruncateAppendedPath(t *testing.T) {
+	accepted := []string{
+		"http://alertmanager:9093",
+		"https://am.example.com",
+		"https://mon.example.com/alertmanager",
+	}
+	for _, base := range accepted {
+		t.Run("accepted/"+base, func(t *testing.T) {
+			if err := validateAlertManagerURL(base); err != nil {
+				t.Fatalf("precondition: %q should be accepted, got %v", base, err)
+			}
+			req, err := http.NewRequest(http.MethodGet, base+"/api/v2/alerts", nil)
+			if err != nil {
+				t.Fatalf("building request for %q: %v", base, err)
+			}
+			if !strings.HasSuffix(req.URL.Path, "/api/v2/alerts") {
+				t.Fatalf("appended path was truncated: base=%q wire path=%q", base, req.URL.Path)
+			}
+		})
+	}
+
+	truncating := []string{
+		"http://evil.internal/x#",
+		"http://evil.internal/x?",
+		"http://169.254.169.254/latest/meta-data/#",
+	}
+	for _, base := range truncating {
+		t.Run("rejected/"+base, func(t *testing.T) {
+			if err := validateAlertManagerURL(base); err == nil {
+				t.Fatalf("%q must be rejected: appending /api/v2/alerts sends the request somewhere else", base)
+			}
+		})
+	}
 }
