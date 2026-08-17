@@ -443,20 +443,13 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		return fmt.Sprintf("Failed to create replacement webhook: %v", err), nil
 	}
 
-	// Track whether the old webhook was actually deleted (B-003): rotation is
-	// often triggered because a leak is suspected, so the response must not claim
-	// "the old URL no longer works" if the delete failed and the token is still
-	// live.
-	oldDeleted := true
-	if err := p.deleteIncomingWebhook(args.UserId, oldHookID); err != nil {
-		oldDeleted = false
-		p.API.LogWarn("could not delete old webhook during rotation (continuing)", "receiver", target.Name, "webhook", redactHookID(oldHookID), "err", err.Error())
-	}
-
 	// Durable update: repoint every receiver sharing the old webhook ID to the new
 	// one. Keyed off oldHookID (not indices from the stale snapshot) so it stays
-	// correct against the freshly-read KV list; the create/delete above already ran
-	// and are NOT replayed on a CAS retry.
+	// correct against the freshly-read KV list; the create above already ran and is
+	// NOT replayed on a CAS retry. The OLD webhook is deleted only AFTER this
+	// commits (below), so a CAS failure leaves the old token live and the receiver
+	// still resolvable — recoverable by re-running rotate — rather than pointing at
+	// a webhook we already destroyed.
 	now := time.Now().UTC()
 	_, after, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
 		out := make([]alertConfig, len(current))
@@ -488,6 +481,17 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (strin
 		// serves nothing — clean it up rather than leave an orphan.
 		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
 		return fmt.Sprintf("Receiver `%s` was modified concurrently; nothing was rotated. Re-run if still needed.", resolved), nil
+	}
+
+	// The repoint committed — now retire the old webhook. Doing it here (not before
+	// the write) means every failure path above left the old token live and the
+	// receiver intact. Track whether it actually deleted (B-003): rotation is often
+	// triggered by a suspected leak, so the response must not claim "the old URL no
+	// longer works" if the delete failed and the token is still live.
+	oldDeleted := true
+	if err := p.deleteIncomingWebhook(args.UserId, oldHookID); err != nil {
+		oldDeleted = false
+		p.API.LogWarn("could not delete old webhook after rotation (continuing)", "receiver", target.Name, "webhook", redactHookID(oldHookID), "err", err.Error())
 	}
 
 	p.auditLog("webhook.rotation.executed", args.UserId, target.Name, args.ChannelId,
