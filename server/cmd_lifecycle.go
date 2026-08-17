@@ -614,13 +614,23 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 		webhookByName[c.Name] = c.WebhookID
 	}
 	reps := representativeOverdueNames(overdueNames, webhookByName)
+	// Reverse map so a FAILED group rotation still reports every overdue member,
+	// not just the representative — otherwise the dedup would hide that the group's
+	// other receivers are also still past threshold.
+	overdueByWebhook := make(map[string][]string, len(reps))
+	for _, name := range overdueNames {
+		hook := webhookByName[name]
+		overdueByWebhook[hook] = append(overdueByWebhook[hook], name)
+	}
 
 	rotated := make([]alertConfig, 0, len(overdueNames))
 	failed := make([]string, 0)
 	for _, name := range reps {
 		summary, err := p.handleRotateSingle(args, name)
 		if err != nil || strings.HasPrefix(summary, "Failed") || strings.HasPrefix(summary, "Receiver") {
-			failed = append(failed, name+" — "+summary)
+			// The whole group shares one webhook, so its rotation failed as a unit —
+			// name every overdue member so the operator sees the full still-overdue set.
+			failed = append(failed, strings.Join(overdueByWebhook[webhookByName[name]], ", ")+" — "+summary)
 			continue
 		}
 		// Rotating the representative rotated its whole group. Collect every entry

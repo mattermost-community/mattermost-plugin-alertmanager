@@ -144,6 +144,12 @@ func TestRepresentativeOverdueNames(t *testing.T) {
 			want:    []string{"a", "b"},
 		},
 		{
+			name:    "duplicate name collapses to one (same webhook seen twice)",
+			overdue: []string{"a", "a"},
+			byHook:  map[string]string{"a": "hookX"},
+			want:    []string{"a"},
+		},
+		{
 			name:    "empty",
 			overdue: nil,
 			byHook:  map[string]string{},

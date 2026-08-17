@@ -192,11 +192,12 @@ spec:
           username: alertmanagerbot
           iconURL: https://<your-mm-host>/plugins/com.mattermost.alertmanager/public/alertmanager-logo.png
           # NOTE: simplified for readability. What the plugin actually GENERATES
-          # wraps every attacker-influenceable label/annotation in a sanitizer,
-          # e.g. `{{ .Labels.alertname | reReplaceAll "[\x60\r\n()<>]" "" | printf "%.256s" }}`
-          # — strips markdown/shell-breakout chars so a hostile alert can't inject
-          # links or code spans into the post. Prefer `/alertmanager add --format=crd`
-          # over hand-authoring so you get the hardened templates.
+          # wraps every attacker-influenceable label/annotation in a sanitizer —
+          # in the title, e.g. `{{ .CommonLabels.alertname | reReplaceAll "[\x60\r\n()<>]" "" | printf "%.256s" }}`,
+          # and the same for label values in the text body — stripping
+          # markdown/shell-breakout chars so a hostile alert can't inject links or
+          # code spans into the post. Prefer `/alertmanager add --format=crd` over
+          # hand-authoring so you get the hardened templates.
           title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}]'
           text: |-
             {{ range .Alerts -}}
