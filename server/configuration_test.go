@@ -378,3 +378,62 @@ func TestAlertManagerURLCannotTruncateAppendedPath(t *testing.T) {
 		})
 	}
 }
+
+// TestSanitizeAlertManagerURL covers the load-path backstop for F-002.
+func TestSanitizeAlertManagerURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"clean URL is unchanged", "http://alertmanager:9093", "http://alertmanager:9093"},
+		{"path prefix is preserved", "https://mon.example.com/alertmanager", "https://mon.example.com/alertmanager"},
+		{"trailing fragment marker is stripped", "http://169.254.169.254/latest/#", "http://169.254.169.254/latest/"},
+		{"fragment is stripped", "http://am.example.com/x#frag", "http://am.example.com/x"},
+		{"query is stripped", "http://am.example.com/x?a=b", "http://am.example.com/x"},
+		{"embedded credentials are stripped", "http://user:pass@am.example.com", "http://am.example.com"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeAlertManagerURL(tc.input); got != tc.want {
+				t.Fatalf("sanitizeAlertManagerURL(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseAlertConfigsNeutersHostileURL asserts the two properties that
+// matter together: a config carrying a hostile Alertmanager URL must
+// still LOAD (a hard failure here returns from OnConfigurationChange and
+// takes the whole plugin down, turning F-002 into a persistent DoS), and
+// the stored URL must come back neutered.
+func TestParseAlertConfigsNeutersHostileURL(t *testing.T) {
+	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops",` +
+		`"alertManagerURL":"http://169.254.169.254/latest/meta-data/#","webhookID":"hook1"}]`
+
+	entries, err := parseAlertConfigs(blob)
+	if err != nil {
+		t.Fatalf("a config with a hostile URL must still load, got error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	got := entries[0].AlertManagerURL
+	if strings.ContainsAny(got, "?#") {
+		t.Fatalf("stored URL was not sanitized: %q", got)
+	}
+	if err := validateAlertManagerURL(got); err != nil {
+		t.Fatalf("sanitized URL should pass validation, got %v", err)
+	}
+}
+
+// TestParseAlertConfigsAllowsEmptyAlertManagerURL guards the other
+// bricking path: the field is omitempty, so a hand-edited config may
+// omit it. An empty value is inert and must not fail the load.
+func TestParseAlertConfigsAllowsEmptyAlertManagerURL(t *testing.T) {
+	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops","webhookID":"hook1"}]`
+	if _, err := parseAlertConfigs(blob); err != nil {
+		t.Fatalf("an entry with no alertManagerURL must still load, got error: %v", err)
+	}
+}

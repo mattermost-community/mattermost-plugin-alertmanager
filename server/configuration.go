@@ -154,6 +154,14 @@ func (ac *alertConfig) IsValid() error {
 	if ac.WebhookID == "" {
 		return errors.New("must set webhookID (the plugin creates this; do not set manually)")
 	}
+	// Empty is tolerated: the field is omitempty and an empty value is
+	// inert (concatenation yields a scheme-less URL that http.NewRequest
+	// rejects). Failing the load over it would brick the plugin.
+	if ac.AlertManagerURL != "" {
+		if err := validateAlertManagerURL(ac.AlertManagerURL); err != nil {
+			return fmt.Errorf("invalid alertManagerURL: %w", err)
+		}
+	}
 	if (ac.User == "") != (ac.Password == "") {
 		return errors.New("user and password must both be set or both be empty")
 	}
@@ -263,6 +271,29 @@ func validateAlertManagerURL(raw string) error {
 	return nil
 }
 
+// sanitizeAlertManagerURL strips the parts of a stored Alertmanager URL
+// that would let it redirect the plugin's appended API path, returning
+// the cleaned value.
+//
+// This is the load-path counterpart to validateAlertManagerURL. Entries
+// written before that check existed, or hand-edited into
+// AlertConfigsJSON via the System Console, are neutered on read rather
+// than rejected: parseAlertConfigs's error propagates out of
+// OnConfigurationChange, and an error there stops the plugin loading at
+// all. Rejecting would let a single bad entry brick the plugin, which
+// turns F-002 into a persistent denial of service.
+func sanitizeAlertManagerURL(raw string) string {
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
+
 // resolveWebhookHost collapses the two System Console fields that can set the
 // global webhook host into the single effective value the rest of the plugin
 // uses (stored in configuration.WebhookHost, read by renderReceiverAPIURL).
@@ -313,7 +344,9 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 	}
 	seenWebhooks := make(map[string]webhookOwner, len(entries))
 	for i := range entries {
-		entries[i].AlertManagerURL = strings.TrimRight(entries[i].AlertManagerURL, "/")
+		// Sanitize BEFORE IsValid: a hostile or legacy URL must be
+		// neutered, never rejected. See sanitizeAlertManagerURL.
+		entries[i].AlertManagerURL = strings.TrimRight(sanitizeAlertManagerURL(entries[i].AlertManagerURL), "/")
 		if err := entries[i].IsValid(); err != nil {
 			return nil, fmt.Errorf("alertConfig[%d]: %w", i, err)
 		}
