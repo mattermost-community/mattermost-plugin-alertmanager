@@ -25,24 +25,32 @@ func TestCRDManifestKubeconform(t *testing.T) {
 		t.Skip("kubeconform not installed; the validate-crd CI job runs this")
 	}
 
-	manifest := renderAlertmanagerConfig("mattermost-alertmanager-security", "monitoring", "security-fallback", sampleCRDSpecs())
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "alertmanager-config.yaml")
-	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
-		t.Fatalf("write manifest: %v", err)
+	// Cover both shapes: a normal runbook group (populated routes:) and a
+	// custom-only group (routes: [] — no live sub-routes). The custom-only case
+	// guards against a comment-only body decoding to null, which the array-typed
+	// spec.route.routes schema rejects.
+	manifests := map[string]string{
+		"runbook-group": renderAlertmanagerConfig("mattermost-alertmanager-security", "monitoring", "security-fallback", sampleCRDSpecs()),
+		"custom-only": renderAlertmanagerConfig("mattermost-alertmanager-ops", "monitoring", "ops-fallback", []crdReceiverSpec{
+			{name: "ops-fallback", channel: "ops", secretName: "alertmanager-webhook-ops"},
+			{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "ops", secretName: "alertmanager-webhook-ops", custom: true},
+		}),
 	}
 
 	// Tests run from the package dir (server/); the vendored schema is one up.
 	schemaLoc := "../build/crd-schemas/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
-	cmd := exec.Command(bin,
-		"-strict",
-		"-summary",
-		"-schema-location", schemaLoc,
-		path,
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("kubeconform rejected the generated AlertmanagerConfig: %v\n%s", err, out)
+	for name, manifest := range manifests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "alertmanager-config.yaml")
+			if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
+				t.Fatalf("write manifest: %v", err)
+			}
+			cmd := exec.Command(bin, "-strict", "-summary", "-schema-location", schemaLoc, path)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("kubeconform rejected the %s AlertmanagerConfig: %v\n%s", name, err, out)
+			}
+		})
 	}
 }

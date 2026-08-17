@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -119,22 +120,39 @@ func (p *Plugin) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminInventory is now implemented in admin_inventory.go.
 
-// handleAutocompleteTeams returns the teams the calling user is a member
-// of as AutocompleteListItem JSON. Item is the team URL slug (the value
-// Mattermost inserts into the command line); HelpText is the display name
-// shown next to it in the typeahead.
+// handleAutocompleteTeams returns the teams the caller is allowed to TARGET as
+// AutocompleteListItem JSON. Item is the team URL slug (the value Mattermost
+// inserts into the command line); HelpText is the display name.
 //
-// Limiting to user-member teams is deliberate: showing the user teams
-// they can't join would be misleading for an autocomplete that's about to
-// be used to bind a receiver to a channel in that team.
+// Scope mirrors the server-side authorization in the add/add-custom handlers:
+// system admins see every team; everyone else sees only teams where they are a
+// team_admin. This keeps the typeahead from advertising teams the caller has no
+// authority over — you can't see the hover for team B unless you administer B
+// (or are a system admin). Autocomplete is still just a suggestion; the handler
+// re-checks authorization, so this is UX hygiene, not the security boundary.
 func (p *Plugin) handleAutocompleteTeams(w http.ResponseWriter, _ *http.Request, userID string) {
-	teams, appErr := p.API.GetTeamsForUser(userID)
+	sysadmin := p.client != nil && p.client.User.HasPermissionTo(userID, model.PermissionManageSystem)
+
+	var teams []*model.Team
+	var appErr *model.AppError
+	if sysadmin {
+		teams, appErr = p.API.GetTeams()
+	} else {
+		teams, appErr = p.API.GetTeamsForUser(userID)
+	}
 	if appErr != nil {
 		respondAutocompleteError(w, fmt.Sprintf("failed to list teams: %v", appErr))
 		return
 	}
+
 	items := make([]model.AutocompleteListItem, 0, len(teams))
 	for _, t := range teams {
+		if !sysadmin {
+			member, mErr := p.API.GetTeamMember(t.Id, userID)
+			if mErr != nil || !slices.Contains(strings.Fields(member.Roles), "team_admin") {
+				continue
+			}
+		}
 		items = append(items, model.AutocompleteListItem{
 			Item:     t.Name,
 			HelpText: t.DisplayName,
@@ -184,6 +202,24 @@ func (p *Plugin) handleAutocompleteChannels(w http.ResponseWriter, r *http.Reque
 			},
 		})
 		return
+	}
+
+	// Scope to teams the caller can target — same rule as handleAutocompleteTeams
+	// and the command handlers: system admins bypass, otherwise the caller must be
+	// a team_admin of this team. Without this, a non-admin could enumerate another
+	// team's public channel names by typing its slug (GetPublicChannelsForTeam is
+	// plugin-privileged and would otherwise ignore userID).
+	if p.client == nil || !p.client.User.HasPermissionTo(userID, model.PermissionManageSystem) {
+		member, mErr := p.API.GetTeamMember(team.Id, userID)
+		if mErr != nil || !slices.Contains(strings.Fields(member.Roles), "team_admin") {
+			respondAutocompleteItems(w, []model.AutocompleteListItem{
+				{
+					Item:     "_not-authorized_",
+					HelpText: fmt.Sprintf("You must be a team_admin of `%s` (or system_admin) to list its channels", teamSlug),
+				},
+			})
+			return
+		}
 	}
 
 	// Page 0 / 200 covers nearly every team. Teams with more than 200
