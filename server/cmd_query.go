@@ -351,12 +351,15 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 		startsAt = time.Time(*s.StartsAt)
 	}
 	endsIn := durafmt.Parse(time.Until(endsAt)).LimitFirstN(2).String()
-	id := derefStr(s.ID)
+	// Every AM-returned field here is attacker-influenceable (C-005) and must be
+	// sanitized before it lands in the bot post. That includes the silence ID:
+	// nothing validates it on THIS render path (silenceIDRegex only gates the
+	// request path in ExpireSilence), so a hostile/non-conformant AM could return
+	// an ID with backticks/newlines and break out of the code span. configName is
+	// plugin-owned (a validated receiver name), so it's safe as-is.
+	id := sanitizeInlineMarkdown(derefStr(s.ID))
 	return fmt.Sprintf(
 		"- **ID:** `%s`\n  **By:** %s • **Created:** %s ago • **Ends in:** %s\n  **Matchers:** %s\n  **Comment:** %s\n  **Expire:** `/alertmanager expire_silence %s %s`\n\n",
-		// CreatedBy and Comment are set by whoever created the silence on the AM —
-		// sanitize before rendering into the bot post (C-005). id is a validated
-		// UUID and configName is plugin-owned, so both are safe as-is.
 		id, sanitizeInlineMarkdown(derefStr(s.CreatedBy)),
 		durafmt.Parse(time.Since(startsAt)).LimitFirstN(2).String(),
 		endsIn,

@@ -4,7 +4,32 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/alertmanager/api/v2/models"
 )
+
+// TestFormatSilenceLineSanitizesID is the 4th-pass sibling-gap regression: the
+// silence ID is AM-returned and must be sanitized before rendering into the bot
+// post, exactly like its CreatedBy/Comment/matcher siblings — nothing validates
+// it on this render path (silenceIDRegex only gates the request path).
+func TestFormatSilenceLineSanitizesID(t *testing.T) {
+	hostile := "abc`](https://evil)\ndef"
+	s := &models.GettableSilence{}
+	s.ID = &hostile
+
+	out := formatSilenceLine("high-cpu-usage--team-chan", s)
+
+	if strings.Contains(out, "](") {
+		t.Errorf("disguised markdown link survived via silence ID:\n%s", out)
+	}
+	if strings.Contains(out, "abc`]") {
+		t.Errorf("data-supplied backtick in silence ID survived (code-span breakout):\n%s", out)
+	}
+	// Sanitized form present: backtick/newline/parens stripped, bracket kept.
+	if !strings.Contains(out, "abc]https://evildef") {
+		t.Errorf("sanitized silence ID not rendered as expected:\n%s", out)
+	}
+}
 
 // TestSanitizeInlineMarkdown is the C-005 regression: AM-supplied alert
 // summaries and silence comments render into a bot post, so the strip must
