@@ -38,7 +38,7 @@
                 "display_name": "Metrics endpoint bearer token",
                 "type": "text",
                 "secret": true,
-                "help_text": "Optional bearer token that turns on the Prometheus metrics endpoint at `/plugins/com.mattermost.alertmanager/metrics`; empty disables it (404).",
+                "help_text": "Optional bearer token that turns on the Prometheus metrics endpoint at `/plugins/com.mattermost.alertmanager/metrics`; empty disables it (404). Kept secret — it can't be read back here once saved. To mint or rotate a token (and get a ready-to-paste Prometheus scrape_config), run `/alertmanager metrics-token generate` in any channel as a system admin; run `/alertmanager metrics-token` to check status without rotating.",
                 "placeholder": "(random 64-character hex string)",
                 "default": ""
             },
