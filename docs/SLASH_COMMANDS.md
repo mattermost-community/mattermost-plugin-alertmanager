@@ -18,6 +18,7 @@ the channel where you ran the command.
 | `export` | `[--format=standard\|crd] [--namespace=] [--diff-against-loaded]` | DM this channel's config: `--format=standard` (default) is a fresh `receivers.yml` + `routes.yml`; `--format=crd` is a Prometheus Operator `AlertmanagerConfig` (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded`, diff against AM's loaded config + schema-validate. | sysadmin / team_admin |
 | `help` | _(none)_ | Slash-command reference | any user |
 | `list` | _(none)_ | Receivers bound to this channel (table with Rotated column) | any user |
+| `metrics-token` | `[generate]` | Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The `MetricsToken` setting is `secret:true` and can't be read back from System Console — regenerate here if lost. | sysadmin |
 | `reconcile` | _(none)_ | Prune entries whose Mattermost webhook was deleted out-of-band | sysadmin |
 | `remove` | `<name>` \| `<set> --force` \| `all --force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
 | `rotate` | `<name>` \| `all --overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |

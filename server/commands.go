@@ -24,6 +24,7 @@ const (
 		"- `/alertmanager export [--format=standard|crd] [--namespace=] [--diff-against-loaded]` — DM this channel's config. `--format=standard` (default) is alertmanager.yml receivers + routes; `--format=crd` is a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded` (sysadmin) diff against AM's currently-loaded config\n" +
 		"- `/alertmanager help` — this message\n" +
 		"- `/alertmanager list` — list receivers bound to this channel\n" +
+		"- `/alertmanager metrics-token [generate]` — Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The token is `secret:true` in System Console so it can't be read back — regenerate here if lost (sysadmin)\n" +
 		"- `/alertmanager reconcile` — prune receivers whose Mattermost webhook has been deleted out-of-band (sysadmin; runs automatically every 5 min)\n" +
 		"- `/alertmanager remove <name|set|all> [--force]` — delete a receiver, a runbook set, or everything in this channel\n" +
 		"- `/alertmanager rotate <name>` — delete + recreate the webhook (new hook-id, new URL)\n" +
@@ -163,6 +164,12 @@ func getAutocompleteData() *model.AutocompleteData {
 	list := model.NewAutocompleteData("list", "", "List receivers bound to this channel")
 	root.AddCommand(list)
 
+	metricsToken := model.NewAutocompleteData("metrics-token", "[generate]", "Show status of the Prometheus /metrics bearer token, or `generate` to mint+reveal a new one with a ready-to-paste scrape_config (sysadmin)")
+	metricsToken.AddStaticListArgument("Optional: `generate` rotates + reveals a new token; omit to just show status", false, []model.AutocompleteListItem{
+		{Item: "generate", HelpText: "Mint a new token (rotates the current one) and reveal it once with a Prometheus scrape_config"},
+	})
+	root.AddCommand(metricsToken)
+
 	root.AddCommand(model.NewAutocompleteData("reconcile", "", "Prune receivers whose Mattermost webhook was deleted out-of-band (sysadmin; also runs every 5 min)"))
 
 	// First arg is a static list (set names + `all`) for discoverability,
@@ -280,6 +287,9 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 		return helpMsg
 	case "list":
 		msg, err := p.handleList(args)
+		return joinErr(msg, err)
+	case "metrics-token":
+		msg, err := p.handleMetricsToken(args)
 		return joinErr(msg, err)
 	case "reconcile":
 		msg, err := p.handleReconcile(args)

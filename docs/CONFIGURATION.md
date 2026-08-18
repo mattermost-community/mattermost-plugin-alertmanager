@@ -74,7 +74,18 @@ the endpoint using this token in the `Authorization: Bearer <token>`
 header. Leave empty to disable the endpoint entirely (returns 404
 when unset).
 
-Generate a random token:
+This field is `secret: true`, so once saved it shows blank in System
+Console and **can't be read back**. If you lose the value (or need to
+rotate it), don't guess — run the slash command below, which mints a
+new token, stores it, and reveals it once in an ephemeral reply along
+with a ready-to-paste `scrape_config`:
+
+```
+/alertmanager metrics-token generate   # sysadmin-only; rotates the token
+/alertmanager metrics-token            # status only — does not rotate or reveal
+```
+
+Or generate one yourself and paste it into the setting:
 
 ```bash
 openssl rand -hex 32
