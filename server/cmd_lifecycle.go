@@ -434,14 +434,16 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 	channelID := rc.channelID
 
 	// Webhook display name for the replacement follows the same rule as
-	// /alertmanager add: <group-or-slug>--<channel>. Legacy receivers
-	// (empty GroupName) keep the per-receiver naming form so the System
-	// Console webhook list stays self-explanatory for those entries.
+	// /alertmanager add: the receiver-name format <base>--<team>-<channel>.
+	// Group receivers use the category as the base; individual/legacy
+	// receivers use their runbook slug, so the display name lines up with the
+	// receiver name in System Console (and legacy entries pick up the
+	// team+channel disambiguation on their next rotation).
 	var newDisplayName string
 	if target.GroupName != "" {
-		newDisplayName = fmt.Sprintf("Alertmanager: %s--%s", target.GroupName, target.Channel)
+		newDisplayName = webhookDisplayNameFor(target.GroupName, target.Team, target.Channel)
 	} else {
-		newDisplayName = fmt.Sprintf("Alertmanager: %s", target.Name)
+		newDisplayName = webhookDisplayNameFor(receiverBaseSlug(target.Name), target.Team, target.Channel)
 	}
 	newHookID, err := p.createIncomingWebhook(args.UserId, channelID, newDisplayName)
 	if err != nil {

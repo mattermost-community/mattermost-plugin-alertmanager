@@ -166,9 +166,11 @@ with Mattermost handling auth and post creation.
   curated default templates; admins can also write their own if they
   edit the rendered YAML directly.
 - **Operational visibility.** The webhooks the plugin creates appear in
-  System Console → Integrations → Incoming Webhooks under their human
-  names (`Alertmanager: sre-prod-critical`). Sysadmins can audit them
-  with the same tooling they use for every other integration.
+  System Console → Integrations → Incoming Webhooks named to match the
+  receiver format `<base>--<team>-<channel>` (e.g.
+  `high-cpu-usage--sre-prod-critical`), so the webhook list lines up with
+  the receiver names. Sysadmins can audit them with the same tooling they
+  use for every other integration.
 - **Plugin crashes don't take alerts down.** Alerts flow through
   Mattermost's native receiver. The plugin can be disabled or
   malfunctioning and alert delivery still works — only the slash

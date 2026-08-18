@@ -212,7 +212,8 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// Two-pass: identify slugs that need creation, then create one shared
 	// webhook for the whole batch. Team+channel-qualify every receiver name
 	// (pattern <slug>--<team>-<channel>); the shared webhook itself is named
-	// <group-or-slug>--<channel> in Mattermost.
+	// <category>--<team>-<channel> in Mattermost, mirroring the receiver-name
+	// format so the two line up in System Console.
 	results := make([]scaffoldResult, 0, len(slugs))
 	newSlugs := make([]string, 0, len(slugs))
 	for _, slug := range slugs {
@@ -229,10 +230,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	if len(newSlugs) > 0 {
 		// One Mattermost webhook serves every receiver in this add
-		// invocation. Display name follows <group-or-slug>--<channel>
-		// so System Console → Integrations → Incoming Webhooks shows
-		// the unit, not the per-receiver slug.
-		webhookDisplayName := fmt.Sprintf("Alertmanager: %s--%s", groupName, channel)
+		// invocation. Display name follows the receiver-name format
+		// <category>--<team>-<channel> so System Console → Integrations →
+		// Incoming Webhooks shows the unit (and disambiguates channels that
+		// repeat across teams), not the per-receiver slug.
+		webhookDisplayName := webhookDisplayNameFor(groupName, team, channel)
 		hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
 		if hookErr != nil {
 			// Webhook creation failed — every requested new slug fails.
@@ -599,6 +601,21 @@ func receiverNameForChannel(slug, teamSlug, channelSlug string) string {
 	return slug + "--" + teamSlug + "-" + channelSlug
 }
 
+// webhookDisplayNameFor builds the Mattermost incoming-webhook display name.
+// It deliberately mirrors the Alertmanager receiver-name format
+// (<base>--<team>-<channel>) so the System Console → Integrations → Incoming
+// Webhooks list reads the same way as the receiver names, and the team segment
+// disambiguates channels that repeat across teams (`town-square` is in every
+// team — channel name alone is not unique). For an individual runbook add,
+// `base` is the runbook slug, so the display name is identical to the receiver
+// name; for a group add it's the category, since one webhook serves the whole
+// category. No "Alertmanager:" prefix — the bot identity on the posts already
+// makes ownership obvious, and dropping it buys headroom against the 64-char
+// display-name cap (createIncomingWebhook truncates past that).
+func webhookDisplayNameFor(base, teamSlug, channelSlug string) string {
+	return base + "--" + teamSlug + "-" + channelSlug
+}
+
 // receiverBaseSlug returns the runbook slug portion of a receiver name.
 // For new-style names like `high-cpu-usage--alert-slo-channel`,
 // returns `high-cpu-usage`. For legacy unsuffixed names (created before
@@ -715,7 +732,9 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		}
 	}
 
-	webhookDisplayName := fmt.Sprintf("Alertmanager: %s--%s", receiverBaseSlug(receiverName), channel)
+	// Mirror the receiver-name format; for an individual add this is exactly
+	// the receiver name (<slug>--<team>-<channel>).
+	webhookDisplayName := webhookDisplayNameFor(receiverBaseSlug(receiverName), team, channel)
 	hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
 	if hookErr != nil {
 		p.rollbackCreatedChannel(channelCreated, channelID)

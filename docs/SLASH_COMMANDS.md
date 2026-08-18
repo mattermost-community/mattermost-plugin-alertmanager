@@ -98,7 +98,10 @@ To create just one category:
 
 Available group sets: `all` (default), `application`, `compute`,
 `database`, `networking`, `observability`, `security`, `storage`. Each
-set add creates one shared webhook named `Alertmanager: <set>--<channel>`.
+set add creates one shared webhook named `<set>--<team>-<channel>`, mirroring
+the receiver-name format so the System Console webhook list lines up with the
+receiver names (and the team segment disambiguates channels that repeat across
+teams).
 
 ### Add one specific runbook (individual)
 
@@ -108,9 +111,11 @@ For a single receiver with its own dedicated webhook:
 /alertmanager add testing alert-slo-channel http://alertmanager:9093 high-cpu-usage
 ```
 
-Creates one receiver named `high-cpu-usage--alert-slo-channel` and
-one Mattermost webhook named `Alertmanager: high-cpu-usage--alert-slo-channel`.
-Any runbook slug works — see `/alertmanager docs` for the full list.
+Creates one receiver named `high-cpu-usage--testing-alert-slo-channel` and
+one Mattermost webhook with the identical name
+`high-cpu-usage--testing-alert-slo-channel` (individual adds make the webhook
+name match the receiver name exactly). Any runbook slug works — see
+`/alertmanager docs` for the full list.
 
 If you try to add an individual slug that's already part of an
 existing group in this channel, the add is skipped with a clear
