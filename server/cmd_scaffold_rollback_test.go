@@ -18,7 +18,18 @@ type fakeChannelAPI struct {
 	created          []*model.Channel
 	deleted          []string
 	addedMembers     []string // "<channelID>/<userID>" recorded by AddChannelMember
+	kvData           []byte   // returned by KVGet (the receiver-list blob)
 }
+
+// KVGet backs loadAlertConfigsFromKV, which rollbackCreatedChannel now consults
+// to avoid archiving a channel another pod has bound a receiver to.
+func (f *fakeChannelAPI) KVGet(_ string) ([]byte, *model.AppError) {
+	return f.kvData, nil
+}
+
+// LogWarn is a no-op sink so rollbackCreatedChannel's "skipped"/"failed" log
+// lines don't nil-deref the embedded interface.
+func (f *fakeChannelAPI) LogWarn(_ string, _ ...any) {}
 
 func (f *fakeChannelAPI) AddChannelMember(channelID, userID string) (*model.ChannelMember, *model.AppError) {
 	f.addedMembers = append(f.addedMembers, channelID+"/"+userID)
@@ -127,18 +138,36 @@ func TestRollbackCreatedChannel(t *testing.T) {
 	p := &Plugin{}
 	p.API = api
 
-	p.rollbackCreatedChannel(false, "chExisting")
+	p.rollbackCreatedChannel(false, "chExisting", "ateam", "existing")
 	if len(api.deleted) != 0 {
 		t.Fatalf("must never archive a pre-existing channel, deleted=%v", api.deleted)
 	}
 
-	p.rollbackCreatedChannel(true, "new-fresh")
+	p.rollbackCreatedChannel(true, "new-fresh", "ateam", "fresh")
 	if len(api.deleted) != 1 || api.deleted[0] != "new-fresh" {
 		t.Fatalf("expected the self-created channel archived, deleted=%v", api.deleted)
 	}
 
-	p.rollbackCreatedChannel(true, "")
+	p.rollbackCreatedChannel(true, "", "ateam", "blank")
 	if len(api.deleted) != 1 {
 		t.Fatalf("empty channel ID should be a no-op, deleted=%v", api.deleted)
+	}
+}
+
+// TestRollbackCreatedChannelSkipsWhenBound is the HA regression (Copilot #966):
+// if another pod bound a receiver to the just-created channel before this pod's
+// add failed, the rollback must NOT archive that now-in-use channel.
+func TestRollbackCreatedChannelSkipsWhenBound(t *testing.T) {
+	api := &fakeChannelAPI{
+		// KV already holds a receiver bound to team=ateam channel=shared —
+		// simulating a concurrent add from another pod that landed first.
+		kvData: []byte(`[{"name":"high-cpu--ateam-shared","team":"ateam","channel":"shared","webhookID":"hook1"}]`),
+	}
+	p := &Plugin{}
+	p.API = api
+
+	p.rollbackCreatedChannel(true, "chShared", "ateam", "shared")
+	if len(api.deleted) != 0 {
+		t.Fatalf("must NOT archive a channel another receiver is bound to, deleted=%v", api.deleted)
 	}
 }

@@ -141,23 +141,34 @@ const amReachabilityMaxEntries = 256
 // before each Store, so the cache stays bounded even under a flood of distinct
 // URLs. O(n) over a small n (distinct AM URLs), on the cold probe path only.
 func (p *Plugin) evictReachabilityCache(now time.Time) {
-	var count int
-	var stalestKey any
-	var stalestAt time.Time
+	// Drop expired entries (they'd be re-probed anyway); keep the rest so we can
+	// trim any over-cap excess below.
+	type keyedAt struct {
+		key any
+		at  time.Time
+	}
+	live := make([]keyedAt, 0)
 	p.amReachabilityCache.Range(func(k, v any) bool {
 		e := v.(*amReachabilityEntry)
 		if now.Sub(e.CheckedAt) > amReachabilityTTL {
 			p.amReachabilityCache.Delete(k)
 			return true
 		}
-		count++
-		if stalestAt.IsZero() || e.CheckedAt.Before(stalestAt) {
-			stalestAt, stalestKey = e.CheckedAt, k
-		}
+		live = append(live, keyedAt{k, e.CheckedAt})
 		return true
 	})
-	if count >= amReachabilityMaxEntries && stalestKey != nil {
-		p.amReachabilityCache.Delete(stalestKey)
+	// Eviction and the Store that follows are separate sync.Map ops, so
+	// concurrent cold-misses can push well past the cap in between. Trim ALL
+	// excess (stalest first), not just the single stalest, so the overshoot stays
+	// bounded without taking a lock on the probe hot path. `+1` reserves room for
+	// the entry probeAMReachability is about to Store.
+	excess := len(live) + 1 - amReachabilityMaxEntries
+	if excess <= 0 {
+		return
+	}
+	sort.Slice(live, func(i, j int) bool { return live[i].at.Before(live[j].at) })
+	for i := 0; i < excess && i < len(live); i++ {
+		p.amReachabilityCache.Delete(live[i].key)
 	}
 }
 

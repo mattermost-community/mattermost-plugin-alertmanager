@@ -88,18 +88,28 @@ const crdNameReserve = 48
 // cut, so two long pairs sharing a prefix don't collapse to the same name — the
 // mapping stays injective (CL-35).
 func crdBaseName(team, channel string) string {
-	base := sanitizeK8sName(team) + "-" + sanitizeK8sName(channel)
+	// Injectivity: the readable `<team>-<channel>` join alone is ambiguous —
+	// team="a-b"/channel="c" and team="a"/channel="b-c" both sanitize to
+	// "a-b-c", colliding two teams' Secret/AlertmanagerConfig names in one
+	// namespace even for short names (the old truncation-only hash didn't help;
+	// it hashed that already-ambiguous string). Always suffix a short hash of the
+	// UNAMBIGUOUS tuple — NUL-joined, and NUL can't appear in a slug, so distinct
+	// (team, channel) pairs always hash differently and never collide (CL-34/35).
+	readable := sanitizeK8sName(team) + "-" + sanitizeK8sName(channel)
+	sum := sha256.Sum256([]byte(team + "\x00" + channel))
+	h := hex.EncodeToString(sum[:4]) // 8 hex chars
+	base := readable + "-" + h
 	budget := crdNameMaxLen - crdNameReserve
 	if len(base) <= budget {
 		return base
 	}
-	sum := sha256.Sum256([]byte(base))
-	h := hex.EncodeToString(sum[:4]) // 8 hex chars
-	keep := budget - len(h) - 1      // -1 for the joining '-'
+	// Over budget: truncate the readable part but ALWAYS keep the hash — it
+	// carries the injective identity that prevents the collision.
+	keep := budget - len(h) - 1 // -1 for the joining '-'
 	if keep < 1 {
 		return h
 	}
-	return strings.TrimRight(base[:keep], "-") + "-" + h
+	return strings.TrimRight(readable[:keep], "-") + "-" + h
 }
 
 // assembleCRDManifest builds the full multi-document manifest (Secret +

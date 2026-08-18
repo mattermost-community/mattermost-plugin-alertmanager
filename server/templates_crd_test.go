@@ -23,6 +23,13 @@ func TestCRDBaseNameQualifiesTeam(t *testing.T) {
 		t.Fatal("crdBaseName is not stable for the same inputs")
 	}
 
+	// The exact ambiguity Copilot flagged: the readable `<team>-<channel>` join is
+	// not injective on its own — team="a-b"/channel="c" and team="a"/channel="b-c"
+	// both read as "a-b-c". The unambiguous NUL-joined hash must keep them distinct.
+	if a, b := crdBaseName("a-b", "c"), crdBaseName("a", "b-c"); a == b {
+		t.Fatalf("hyphen-ambiguous team/channel pairs collided on base name %q", a)
+	}
+
 	// Over-long inputs: distinct pairs sharing a prefix must not collapse, and the
 	// most-decorated name must still fit the 253-char cap.
 	long1 := crdBaseName(strings.Repeat("x", 300), "alerts")

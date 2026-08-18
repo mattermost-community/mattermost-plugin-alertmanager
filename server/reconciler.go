@@ -337,14 +337,17 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 			"receiver", ac.Name, "webhook", redactHookID(ac.WebhookID), "err", getErr.Error())
 	}
 
-	// Mark every receiver whose shared webhookID came back 404. Cached
-	// status lookups: a single dead webhook in a 6-receiver group
-	// orphans all 6 here.
-	orphanSet := make(map[string]bool)
+	// Mark every receiver whose shared webhookID came back 404, recording the
+	// SPECIFIC dead webhook ID we probed for each name (not just the name). The
+	// prune transform below re-checks that the fresh entry still carries this
+	// exact webhook, so a concurrent rotate that repointed the same receiver name
+	// to a healthy new webhook between the probe and the CAS write is not clobbered.
+	// Cached status: a single dead webhook in a 6-receiver group orphans all 6.
+	orphanSet := make(map[string]string)
 	for _, ac := range current {
 		alive, known := hookStatus[ac.WebhookID]
 		if known && !alive {
-			orphanSet[ac.Name] = true
+			orphanSet[ac.Name] = ac.WebhookID
 		}
 	}
 
@@ -362,7 +365,10 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		pruned = pruned[:0] // reset per attempt
 		out := make([]alertConfig, 0, len(current))
 		for _, c := range current {
-			if orphanSet[c.Name] {
+			// Prune only if this name is still bound to the SAME webhook we
+			// probed as dead. A concurrent rotate that gave it a fresh webhook
+			// changes WebhookID, so it survives (and gets re-probed next cycle).
+			if deadHook, ok := orphanSet[c.Name]; ok && c.WebhookID == deadHook {
 				pruned = append(pruned, c.Name)
 				continue
 			}

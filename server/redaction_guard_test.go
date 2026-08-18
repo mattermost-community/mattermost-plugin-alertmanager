@@ -80,6 +80,15 @@ func f(api API, webhookURL string) { api.LogError("posting", "url", webhookURL) 
 func f(api API, password string) { api.LogInfo("auth", "password", password) }`,
 		`package p
 func f(p P, oldHookID string) { p.auditLog("rotate", oldHookID) }`,
+		// Laundering through an intermediary (non-redactor) call must NOT bypass
+		// the guard — the exact gap Copilot flagged. The walker now descends into
+		// these calls and still finds the secret.
+		`package p
+import "strings"
+func f(api API, password string) { api.LogInfo("auth", strings.TrimSpace(password)) }`,
+		`package p
+import "fmt"
+func f(hookID string) error { return fmt.Errorf("hook: %s", fmt.Sprint(hookID)) }`,
 	}
 	for i, src := range leaks {
 		if v := scanSource(t, fmt.Sprintf("leak%d.go", i), src); len(v) == 0 {
@@ -157,18 +166,41 @@ func isSecretSink(fun ast.Expr) bool {
 	return false
 }
 
-// findSensitiveIdent returns the first sensitive identifier reachable from arg
-// WITHOUT crossing a call expression, or "" if none. Not descending into calls is
-// what makes redactHookID(hookID) and err.Error() accepted while a bare hookID /
-// ac.WebhookID / "x"+hookID is caught.
+// knownRedactors are the ONLY calls treated as sanitizing a secret. Everything
+// else is descended into, so laundering a secret through an intermediary call —
+// LogInfo("password", strings.TrimSpace(password)) or fmt.Errorf("hook: %s",
+// fmt.Sprint(hookID)) — cannot bypass the guard. Keep in sync with the real
+// redaction helpers in incoming_webhook.go.
+var knownRedactors = map[string]bool{
+	"redactHookID":       true, // sha256-prefix of a hook ID
+	"webhookDeleteError": true, // returns an error whose text already redacts the hook ID
+}
+
+// isKnownRedactor reports whether a call expression is one of the sanctioned
+// redactors (either a bare func call redactHookID(...) or a method form).
+func isKnownRedactor(fun ast.Expr) bool {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return knownRedactors[f.Name]
+	case *ast.SelectorExpr:
+		return knownRedactors[f.Sel.Name]
+	}
+	return false
+}
+
+// findSensitiveIdent returns the first sensitive identifier reachable from arg,
+// or "" if none. It stops ONLY at a known redactor call (that genuinely sanitizes
+// the secret) and descends into every OTHER call, so a secret can't be laundered
+// past the guard by wrapping it in strings.TrimSpace / fmt.Sprint / etc. Benign
+// calls like err.Error() are unaffected — descending finds no sensitive ident.
 func findSensitiveIdent(arg ast.Expr) string {
 	var found string
 	ast.Inspect(arg, func(n ast.Node) bool {
 		if found != "" {
 			return false
 		}
-		if _, isCall := n.(*ast.CallExpr); isCall {
-			return false // sanitized boundary — stop here
+		if call, isCall := n.(*ast.CallExpr); isCall && isKnownRedactor(call.Fun) {
+			return false // genuinely sanitized — stop here
 		}
 		if id, ok := n.(*ast.Ident); ok && sensitiveArgRegex.MatchString(id.Name) {
 			found = id.Name

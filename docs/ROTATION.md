@@ -187,6 +187,14 @@ fast iteration):
    field to edit. In dev, write the KV value directly (decode the JSON,
    set `lastRotatedAt` on one entry to a date >1 day ago, write it
    back) using whatever KV/DB access your test stack has.
+
+   > **A raw KV write does not refresh the running plugin.** The reconciler
+   > reads the in-memory config (`getConfiguration()`), which only reloads on
+   > `OnConfigurationChange`; a direct KV edit never fires that, and even the
+   > plugin's own atomic writes refresh in-memory state on the writing pod only.
+   > After editing KV, trigger a config reload (toggle any plugin setting in
+   > System Console) or restart/redeploy the plugin — otherwise the reconciler
+   > keeps using the old timestamp and simply waiting won't help.
 3. Wait up to 5 minutes for the next reconciler cycle.
 4. Check the bot DM channel — should have a per-channel reminder
    listing that one overdue receiver.

@@ -140,6 +140,35 @@ func (p *Plugin) localBaseURL() string {
 // failure mode is loud, not silent.
 const incomingWebhookDisplayNameMax = 64
 
+// webhookRollbackWarning is the admin-facing note appended when a rollback's
+// webhook deletion FAILS, so a live orphan bearer token isn't left silently with
+// the response still claiming "rolled back". It identifies the orphan by display
+// name (System Console → Integrations → Incoming Webhooks) rather than printing
+// the raw hook ID, which is itself a bearer credential we must not leak (CL-13).
+func webhookRollbackWarning(displayName string) string {
+	return fmt.Sprintf("\n\n:warning: Couldn't delete the webhook created for this operation — a live orphan may remain. Remove it manually in **System Console → Integrations → Incoming Webhooks** (look for `%s`).", displayName)
+}
+
+// truncateMiddle shortens s to at most max bytes by eliding the MIDDLE and
+// inserting "...", preserving both ends. Webhook display names are
+// <base>--<team>-<channel>; the base at the head and the channel at the tail are
+// the disambiguating parts, so a plain tail-chop (which drops the channel) can
+// make two long names collide visually. Inputs here are ASCII slugs, so byte
+// slicing can't split a multi-byte rune.
+func truncateMiddle(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	const ellipsis = "..."
+	if max <= len(ellipsis) {
+		return s[:max]
+	}
+	keep := max - len(ellipsis)
+	head := (keep + 1) / 2 // bias the extra byte to the head
+	tail := keep - head
+	return s[:head] + ellipsis + s[len(s)-tail:]
+}
+
 // createIncomingWebhook registers a Mattermost incoming webhook in the
 // destination channel. The hook is technically owned by the calling
 // admin (since the PAT we minted is theirs), but Username/IconURL
@@ -150,7 +179,12 @@ const incomingWebhookDisplayNameMax = 64
 // can be long slugs) can overflow the 64-char cap. Truncation keeps the
 // create call from failing with "Invalid title"; the receiver's full
 // identity is preserved in plugin config and the AM YAML, where the
-// truncation doesn't apply.
+// truncation doesn't apply. truncateMiddle keeps BOTH ends (the category/slug
+// head and the channel tail), since those are what distinguish two webhooks in
+// the System Console list — a plain tail-chop would drop the channel and make
+// long names look identical. The display name is cosmetic (nothing keys on it;
+// reconcile matches WebhookID), so a truncation collision would only be a
+// display nuisance, never a misroute — but keeping both ends avoids even that.
 //
 // Returns the hook ID — that's the public identifier going into the URL
 // path /hooks/<id>.
@@ -161,9 +195,7 @@ func (p *Plugin) createIncomingWebhook(callerUserID, channelID, displayName stri
 	}
 	defer cleanup()
 
-	if len(displayName) > incomingWebhookDisplayNameMax {
-		displayName = displayName[:incomingWebhookDisplayNameMax]
-	}
+	displayName = truncateMiddle(displayName, incomingWebhookDisplayNameMax)
 
 	hook := &model.IncomingWebhook{
 		ChannelId:   channelID,

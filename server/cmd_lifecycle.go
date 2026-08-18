@@ -471,8 +471,12 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 		return out, nil
 	})
 	if err != nil {
-		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
-		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v", err), false, nil
+		warn := ""
+		if delErr := p.deleteIncomingWebhook(args.UserId, newHookID); delErr != nil {
+			p.API.LogWarn("rotate rollback: could not delete the new webhook (orphan may remain)", "webhook", redactHookID(newHookID), "err", delErr.Error())
+			warn = webhookRollbackWarning(newDisplayName)
+		}
+		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v%s", err, warn), false, nil
 	}
 
 	// The affected set is every receiver now carrying the new webhook ID.
@@ -958,9 +962,24 @@ func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bo
 // behind (CL-01). No-op when the channel pre-existed (created=false) — the plugin
 // must never remove a channel it didn't make. Best-effort: a failed archive is
 // logged, not surfaced, since the caller is already returning an add error.
-func (p *Plugin) rollbackCreatedChannel(created bool, channelID string) {
+func (p *Plugin) rollbackCreatedChannel(created bool, channelID, teamSlug, channelSlug string) {
 	if !created || channelID == "" {
 		return
+	}
+	// HA safety: between this pod creating the channel and its add failing,
+	// another pod can resolve the same channel as existing and successfully
+	// attach a receiver to it. Archiving here would delete that live
+	// destination. Re-read the receiver list from KV (cluster-consistent, unlike
+	// this pod's in-memory snapshot) and skip the archive if anything is now
+	// bound to this team+channel — leave the empty channel for explicit cleanup
+	// rather than risk removing another pod's in-use channel.
+	if fresh, err := p.loadAlertConfigsFromKV(); err == nil {
+		for _, c := range fresh {
+			if c.Team == teamSlug && c.Channel == channelSlug {
+				p.API.LogWarn("skipped channel rollback: a receiver is now bound to it (HA concurrent add)", "channelID", channelID)
+				return
+			}
+		}
 	}
 	if appErr := p.API.DeleteChannel(channelID); appErr != nil {
 		p.API.LogWarn("could not roll back channel created for a failed add", "channelID", channelID, "err", appErr.Error())

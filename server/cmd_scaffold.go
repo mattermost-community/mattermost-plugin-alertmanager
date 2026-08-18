@@ -241,7 +241,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 			// Existing skipped slugs remain in the results; rendering
 			// below shows the full picture. If we created the channel just
 			// for this add, archive it so a failed add leaves no empty squat.
-			p.rollbackCreatedChannel(channelCreated, channelID)
+			p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
 			for _, slug := range newSlugs {
 				results = append(results, scaffoldResult{receiverNameForChannel(slug, team, channel), "failed", hookErr.Error()})
 			}
@@ -283,9 +283,13 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 			return slices.Concat(current, newEntries), nil
 		})
 		if err != nil {
-			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
-			p.rollbackCreatedChannel(channelCreated, channelID)
-			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v", err), nil
+			warn := ""
+			if delErr := p.deleteIncomingWebhook(args.UserId, sharedHookID); delErr != nil {
+				p.API.LogWarn("scaffold rollback: could not delete shared webhook (orphan may remain)", "webhook", redactHookID(sharedHookID), "err", delErr.Error())
+				warn = webhookRollbackWarning(webhookDisplayNameFor(groupName, team, channel))
+			}
+			p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
+			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v%s", err, warn), nil
 		}
 	}
 
@@ -737,7 +741,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	webhookDisplayName := webhookDisplayNameFor(receiverBaseSlug(receiverName), team, channel)
 	hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
 	if hookErr != nil {
-		p.rollbackCreatedChannel(channelCreated, channelID)
+		p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
 		return fmt.Sprintf("Failed to create Mattermost webhook: %v", hookErr), nil
 	}
 
@@ -760,9 +764,13 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return slices.Concat(current, []alertConfig{entry}), nil
 	})
 	if err != nil {
-		_ = p.deleteIncomingWebhook(args.UserId, hookID)
-		p.rollbackCreatedChannel(channelCreated, channelID)
-		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v", err), nil
+		warn := ""
+		if delErr := p.deleteIncomingWebhook(args.UserId, hookID); delErr != nil {
+			p.API.LogWarn("add-custom rollback: could not delete webhook (orphan may remain)", "webhook", redactHookID(hookID), "err", delErr.Error())
+			warn = webhookRollbackWarning(webhookDisplayNameFor(receiverBaseSlug(receiverName), team, channel))
+		}
+		p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
+		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v%s", err, warn), nil
 	}
 
 	// Build the runbook-free receiver block + the commented route stub and DM

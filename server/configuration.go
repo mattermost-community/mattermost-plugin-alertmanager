@@ -551,7 +551,12 @@ func (p *Plugin) OnConfigurationChange() error {
 			if appErr.StatusCode == 404 {
 				return fmt.Errorf("alertConfig %q: Mattermost team %q does not exist", ac.Name, ac.Team)
 			}
+			// Transient error (typically MM not fully ready). Mark the team seen
+			// anyway so the remaining receivers in the SAME team don't each repeat
+			// the failing RPC — that per-entry O(N) call/log storm during a MM
+			// outage is exactly what this memo exists to prevent. Logged once here.
 			p.API.LogWarn("could not verify team existence (continuing)", "config", ac.Name, "team", ac.Team, "err", appErr.Error())
+			verifiedTeams[ac.Team] = true
 		}
 	}
 
