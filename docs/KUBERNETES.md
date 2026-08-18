@@ -138,6 +138,14 @@ Create one Secret per receiver (or reuse one per group webhook), in the **same
 namespace** as the `AlertmanagerConfig`. The URL is the one `/alertmanager add`
 DMs you.
 
+> **Generated object names carry a short hash suffix.** The examples below use
+> readable names like `alertmanager-webhook-sre-alert-slo-channel`, but
+> `/alertmanager export --format=crd` appends a short hash (e.g.
+> `…-slo-channel-1a2b3c4d`) to every generated Secret / `AlertmanagerConfig` /
+> fallback-receiver name. That keeps two teams sharing a channel name from
+> colliding on identical object names in one namespace. Use whatever names the
+> exported manifest actually contains — the Secret ref wiring is the same either way.
+
 ```
 kubectl create secret generic alertmanager-webhook-sre-alert-slo-channel \
   --from-literal=url='<webhook URL from /alertmanager add>' \
