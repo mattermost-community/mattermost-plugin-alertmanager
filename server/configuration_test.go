@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -67,6 +69,13 @@ func TestValidateAlertManagerURL(t *testing.T) {
 		{"embedded credentials rejected", "http://user:pass@am:9093", true},
 		{"query string rejected", "http://am:9093?x=y", true},
 		{"fragment rejected", "http://am:9093#frag", true},
+		// Trailing BARE markers: url.Parse reports empty RawQuery/Fragment for
+		// these, so the old parsed-component check missed them. The string scan
+		// catches them (F-002, PR #58). amURL+"/api/v2/alerts" would otherwise
+		// truncate onto the wrong endpoint.
+		{"trailing bare fragment rejected", "http://am:9093/#", true},
+		{"trailing bare query rejected", "http://am:9093/?", true},
+		{"metadata SSRF with trailing fragment rejected", "http://169.254.169.254/latest/meta-data/#", true},
 		{"non-numeric port rejected", "http://am:xyz", true},
 		// The headline injection: survives strings.Fields via ${IFS}, would land
 		// unquoted in `curl -X POST <url>/-/reload`.
@@ -82,6 +91,128 @@ func TestValidateAlertManagerURL(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("expected no error for %q, got %v", tc.input, err)
+			}
+		})
+	}
+}
+
+// TestAlertManagerURLCannotTruncateAppendedPath asserts the property that
+// actually matters, rather than trusting the field checks: for any base URL
+// validateAlertManagerURL accepts, appending the plugin's API path must still
+// produce a request to that path. A trailing '#'/'?' silently breaks this and is
+// invisible to a parsed-component check (F-002, PR #58).
+func TestAlertManagerURLCannotTruncateAppendedPath(t *testing.T) {
+	accepted := []string{
+		"http://alertmanager:9093",
+		"https://am.example.com",
+		"https://mon.example.com/alertmanager",
+	}
+	for _, base := range accepted {
+		t.Run("accepted/"+base, func(t *testing.T) {
+			if err := validateAlertManagerURL(base); err != nil {
+				t.Fatalf("precondition: %q should be accepted, got %v", base, err)
+			}
+			req, err := http.NewRequest(http.MethodGet, base+"/api/v2/alerts", nil)
+			if err != nil {
+				t.Fatalf("building request for %q: %v", base, err)
+			}
+			if !strings.HasSuffix(req.URL.Path, "/api/v2/alerts") {
+				t.Fatalf("appended path was truncated: base=%q wire path=%q", base, req.URL.Path)
+			}
+		})
+	}
+	truncating := []string{
+		"http://evil.internal/x#",
+		"http://evil.internal/x?",
+		"http://169.254.169.254/latest/meta-data/#",
+	}
+	for _, base := range truncating {
+		t.Run("rejected/"+base, func(t *testing.T) {
+			if err := validateAlertManagerURL(base); err == nil {
+				t.Fatalf("%q must be rejected: appending /api/v2/alerts sends the request somewhere else", base)
+			}
+		})
+	}
+}
+
+// TestSanitizeAlertManagerURL covers the load-path backstop for F-002: stored
+// values are neutered (never rejected) so a bad one can't brick the plugin.
+func TestSanitizeAlertManagerURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"clean URL is unchanged", "http://alertmanager:9093", "http://alertmanager:9093"},
+		{"path prefix is preserved", "https://mon.example.com/alertmanager", "https://mon.example.com/alertmanager"},
+		{"trailing bare fragment is stripped", "http://169.254.169.254/latest/#", "http://169.254.169.254/latest/"},
+		{"fragment is stripped", "http://am.example.com/x#frag", "http://am.example.com/x"},
+		{"query is stripped", "http://am.example.com/x?a=b", "http://am.example.com/x"},
+		{"embedded credentials are stripped", "http://user:pass@am.example.com", "http://am.example.com"},
+		{"whitespace-only input becomes empty", "   \t\n  ", ""},
+		{"whitespace-padded valid URL is trimmed", " http://alertmanager:9093 ", "http://alertmanager:9093"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeAlertManagerURL(tc.input); got != tc.want {
+				t.Fatalf("sanitizeAlertManagerURL(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseAlertConfigsNeutersHostileURL asserts the two properties that matter
+// together: a config carrying a hostile Alertmanager URL must still LOAD (a hard
+// failure here returns from OnConfigurationChange and takes the whole plugin
+// down, turning F-002 into a persistent DoS), and the stored URL comes back
+// neutered (F-002, PR #58).
+func TestParseAlertConfigsNeutersHostileURL(t *testing.T) {
+	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops",` +
+		`"alertManagerURL":"http://169.254.169.254/latest/meta-data/#","webhookID":"hook1"}]`
+	entries, err := parseAlertConfigs(blob)
+	if err != nil {
+		t.Fatalf("a config with a hostile URL must still load, got error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	got := entries[0].AlertManagerURL
+	if strings.ContainsAny(got, "?#") {
+		t.Fatalf("stored URL was not sanitized: %q", got)
+	}
+	if err := validateAlertManagerURL(got); err != nil {
+		t.Fatalf("sanitized URL should pass validation, got %v", err)
+	}
+}
+
+// TestParseAlertConfigsBlanksUnfixableStoredURL: sanitize strips every
+// exploitable input, so by the time validateAlertManagerURL runs on the load
+// path the only failing values left are ones sanitize can't repair (no scheme /
+// no host). Those are inert (http.Client.Do fails on them, no SSRF value), so the
+// load path blanks them rather than hard-failing parseAlertConfigs and bricking
+// the plugin over a benign stored typo (F-002, PR #58).
+func TestParseAlertConfigsBlanksUnfixableStoredURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"scheme-less host:port is blanked", "alertmanager:9093"},
+		{"scheme-less dotted host:port is blanked", "am.example.com:9093"},
+		{"scheme with no host is blanked", "ftp://x"},
+		{"whitespace-only is blanked", "   "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blob := fmt.Sprintf(`[{"name":"probe--alpha-ops","team":"alpha","channel":"ops","alertManagerURL":%q,"webhookID":"hook1"}]`, tc.input)
+			entries, err := parseAlertConfigs(blob)
+			if err != nil {
+				t.Fatalf("an unfixable-but-inert alertManagerURL must still load, got error: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("expected 1 entry, got %d", len(entries))
+			}
+			if entries[0].AlertManagerURL != "" {
+				t.Fatalf("expected unfixable stored URL %q to be blanked, got %q", tc.input, entries[0].AlertManagerURL)
 			}
 		})
 	}

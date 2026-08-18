@@ -153,6 +153,30 @@ The stored JSON shape is:
 ]
 ```
 
+### Alertmanager URL format
+
+`alertManagerURL` is the Alertmanager **base** URL — the plugin appends
+`/api/v2/...` itself when it queries the backend. Consequences:
+
+- **A path prefix works.** Alertmanager behind a reverse proxy with
+  `--web.external-url=https://mon.example.com/alertmanager` is fine; the
+  appended path lands under the prefix.
+- **A query string or fragment is rejected** — including a bare trailing `?`
+  or `#`. Either terminates the base URL early and silently truncates the
+  appended API path onto a different endpoint, so `/alertmanager add` refuses
+  them.
+- **Scheme must be `http://` or `https://`**, a host is required, and the host
+  and any path are held to a strict character grammar (blocks shell/CSV
+  injection, since the URL renders into a copy-paste `curl` and an exported CSV).
+- **No embedded credentials** — set the basic-auth `user`/`password` fields on
+  the receiver entry instead.
+
+A value that bypasses these (a direct KV write, say) is **neutered on load**,
+not rejected: a hard failure would stop the whole plugin loading. The bad URL is
+blanked, disabling only that receiver's `alerts`/`status`/`silences` queries —
+alert *delivery* is unaffected (it runs through the Mattermost webhook, not this
+URL).
+
 ## What the plugin generates
 
 When you run `/alertmanager add <team> <channel> <am-url> [set] [on]`:

@@ -273,6 +273,16 @@ func validateAlertManagerURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
+	// Reject '?' and '#' via a STRING scan, BEFORE parsing — deliberately, not
+	// via u.RawQuery/u.Fragment. url.Parse("http://h/x#") reports RawQuery=="" and
+	// Fragment=="" for a TRAILING bare marker, so a component-only check misses it,
+	// yet the plugin builds requests by concatenation (amURL + "/api/v2/alerts"),
+	// so that trailing '#'/'?' silently truncates the appended path onto the wrong
+	// endpoint. A base URL never legitimately carries either. (F-002, from PR #58's
+	// review — kept alongside #57's stricter host/port/path grammar below.)
+	if strings.ContainsAny(raw, "?#") {
+		return errors.New("AlertManagerURL must not contain '?' or '#' — even a trailing one truncates the appended /api/v2/... path")
+	}
 	u, err := neturl.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("AlertManagerURL is not a valid URL: %w", err)
@@ -295,13 +305,43 @@ func validateAlertManagerURL(raw string) error {
 			return fmt.Errorf("AlertManagerURL has a non-numeric port")
 		}
 	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("AlertManagerURL must not contain a query string or fragment")
-	}
+	// Query/fragment already rejected by the string scan above (which also
+	// catches trailing bare markers a parsed check would miss).
 	if u.Path != "" && u.Path != "/" && !alertManagerPathRegex.MatchString(u.Path) {
 		return fmt.Errorf("AlertManagerURL path contains invalid characters")
 	}
 	return nil
+}
+
+// sanitizeAlertManagerURL is the LOAD-PATH counterpart to
+// validateAlertManagerURL: it neuters a stored Alertmanager URL instead of
+// rejecting it. Strips surrounding whitespace, the '?'/'#' tail (and everything
+// after — the exploitable path-truncation vector), and any embedded credentials.
+//
+// Why neuter, not reject, on load: parseAlertConfigs's error propagates out of
+// OnConfigurationChange, and an error there stops the plugin loading AT ALL. So
+// a single bad stored value (a direct KV write, or a bug that slipped one past
+// the /alertmanager add validation) would brick the whole plugin — turning F-002
+// into a persistent denial of service. Sanitizing keeps the plugin up; the one
+// affected receiver's alerts/status/silences queries stop working, which is a far
+// smaller blast radius than a dead plugin. (F-002 hardening, from PR #58's review.)
+//
+// Anything sanitize can't rescue (no scheme, no host) is left for the caller to
+// blank — it's inert (http.Client.Do fails on it, no SSRF value), not hostile.
+func sanitizeAlertManagerURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	// Drop the '?'/'#' tail first so the exploitable truncation vector is gone
+	// even if the remainder doesn't parse as a URL.
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	// Strip embedded credentials (basic-auth belongs in the user/password fields).
+	u.User = nil
+	return u.String()
 }
 
 // validateWebhookHost rejects malformed WebhookHost values at config
@@ -384,7 +424,21 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 	}
 	seenWebhooks := make(map[string]webhookOwner, len(entries))
 	for i := range entries {
-		entries[i].AlertManagerURL = strings.TrimRight(entries[i].AlertManagerURL, "/")
+		// Sanitize the Alertmanager URL BEFORE IsValid so a hostile or malformed
+		// stored value is neutered, never rejected. IsValid (below) runs on the
+		// load path, and any error it returns propagates out of
+		// OnConfigurationChange and stops the plugin loading at all — so a single
+		// bad stored URL must not fail the load, or F-002 becomes a persistent DoS.
+		// Sanitize strips the exploitable parts; anything still failing the strict
+		// validateAlertManagerURL check afterwards (no scheme / no host) is inert,
+		// not hostile, so blank it. The /alertmanager add + add-custom entry points
+		// still HARD-reject bad input up front, so this only fires on values that
+		// bypassed them (direct KV write, future bug). (F-002, from PR #58's review.)
+		amURL := strings.TrimRight(sanitizeAlertManagerURL(entries[i].AlertManagerURL), "/")
+		if amURL != "" && validateAlertManagerURL(amURL) != nil {
+			amURL = ""
+		}
+		entries[i].AlertManagerURL = amURL
 		if err := entries[i].IsValid(); err != nil {
 			return nil, fmt.Errorf("alertConfig[%d]: %w", i, err)
 		}
