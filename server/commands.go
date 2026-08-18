@@ -84,8 +84,9 @@ func getAutocompleteData() *model.AutocompleteData {
 	// container, not the host) at the moment of typing.
 	add.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
 		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
-		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes — cluster-internal service DNS. Change 'monitoring' to the namespace your Alertmanager actually runs in."},
-		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash."},
+		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes (self-managed service) — cluster-internal service DNS when you named the Service `alertmanager`. Change 'monitoring' to its namespace."},
+		{Item: "http://alertmanager-operated.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes + Prometheus Operator — the operator exposes Alertmanager via the `alertmanager-operated` headless service (NOT `alertmanager`) on port 9093. Change `monitoring` to your namespace; kube-prometheus-stack also creates `<release>-kube-prometheus-alertmanager`. Confirm with `kubectl get svc -A | grep alertmanager`."},
+		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash, no query string or fragment."},
 	})
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
 		{Item: "all", HelpText: "Every embedded runbook (default — 30 receivers in one shared webhook)"},
@@ -119,8 +120,9 @@ func getAutocompleteData() *model.AutocompleteData {
 	addCustom.AddDynamicListArgument("Mattermost channel URL slug — public channels in the chosen team (or type a new name to auto-create)", channelFetchURL, true)
 	addCustom.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
 		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
-		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes — cluster-internal service DNS. Change 'monitoring' to the namespace your Alertmanager actually runs in."},
-		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash."},
+		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes (self-managed service) — cluster-internal service DNS when you named the Service `alertmanager`. Change 'monitoring' to its namespace."},
+		{Item: "http://alertmanager-operated.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes + Prometheus Operator — the operator exposes Alertmanager via the `alertmanager-operated` headless service (NOT `alertmanager`) on port 9093. Change `monitoring` to your namespace; kube-prometheus-stack also creates `<release>-kube-prometheus-alertmanager`. Confirm with `kubectl get svc -A | grep alertmanager`."},
+		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash, no query string or fragment."},
 	})
 	addCustom.AddTextArgument("Custom receiver name: lowercase [a-z0-9_-], no `--`, not a runbook slug or category set. Full name becomes `<name>--<team>-<channel>` (max 190 chars).", "[name]", "")
 	addCustom.AddStaticListArgument("Optional: create the destination channel private if it does not yet exist", false, []model.AutocompleteListItem{

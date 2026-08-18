@@ -373,7 +373,7 @@ Match the labels to whatever your MM Helm chart uses for its pods.
 After deploying:
 
 1. **Set `WebhookHost`** in System Console → Plugins → Alertmanager.
-2. **Run `/alertmanager add testing alerts-sre http://alertmanager.monitoring.svc.cluster.local:9093`** from a Mattermost channel. The rendered `api_url:` should now use your cluster-internal MM service URL.
+2. **Run `/alertmanager add testing alerts-sre http://alertmanager-operated.monitoring.svc.cluster.local:9093`** from a Mattermost channel. The Prometheus Operator exposes Alertmanager via the `alertmanager-operated` headless service (not `alertmanager`); swap in your namespace, or use your stack's service name (e.g. `<release>-kube-prometheus-alertmanager`) — confirm with `kubectl get svc -A | grep alertmanager`. The rendered `api_url:` should then use your cluster-internal MM service URL.
 3. **Reload Alertmanager** after pasting the YAML — `kubectl exec -it alertmanager-0 -- /bin/sh -c "killall -HUP alertmanager"` or via the Operator's reconciliation.
 4. **Fire a synthetic alert** (e.g., `up == 0` for a scrape target you deliberately broke). Verify:
    - Post lands in the intended channel
