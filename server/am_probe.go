@@ -205,35 +205,67 @@ func doAMProbe(amURL string) amReachabilityEntry {
 }
 
 // extractAMReceiverNames scans an Alertmanager-loaded YAML body for
-// receiver names. Used by the inventory page's inverse drift check
-// — the inverse of LoadedInAM. Given AM's `config.original` we want
-// to know "which receiver names exist in AM that the plugin doesn't
-// track," which is the answer to "did someone hand-edit
-// alertmanager.yml outside the plugin?"
+// receiver names. Used both to build the per-receiver "loaded in AM"
+// index and by the inventory page's inverse drift check — "which
+// receiver names exist in AM that the plugin doesn't track," i.e. "did
+// someone hand-edit alertmanager.yml outside the plugin?"
 //
-// Parsing is regex-based rather than YAML-parsing because the body
-// AM returns is already validated YAML (AM wouldn't have loaded it
-// otherwise). The pattern `^\s+-\s+name: <value>` is unique to
-// receiver list entries — slack_configs sub-blocks lead with
-// `api_url:` and route entries lead with `matchers:`, neither of
-// which would match this regex.
-// amReceiverNameRegex matches a receiver list entry's name in an AM-loaded YAML
-// body. Compiled once at package load rather than per call (this runs on every
-// inventory-page probe).
-var amReceiverNameRegex = regexp.MustCompile(`(?m)^\s+-\s+name:\s+([^\s]+)`)
+// Parsing is regex-based rather than YAML-parsing because the body AM
+// returns is already validated YAML (AM wouldn't have loaded it
+// otherwise). Two things matter for correctness:
+//
+//  1. The dash may sit at COLUMN 0. AM's /api/v2/status `config.original`
+//     is the verbatim text of the loaded file. When the Prometheus
+//     Operator manages Alertmanager it marshals that file with
+//     gopkg.in/yaml.v2, which renders sequence items with the dash at the
+//     parent's indentation (column 0):
+//     receivers:
+//     - name: monitoring/<ns>/<amconfig>/<receiver>
+//     A regex requiring leading whitespace (`^\s+-`) matched the plugin's
+//     own indented exports but silently missed EVERY operator-merged
+//     receiver, so CRD-managed receivers all showed "Not in AM YAML".
+//     The pattern therefore allows zero-or-more leading spaces (`^\s*-`).
+//  2. Scanning must be scoped to the top-level `receivers:` block.
+//     `time_intervals:`/`mute_time_intervals:` entries are ALSO `- name:`
+//     lines; without block scoping (and especially now that column-0
+//     dashes match) their names would leak into the receiver set.
+//
+// Within the receivers block, slack_configs sub-blocks lead with
+// `api_url:` and route entries with `matchers:`, so `- name:` remains
+// unique to receiver list entries.
+//
+// amReceiverNameRegex matches a receiver list entry's name. Compiled once
+// at package load rather than per call (this runs on every inventory-page
+// probe).
+var amReceiverNameRegex = regexp.MustCompile(`^\s*-\s+name:\s+([^\s]+)`)
 
 func extractAMReceiverNames(configBody string) []string {
-	matches := amReceiverNameRegex.FindAllStringSubmatch(configBody, -1)
 	seen := make(map[string]bool)
 	var out []string
-	for _, m := range matches {
-		// Trim wrapping quotes — YAML allows quoted or unquoted scalars.
-		name := strings.Trim(m[1], `"'`)
-		if seen[name] {
+
+	inReceivers := false
+	for line := range strings.SplitSeq(configBody, "\n") {
+		// A top-level line is one with no leading whitespace that is a mapping
+		// key (not a sequence item `-`, not a comment). `receivers:` opens the
+		// block; any other top-level key closes it — this keeps sibling blocks
+		// like `time_intervals:` out of the receiver set. A column-0 `- name:`
+		// entry is NOT top-level (leads with `-`), so it stays in the block.
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '-' && line[0] != '#' {
+			inReceivers = strings.TrimSpace(line) == "receivers:"
 			continue
 		}
-		seen[name] = true
-		out = append(out, name)
+		if !inReceivers {
+			continue
+		}
+		if m := amReceiverNameRegex.FindStringSubmatch(line); m != nil {
+			// Trim wrapping quotes — YAML allows quoted or unquoted scalars.
+			name := strings.Trim(m[1], `"'`)
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
 	}
 	sort.Strings(out)
 	return out
