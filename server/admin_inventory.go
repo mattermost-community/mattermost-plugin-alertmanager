@@ -1401,10 +1401,10 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
         // ambient session. The read-only "simulate" mode stays a shareable GET.
         // We keep the form method="get" (so read-only submits and deep links
         // work) and, only for the two side-effecting modes, intercept submit and
-        // re-issue it as a fetch POST carrying X-Requested-With — the header
-        // Mattermost accepts as proof the request came from a real XHR, which a
-        // cross-site form/navigation cannot set. The response is the full page,
-        // so we swap the document with it.
+        // re-issue it as a fetch POST that carries BOTH Mattermost's CSRF token
+        // (X-CSRF-Token, read from the MMCSRF cookie below — the real MM check)
+        // AND X-Requested-With (the plugin's own simSideEffectAllowed gate). The
+        // response is the full page, so we swap the document with it.
         (function () {
             var form = document.getElementById('simform');
             var modeSel = form ? form.querySelector('select[name="simulate_mode"]') : null;
@@ -1417,10 +1417,28 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
                     return; // read-only: let the normal GET submit proceed
                 }
                 e.preventDefault();
+                // Send Mattermost's CSRF token (the MMCSRF cookie, which MM
+                // sets non-HttpOnly precisely so page JS can echo it back) as the
+                // X-CSRF-Token header — the modern check MM expects. Relying on
+                // X-Requested-With alone is deprecated: MM logs "CSRF Check
+                // failed ... XMLHttpRequest is deprecated" on every POST and,
+                // where ServiceSettings.ExperimentalStrictCSRFEnforcement is on,
+                // HARD-REJECTS it (403) so the panel silently does nothing. We
+                // still send X-Requested-With too: the plugin's own
+                // simSideEffectAllowed gate (CL-20) requires it independently.
+                var headers = { 'X-Requested-With': 'XMLHttpRequest' };
+                var cookieParts = document.cookie.split(';');
+                for (var ci = 0; ci < cookieParts.length; ci++) {
+                    var kv = cookieParts[ci].split('=');
+                    if (kv[0].trim() === 'MMCSRF') {
+                        headers['X-CSRF-Token'] = decodeURIComponent(kv.slice(1).join('=').trim());
+                        break;
+                    }
+                }
                 fetch(window.location.pathname, {
                     method: 'POST',
                     credentials: 'same-origin',
-                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    headers: headers,
                     body: new URLSearchParams(new FormData(form))
                 }).then(function (resp) {
                     return resp.text();
