@@ -253,8 +253,13 @@ func extractTeamSlugFromParsed(parsed string) string {
 		return ""
 	}
 	// fields[0] is the trigger (e.g. "/alertmanager"); fields[1] is the
-	// subcommand. Only `add` takes team+channel args.
-	if fields[1] != "add" {
+	// subcommand. `add` and `add-custom` are the two commands that take
+	// <team> <channel> in that order and wire the dynamic channel
+	// autocomplete to this handler. Both put the team at fields[2]. Omitting
+	// add-custom here left its channel dropdown permanently stuck on the
+	// "_fill-team-first_" placeholder (the team was never extracted, so the
+	// per-team channel list never loaded).
+	if fields[1] != "add" && fields[1] != "add-custom" {
 		return ""
 	}
 	return fields[2]
