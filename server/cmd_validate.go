@@ -559,6 +559,19 @@ func postValidateTestMessage(webhookURL, receiverName string) error {
 // `alertname` or `severity` from the admin form, but not the
 // `test=validate` / `source=...` markers since those are appended
 // last to keep the synthetic-alert marker authoritative).
+// syntheticFiringTTL is how long a FIRING synthetic alert stays active before it
+// auto-resolves. It MUST comfortably exceed the receiving route's group_wait:
+// Alertmanager's dispatcher holds a new group for group_wait before its first
+// flush, so an alert that self-resolves at ~group_wait is dropped from the group
+// before it is ever notified (it shows as active in /api/v2/alerts with the right
+// receiver but never enters /api/v2/alerts/groups — no notify, no error, just
+// silence). The plugin's own generated routes set groupWait: 30s and AM's global
+// default is also 30s; the earlier value here was exactly 30s and self-defeated.
+// Five minutes clears any realistic group_wait while still auto-cleaning the test
+// alert. If a target route ever uses a group_wait longer than this, raise it (or
+// read the matched route's group_wait) — but that is far above AM's norms.
+const syntheticFiringTTL = 5 * time.Minute
+
 func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels map[string]string, resolved bool) (string, error) {
 	if severity == "" {
 		severity = "warning"
@@ -571,7 +584,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 	titleSeverity := strings.ToUpper(severity[:1]) + severity[1:]
 	alertname := "ValidateSyntheticTest" + titleSeverity
 	summary := fmt.Sprintf("Synthetic %s alert from /alertmanager validate", severity)
-	description := fmt.Sprintf("Validate diagnostic at %s severity — if you see this in the channel, AM → MM delivery works end-to-end. Auto-resolves in ~30 seconds.", severity)
+	description := fmt.Sprintf("Validate diagnostic at %s severity — if you see this in the channel, AM → MM delivery works end-to-end. Auto-resolves after ~5 minutes.", severity)
 	if resolved {
 		// Resolved gets its own alertname too, plus startsAt/endsAt
 		// in the past below — the combination makes AM route this as
@@ -602,7 +615,10 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 		endsAt = time.Now().Add(-1 * time.Second).UTC().Format(time.RFC3339)
 	} else {
 		startsAt = time.Now().UTC().Format(time.RFC3339)
-		endsAt = time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339)
+		// Pad well past group_wait so the dispatcher flushes and notifies BEFORE
+		// the alert self-resolves — see syntheticFiringTTL. A 30s value here (==
+		// group_wait) let the alert vanish from the dispatch group unnotified.
+		endsAt = time.Now().Add(syntheticFiringTTL).UTC().Format(time.RFC3339)
 	}
 
 	payload := []map[string]any{
