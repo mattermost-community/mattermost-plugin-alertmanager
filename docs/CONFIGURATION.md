@@ -81,9 +81,15 @@ all private/internal ranges** — RFC1918 (`10/8`, `172.16/12`, `192.168/16`), C
 (`100.64/10`), and IPv6 ULA (`fc00::/7`). With an empty setting, only **public**
 destinations are reachable.
 
-The plugin connects to Alertmanager **directly** and ignores `HTTP_PROXY` /
-`HTTPS_PROXY` on the Mattermost process — otherwise the guard would only see the
-proxy's address while the proxy fetched the real (possibly blocked) destination.
+**Requirement — Alertmanager must be directly reachable from the Mattermost
+server.** The plugin connects to Alertmanager directly and deliberately ignores
+`HTTP_PROXY` / `HTTPS_PROXY` on the Mattermost process: through a proxy the SSRF
+guard would only see the proxy's address while the proxy fetched the real
+(possibly blocked) destination. Routing Alertmanager API calls through a
+corporate/egress proxy is therefore not supported — if the Mattermost server has
+no direct network path to Alertmanager, `alerts`/`status`/`validate` and the
+inventory probes will fail. (In-cluster and same-network deployments are direct,
+so this only affects egress-restricted, proxy-only topologies.)
 
 **Because private is blocked by default, an in-cluster Alertmanager on a private
 IP or `*.svc.cluster.local` will NOT work until you list its CIDR here.** This is
