@@ -3,12 +3,33 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
+
+// updateAlertmanagerAllowlist parses the AlertManagerAllowedCIDRs setting and
+// installs it as the SSRF destination allowlist (F-001). Entries may be comma-,
+// space-, or newline-separated CIDRs. Invalid entries are logged and skipped
+// rather than failing the config load; an empty/all-invalid result means "no
+// allowlist" — the always-blocked ranges (loopback/link-local/metadata/multicast/
+// unspecified) are still denied by the dial guard regardless.
+func (p *Plugin) updateAlertmanagerAllowlist(raw string) {
+	split := func(r rune) bool { return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t' }
+	var nets []*net.IPNet
+	for _, field := range strings.FieldsFunc(raw, split) {
+		_, n, err := net.ParseCIDR(field)
+		if err != nil {
+			p.API.LogWarn("ignoring invalid AlertManagerAllowedCIDRs entry", "entry", field, "err", err.Error())
+			continue
+		}
+		nets = append(nets, n)
+	}
+	alertmanager.SetAllowedNets(nets)
+}
 
 // outboundHTTPTimeout caps how long any single Alertmanager API call
 // can hang before failing. Slash-command response budget is ~10s in

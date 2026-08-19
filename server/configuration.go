@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
 
 // rawConfiguration is what Mattermost's settings framework fills in from the
@@ -32,12 +35,13 @@ import (
 // free-text WebhookHost always wins, so existing installs and custom URLs
 // are unaffected.
 type rawConfiguration struct {
-	WebhookHost           string
-	WebhookHostPreset     string
-	AssembledYAMLTTLHours int
-	AlertManagerCABundle  string
-	MetricsToken          string
-	WebhookRotationDays   int
+	WebhookHost              string
+	WebhookHostPreset        string
+	AssembledYAMLTTLHours    int
+	AlertManagerCABundle     string
+	AlertManagerAllowedCIDRs string
+	MetricsToken             string
+	WebhookRotationDays      int
 }
 
 // toConfigMap renders every settings_schema field as the lowercased-key map that
@@ -48,12 +52,13 @@ type rawConfiguration struct {
 // stale key list in a distant file. Guarded by TestRawConfigMapCoversSchema.
 func (r rawConfiguration) toConfigMap() map[string]any {
 	return map[string]any{
-		"webhookhost":           r.WebhookHost,
-		"webhookhostpreset":     r.WebhookHostPreset,
-		"assembledyamlttlhours": r.AssembledYAMLTTLHours,
-		"alertmanagercabundle":  r.AlertManagerCABundle,
-		"metricstoken":          r.MetricsToken,
-		"webhookrotationdays":   r.WebhookRotationDays,
+		"webhookhost":              r.WebhookHost,
+		"webhookhostpreset":        r.WebhookHostPreset,
+		"assembledyamlttlhours":    r.AssembledYAMLTTLHours,
+		"alertmanagercabundle":     r.AlertManagerCABundle,
+		"alertmanagerallowedcidrs": r.AlertManagerAllowedCIDRs,
+		"metricstoken":             r.MetricsToken,
+		"webhookrotationdays":      r.WebhookRotationDays,
 	}
 }
 
@@ -314,6 +319,12 @@ func validateAlertManagerURL(raw string) error {
 	if host == "" {
 		return fmt.Errorf("AlertManagerURL has no host")
 	}
+	// Fast SSRF feedback for a literal-IP host (F-001): reject the always-blocked
+	// ranges at save time. Hostnames are validated at dial time (post-DNS), which
+	// is authoritative and defeats DNS rebinding — see the alertmanager dial guard.
+	if ip := net.ParseIP(host); ip != nil && alertmanager.IsBlockedIP(ip) {
+		return fmt.Errorf("AlertManagerURL points at a blocked address %q: loopback, link-local / cloud-metadata, multicast, and unspecified addresses are not valid Alertmanager targets", host)
+	}
 	if !alertManagerHostRegex.MatchString(host) {
 		return fmt.Errorf("AlertManagerURL host contains invalid characters")
 	}
@@ -570,47 +581,61 @@ func (p *Plugin) OnConfigurationChange() error {
 		return err
 	}
 
-	// Receiver list comes from the KV store, not the config map (CL-19). KVGet
-	// needs a live API, so skip it when the API isn't wired yet (early startup /
-	// tests) — an empty list matches the prior behavior of an empty config blob.
+	// Load the receiver list from KV and swap the config under configWriteMu, so
+	// this can't interleave with a concurrent local updateConfigsAtomic and clobber
+	// a newer write with an older snapshot (F-003). KVGet needs a live API, so skip
+	// it during early startup / tests. Team verification (network calls) runs AFTER
+	// the lock is released — it's log-only, so it doesn't affect the swap.
 	var entries []alertConfig
+	p.configWriteMu.Lock()
 	if p.API != nil {
-		var err error
-		if entries, err = p.loadAlertConfigsFromKV(); err != nil {
-			return err
-		}
-		// Verify each DISTINCT team once (CL-25). Many entries share a team
-		// (all the runbooks scaffolded into one channel), and OnConfigurationChange
-		// fires on every config change — an unmemoized GetTeamByName per entry made
-		// each write O(N) plugin-RPC calls. Memoizing makes it O(distinct teams).
-		verifiedTeams := make(map[string]bool)
-		for _, ac := range entries {
-			if verifiedTeams[ac.Team] {
-				continue
-			}
-			_, appErr := p.API.GetTeamByName(ac.Team)
-			if appErr == nil {
-				verifiedTeams[ac.Team] = true
-				continue
-			}
-			// Tolerate transient errors (typically during early startup
-			// before the API is fully ready). Hard-fail only on real 404s.
-			if appErr.StatusCode == 404 {
-				return fmt.Errorf("alertConfig %q: Mattermost team %q does not exist", ac.Name, ac.Team)
-			}
-			// Transient error (typically MM not fully ready). Mark the team seen
-			// anyway so the remaining receivers in the SAME team don't each repeat
-			// the failing RPC — that per-entry O(N) call/log storm during a MM
-			// outage is exactly what this memo exists to prevent. Logged once here.
-			p.API.LogWarn("could not verify team existence (continuing)", "config", ac.Name, "team", ac.Team, "err", appErr.Error())
-			verifiedTeams[ac.Team] = true
+		loaded, err := p.loadAlertConfigsFromKV()
+		if err != nil {
+			// Do NOT brick the plugin over an unreadable/invalid KV blob (F-005):
+			// keep the last-known in-memory receiver list and still apply the
+			// config-map settings, so the plugin stays up and remains operable. We
+			// never write KV here, so the bad value is left intact for inspection.
+			p.API.LogError("receiver list in KV is unreadable; keeping last-known list and applying settings only", "err", err.Error())
+			entries = p.getConfiguration().AlertConfigs
+		} else {
+			entries = loaded
 		}
 	}
-
 	p.setConfiguration(newConfiguration(entries, effectiveHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
+	p.configWriteMu.Unlock()
+
+	// Best-effort team verification, OUTSIDE the lock (these are network calls we
+	// don't want to hold configWriteMu across) and log-only: a since-deleted team
+	// must not brick the load (F-005) — the affected receiver is just orphaned and
+	// handled at command time. Save-time (/alertmanager add) still rejects unknown
+	// teams up front.
+	if p.API != nil {
+		p.verifyTeamsExist(entries)
+	}
+
 	// Refresh the alertmanager package's HTTP client to use the new
 	// CA bundle (if set). Applied on every config change so admins
 	// can rotate certificates without a plugin restart.
 	p.updateAlertmanagerHTTPClient(raw.AlertManagerCABundle)
+	// Install the SSRF destination allowlist (F-001) — read live by the dial guard.
+	p.updateAlertmanagerAllowlist(raw.AlertManagerAllowedCIDRs)
 	return nil
+}
+
+// verifyTeamsExist logs a warning for any receiver whose Mattermost team no
+// longer exists. Best-effort and log-only (never fails the config load — F-005).
+// Each DISTINCT team is checked once and marked seen BEFORE the lookup, so a
+// transient API error during a Mattermost outage can't turn into an O(N) RPC/log
+// storm across receivers that share a team (CL-25).
+func (p *Plugin) verifyTeamsExist(entries []alertConfig) {
+	verifiedTeams := make(map[string]bool)
+	for _, ac := range entries {
+		if verifiedTeams[ac.Team] {
+			continue
+		}
+		verifiedTeams[ac.Team] = true
+		if _, appErr := p.API.GetTeamByName(ac.Team); appErr != nil {
+			p.API.LogWarn("could not verify team existence (receiver may be orphaned)", "config", ac.Name, "team", ac.Team, "err", appErr.Error())
+		}
+	}
 }

@@ -3,6 +3,7 @@ package alertmanager
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,15 @@ import (
 func NewTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DisableCompression = true
+	// Install the SSRF dial guard (F-001): validate the resolved IP after DNS but
+	// before connect, on every Alertmanager call, so a hostile URL can't reach
+	// cloud-metadata / loopback / non-allowlisted internal targets. Timeouts match
+	// http.DefaultTransport's dialer.
+	t.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   safeDialControl,
+	}).DialContext
 	return t
 }
 

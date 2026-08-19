@@ -261,7 +261,10 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 					LastRotatedAt:            now,
 					RotationRemindersEnabled: rotationOptIn,
 				})
-				results = append(results, scaffoldResult{receiverName, "created", sharedHookID})
+				// Detail is rendered into the chat response table; show the redacted
+				// fingerprint, never the raw hook ID (a reusable bearer token — F-002).
+				// The real webhook URL reaches the admin only in the DM'd YAML/CRD.
+				results = append(results, scaffoldResult{receiverName, "created", redactHookID(sharedHookID)})
 			}
 		}
 	}

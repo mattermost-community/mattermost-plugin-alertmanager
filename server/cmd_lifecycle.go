@@ -185,7 +185,7 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf(":warning: **About to remove %d receiver(s) bound to this channel:**\n\n", len(scoped)))
 		for _, c := range scoped {
-			b.WriteString(fmt.Sprintf("- `%s` (webhook `%s`)\n", c.Name, c.WebhookID))
+			b.WriteString(fmt.Sprintf("- `%s` (webhook `%s`)\n", c.Name, redactHookID(c.WebhookID)))
 		}
 		b.WriteString("\nThis deletes the plugin config entries AND the underlying Mattermost incoming webhooks. **The corresponding `slack_configs` blocks in your `alertmanager.yml` will start failing immediately** — clean them up after.\n\n")
 		b.WriteString("To proceed, re-run with `--force`:\n\n```\n/alertmanager remove all --force\n```\n")
@@ -287,7 +287,7 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf(":warning: **About to remove %d `%s`-set receiver(s) bound to this channel:**\n\n", len(matched), setName))
 		for _, c := range matched {
-			b.WriteString(fmt.Sprintf("- `%s` (webhook `%s`)\n", c.Name, c.WebhookID))
+			b.WriteString(fmt.Sprintf("- `%s` (webhook `%s`)\n", c.Name, redactHookID(c.WebhookID)))
 		}
 		b.WriteString(fmt.Sprintf("\nReceivers in this channel NOT in the `%s` set will be left alone. To proceed:\n\n```\n/alertmanager remove %s --force\n```\n", setName, setName))
 		return b.String(), nil
@@ -543,7 +543,7 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 		b.WriteString(fmt.Sprintf(":key: Rotated `%s` group webhook in `~%s`. **The old URL no longer works for any of the %d affected receiver(s).**\n\n", groupName, primary.Channel, len(affected)))
 	} else {
 		// B-003: the shared old webhook wasn't deleted — don't imply it's dead.
-		b.WriteString(fmt.Sprintf(":key: Rotated `%s` group webhook in `~%s` for %d receiver(s). :warning: **The old shared webhook could NOT be deleted and may still be live** — delete webhook `%s` in System Console → Integrations → Incoming Webhooks.\n\n", groupName, primary.Channel, len(affected), oldHookID))
+		b.WriteString(fmt.Sprintf(":key: Rotated `%s` group webhook in `~%s` for %d receiver(s). :warning: **The old shared webhook could NOT be deleted and may still be live** — remove the webhook named `%s` (fingerprint %s) in System Console → Integrations → Incoming Webhooks; if the rotation left two with that name, delete the older one.\n\n", groupName, primary.Channel, len(affected), webhookDisplayNameFor(groupName, primary.Team, primary.Channel), redactHookID(oldHookID)))
 	}
 	b.WriteString("**Affected:**\n")
 	for _, ac := range affected {
@@ -560,6 +560,28 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 // webhook would be rotated once per overdue member — needless churn and duplicate
 // DMs. Names with an unknown (missing-from-map) webhook are treated as their own
 // group so they're never silently dropped.
+// overdueReceiverNames returns the receivers eligible for `rotate all --overdue`:
+// only those the operator OPTED INTO rotation reminders (RotationRemindersEnabled,
+// F-007) and whose last rotation is older than threshold. A zero LastRotatedAt is
+// treated as "not yet due" (the reconciler stamps it on first sight). Matching
+// handleList's overdue criteria keeps the bulk rotate from invalidating a webhook
+// the operator never asked the plugin to manage on this schedule.
+func overdueReceiverNames(scoped []alertConfig, now time.Time, threshold time.Duration) []string {
+	var out []string
+	for _, c := range scoped {
+		if !c.RotationRemindersEnabled {
+			continue
+		}
+		if c.LastRotatedAt.IsZero() {
+			continue
+		}
+		if now.Sub(c.LastRotatedAt) > threshold {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
 func representativeOverdueNames(overdueNames []string, webhookByName map[string]string) []string {
 	seen := make(map[string]bool, len(overdueNames))
 	reps := make([]string, 0, len(overdueNames))
@@ -613,15 +635,7 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 	// counts as "rotated at plugin upgrade time" — the reconciler
 	// stamps that on first sight so existing receivers don't trigger
 	// reminders day-one. Here we trust that stamping has happened.
-	var overdueNames []string
-	for _, c := range scoped {
-		if c.LastRotatedAt.IsZero() {
-			continue
-		}
-		if now.Sub(c.LastRotatedAt) > threshold {
-			overdueNames = append(overdueNames, c.Name)
-		}
-	}
+	overdueNames := overdueReceiverNames(scoped, now, threshold)
 
 	if len(overdueNames) == 0 {
 		return fmt.Sprintf(":white_check_mark: No receivers in this channel are past the %d-day rotation threshold.", cfg.WebhookRotationDays), nil
@@ -872,7 +886,7 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	b.WriteString(fmt.Sprintf("- **Team:** `%s`\n", match.Team))
 	b.WriteString(fmt.Sprintf("- **Channel:** `~%s`\n", match.Channel))
 	b.WriteString(fmt.Sprintf("- **Alertmanager URL:** `%s`\n", match.AlertManagerURL))
-	b.WriteString(fmt.Sprintf("- **Webhook ID:** `%s`\n", match.WebhookID))
+	b.WriteString(fmt.Sprintf("- **Webhook ID:** `%s`\n", redactHookID(match.WebhookID)))
 	b.WriteString(fmt.Sprintf("- **Runbook (default):** %s\n", p.runbookDefaultURL(receiverBaseSlug(match.Name))))
 	if match.User != "" {
 		// Username is shown but password is never echoed — even masked,
@@ -1093,7 +1107,7 @@ func (p *Plugin) renderRotateResponse(ac alertConfig, oldDeleted bool, oldHookID
 		":key: Rotated webhook for `%s`. %s\n\n"+
 			"**Update your `alertmanager.yml`:**\n\n```yaml\n%s```\n\n"+
 			"**Then reload Alertmanager:**\n```\ncurl -X POST %s/-/reload\n```",
-		ac.Name, oldWebhookStatusLine(oldDeleted, oldHookID), yaml, ac.AlertManagerURL,
+		ac.Name, oldWebhookStatusLine(oldDeleted, webhookDisplayNameFor(receiverBaseSlug(ac.Name), ac.Team, ac.Channel), oldHookID), yaml, ac.AlertManagerURL,
 	)
 }
 
@@ -1102,9 +1116,13 @@ func (p *Plugin) renderRotateResponse(ac alertConfig, oldDeleted bool, oldHookID
 // or an explicit warning (with the webhook ID to find in System Console) when it
 // did not — so an admin rotating because of a suspected leak isn't told the token
 // is dead when it may still be live (B-003).
-func oldWebhookStatusLine(oldDeleted bool, oldHookID string) string {
+func oldWebhookStatusLine(oldDeleted bool, displayName, oldHookID string) string {
 	if oldDeleted {
 		return "**The old webhook URL no longer works.**"
 	}
-	return fmt.Sprintf(":warning: **The old webhook could NOT be deleted and may still be live** — delete webhook `%s` in System Console → Integrations → Incoming Webhooks.", oldHookID)
+	// Identify the lingering webhook by DISPLAY NAME (how System Console lists
+	// them), not the raw hook ID — that ID is a live bearer token and must not
+	// reach a chat response (F-002). The redacted fingerprint is for log
+	// correlation only.
+	return fmt.Sprintf(":warning: **The old webhook could NOT be deleted and may still be live** — remove the webhook named `%s` (fingerprint %s) in System Console → Integrations → Incoming Webhooks. If the rotation left two with that name, delete the older one.", displayName, redactHookID(oldHookID))
 }

@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
@@ -116,20 +117,27 @@ func TestGroupOverdueByWebhook(t *testing.T) {
 	}
 }
 
-// TestOldWebhookStatusLine is the B-003 regression: a successful delete says the
-// old URL is dead; a failed delete must warn that it may still be live and name
-// the webhook to remove by hand — never a false "no longer works".
+// TestOldWebhookStatusLine is the B-003 + F-002 regression: a successful delete
+// says the old URL is dead; a failed delete must warn it may still be live and
+// identify the webhook by DISPLAY NAME to remove by hand — never a false "no
+// longer works", and never the raw hook ID (a live bearer token).
 func TestOldWebhookStatusLine(t *testing.T) {
-	ok := oldWebhookStatusLine(true, "hook123")
-	if !strings.Contains(ok, "no longer works") || strings.Contains(ok, "hook123") {
+	const displayName = "high-cpu--ateam-alerts"
+	const hookID = "abcdef0123456789abcdef0123456789"
+
+	ok := oldWebhookStatusLine(true, displayName, hookID)
+	if !strings.Contains(ok, "no longer works") || strings.Contains(ok, hookID) {
 		t.Fatalf("deleted case should claim dead and not leak the ID: %q", ok)
 	}
-	warn := oldWebhookStatusLine(false, "hook123")
+	warn := oldWebhookStatusLine(false, displayName, hookID)
 	if strings.Contains(warn, "no longer works") {
 		t.Fatalf("failed-delete case must NOT claim the old URL is dead: %q", warn)
 	}
-	if !strings.Contains(warn, "hook123") || !strings.Contains(warn, "may still be live") {
-		t.Fatalf("failed-delete case should warn and name the webhook: %q", warn)
+	if strings.Contains(warn, hookID) {
+		t.Fatalf("failed-delete case must NOT leak the raw hook ID: %q", warn)
+	}
+	if !strings.Contains(warn, displayName) || !strings.Contains(warn, "may still be live") {
+		t.Fatalf("failed-delete case should warn and name the webhook by display name: %q", warn)
 	}
 }
 
@@ -188,5 +196,44 @@ func TestRepresentativeOverdueNames(t *testing.T) {
 				t.Fatalf("representativeOverdueNames = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestOverdueReceiverNamesRespectsOptIn is the F-007 regression: rotate all
+// --overdue must only consider receivers opted INTO rotation reminders. An
+// opted-out receiver past the threshold must NOT be selected — rotating it would
+// invalidate a webhook the operator never enrolled in the rotation workflow.
+func TestOverdueReceiverNamesRespectsOptIn(t *testing.T) {
+	now := time.Now().UTC()
+	old := now.Add(-100 * 24 * time.Hour) // well past any threshold
+	scoped := []alertConfig{
+		{Name: "opted-in--t-c", LastRotatedAt: old, RotationRemindersEnabled: true},
+		{Name: "opted-out--t-c", LastRotatedAt: old, RotationRemindersEnabled: false},
+		{Name: "opted-in-but-fresh--t-c", LastRotatedAt: now, RotationRemindersEnabled: true},
+		{Name: "opted-in-zero--t-c", RotationRemindersEnabled: true}, // zero LastRotatedAt = not due
+	}
+	got := overdueReceiverNames(scoped, now, 24*time.Hour)
+	if len(got) != 1 || got[0] != "opted-in--t-c" {
+		t.Fatalf("overdue set = %v, want only [opted-in--t-c] (opt-out and fresh excluded)", got)
+	}
+}
+
+// TestShortNameDoesNotResolveToLegacyOutsideChannel is the F-006 regression:
+// resolving a short name against the CHANNEL-SCOPED set must return the
+// in-channel receiver, never a legacy unsuffixed receiver of the same base slug
+// in another team (which a global resolve would exact-match first).
+func TestShortNameDoesNotResolveToLegacyOutsideChannel(t *testing.T) {
+	p, args := scopeTestPlugin()
+
+	// Add a LEGACY unsuffixed receiver with the same base slug in another
+	// team/channel (invisible to the current channel's scope).
+	cfg := p.getConfiguration()
+	entries := append([]alertConfig{}, cfg.AlertConfigs...)
+	entries = append(entries, alertConfig{Name: "high-cpu-usage", Team: "bteam", Channel: "legacy", WebhookID: "hookL"})
+	p.setConfiguration(newConfiguration(entries, cfg.WebhookHost, cfg.AssembledYAMLTTLHours, cfg.AlertManagerCABundle, cfg.MetricsToken, cfg.WebhookRotationDays))
+
+	scoped := p.configsForCurrentChannel(args)
+	if resolved := resolveReceiverName(scoped, "high-cpu-usage", args.ChannelId, p); resolved != "high-cpu-usage--ateam-alerts" {
+		t.Fatalf("scoped resolve = %q, want the in-channel receiver (legacy in another team must not win)", resolved)
 	}
 }

@@ -118,10 +118,12 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		}
 		scoped = filtered
 	default:
-		// Treat as receiver name. Smart-resolve so short-form names
-		// work in the current channel.
-		all := p.getConfiguration().AlertConfigs
-		resolved := resolveReceiverName(all, rest[0], args.ChannelId, p)
+		// Treat as receiver name. Smart-resolve so short-form names work in the
+		// current channel. Resolve against the CHANNEL-SCOPED set, not all configs:
+		// a global resolve can exact-match another team's legacy unsuffixed
+		// receiver first, so a valid in-channel receiver then reports "not bound"
+		// (F-006). Scoping also keeps validate from reaching another team's config.
+		resolved := resolveReceiverName(scoped, rest[0], args.ChannelId, p)
 		var matched []alertConfig
 		for _, c := range scoped {
 			if c.Name == resolved {

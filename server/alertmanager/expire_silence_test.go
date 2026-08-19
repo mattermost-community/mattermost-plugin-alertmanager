@@ -1,6 +1,7 @@
 package alertmanager
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,6 +45,12 @@ func TestExpireSilenceRejectsNonUUID(t *testing.T) {
 // TestExpireSilenceValidUUID confirms a well-formed UUID hits the expected path
 // and that a non-200 response does NOT reflect the response body (no oracle).
 func TestExpireSilenceValidUUID(t *testing.T) {
+	// httptest servers listen on loopback, which the SSRF dial guard blocks by
+	// default — allowlist it so these tests exercise real request behavior
+	// (simulates an admin who allowlisted a same-host Alertmanager).
+	SetAllowedNets([]*net.IPNet{mustCIDR("127.0.0.0/8"), mustCIDR("::1/128")})
+	t.Cleanup(func() { SetAllowedNets(nil) })
+
 	t.Run("200 succeeds and targets the silence path", func(t *testing.T) {
 		var gotPath string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +89,11 @@ func TestExpireSilenceValidUUID(t *testing.T) {
 // path-normalizing 301 must not be followed (which would re-attach credentials),
 // so the redirect target is never reached and the caller sees a non-200.
 func TestExpireSilenceDoesNotFollowRedirect(t *testing.T) {
+	// Allowlist loopback so the httptest front/target servers are reachable
+	// through the SSRF-guarded client (see TestExpireSilenceValidUUID).
+	SetAllowedNets([]*net.IPNet{mustCIDR("127.0.0.0/8"), mustCIDR("::1/128")})
+	t.Cleanup(func() { SetAllowedNets(nil) })
+
 	var followed bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		followed = true

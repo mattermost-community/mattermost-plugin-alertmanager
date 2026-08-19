@@ -66,6 +66,30 @@ Mattermost-side and use whatever TLS Mattermost is configured with.
 -----END CERTIFICATE-----
 ```
 
+### `AlertManagerAllowedCIDRs`
+
+SSRF destination allowlist for the plugin's outbound Alertmanager calls. A team
+admin supplies the Alertmanager URL and the Mattermost server then connects to it
+(inventory probes, `validate`, `alerts`/`silences`/`status`), so an unrestricted
+URL is an SSRF primitive.
+
+- **Always blocked** (no config needed): loopback (`127.0.0.0/8`, `::1`),
+  link-local incl. the cloud-metadata address `169.254.169.254`, multicast, and
+  unspecified (`0.0.0.0`). The check runs at connect time against the *resolved*
+  IP, so a hostname that later resolves to one of these (DNS rebinding) is caught.
+- **Empty (default):** any other address is allowed — so an in-cluster
+  Alertmanager on a private IP / `*.svc.cluster.local` works out of the box.
+- **Set:** a comma/newline-separated list of CIDRs the plugin may connect to
+  (e.g. `10.0.0.0/8`). When set, only those are permitted — this is how you also
+  block SSRF to *other* internal services, and an explicit entry (e.g.
+  `127.0.0.1/32`) re-enables an otherwise-blocked address for a same-host
+  Alertmanager.
+
+```
+10.0.0.0/8
+192.168.0.0/16
+```
+
 ### `MetricsToken`
 
 When set, exposes Prometheus-format metrics at
