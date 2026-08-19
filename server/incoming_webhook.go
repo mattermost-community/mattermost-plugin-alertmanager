@@ -265,6 +265,9 @@ func (e *redactedError) Unwrap() error { return e.cause }
 // bearer token and logs reach a wider audience than the bound channel. The
 // original cause is preserved via Unwrap for errors.Is/As.
 func webhookDeleteError(hookID string, err error) error {
+	if err == nil {
+		return nil // no failure, no error — and avoids err.Error() on a nil cause
+	}
 	return &redactedError{
 		msg:   fmt.Sprintf("delete incoming webhook %s: %s", redactHookID(hookID), scrubHookID(err.Error(), hookID)),
 		cause: err,

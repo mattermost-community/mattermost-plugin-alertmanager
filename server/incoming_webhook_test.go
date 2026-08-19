@@ -37,6 +37,11 @@ func TestWebhookDeleteError(t *testing.T) {
 	if !errors.Is(err2, urlCause) {
 		t.Fatalf("scrubbed error must still unwrap to the original cause")
 	}
+
+	// A nil cause returns nil rather than panicking on err.Error().
+	if webhookDeleteError(id, nil) != nil {
+		t.Fatalf("webhookDeleteError(id, nil) must return nil")
+	}
 }
 
 // TestScrubHookID pins the runtime hook-ID scrubber used on Client4 error text.
