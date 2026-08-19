@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
@@ -190,5 +191,39 @@ func TestClusterEventReloadsFromKV(t *testing.T) {
 	p.OnPluginClusterEvent(nil, model.PluginClusterEvent{Id: "unrelated-event"})
 	if got := p.getConfiguration().AlertConfigs; len(got) != 1 {
 		t.Fatalf("unrelated cluster event should be ignored, got %#v", got)
+	}
+}
+
+// TestClusterEventReloadSerializesWithWrites guards that OnPluginClusterEvent
+// takes configWriteMu, so a peer reload can't interleave with a local
+// read-modify-write and clobber newer in-memory state with a stale KV snapshot.
+// While the lock is held (simulating an in-flight local write) the reload must
+// block; once released it must proceed.
+func TestClusterEventReloadSerializesWithWrites(t *testing.T) {
+	api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(`[]`)}}
+	p := &Plugin{}
+	p.API = api
+
+	p.configWriteMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		p.OnPluginClusterEvent(nil, model.PluginClusterEvent{Id: clusterEventReloadConfigs})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		p.configWriteMu.Unlock()
+		t.Fatal("reload ran while configWriteMu was held — not serialized with local writes")
+	case <-time.After(100 * time.Millisecond):
+		// expected: blocked on the write lock
+	}
+
+	p.configWriteMu.Unlock()
+	select {
+	case <-done:
+		// expected: proceeds once the lock is free
+	case <-time.After(3 * time.Second):
+		t.Fatal("reload did not proceed after configWriteMu was released")
 	}
 }

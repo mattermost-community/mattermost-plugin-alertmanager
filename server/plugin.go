@@ -179,6 +179,15 @@ func (p *Plugin) OnPluginClusterEvent(_ *plugin.Context, ev model.PluginClusterE
 	if ev.Id != clusterEventReloadConfigs {
 		return
 	}
+	// Serialize the reload with local writes. Without configWriteMu, a reload
+	// that read KV just before a concurrent local updateConfigsAtomic committed
+	// could setConfiguration the OLDER snapshot AFTER the local write set the
+	// newer one — leaving in-memory stale relative to KV, with no further event
+	// to correct it (the local write broadcasts to peers, not to this node). The
+	// per-swap configurationLock can't prevent that ordering clobber; holding the
+	// write lock across the KV read + swap makes reload and local RMW exclusive.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
 	if err := p.reloadAlertConfigsFromKV(); err != nil {
 		p.API.LogWarn("failed to reload receiver list on cluster event", "err", err.Error())
 	}
