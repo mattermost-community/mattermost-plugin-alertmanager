@@ -39,14 +39,12 @@ func (p *Plugin) saveMetricsToken(token string) error {
 	if err := p.API.LoadPluginConfiguration(&raw); err != nil {
 		return fmt.Errorf("load current plugin configuration: %w", err)
 	}
-	return p.client.Configuration.SavePluginConfig(map[string]any{
-		"webhookhost":           raw.WebhookHost,
-		"webhookhostpreset":     raw.WebhookHostPreset,
-		"assembledyamlttlhours": raw.AssembledYAMLTTLHours,
-		"alertmanagercabundle":  raw.AlertManagerCABundle,
-		"metricstoken":          token,
-		"webhookrotationdays":   raw.WebhookRotationDays,
-	})
+	// Preserve every other setting — SavePluginConfig replaces the whole map.
+	// Build from rawConfiguration.toConfigMap so a future setting can't be
+	// silently dropped by a stale key list here, then set just the token.
+	cfg := raw.toConfigMap()
+	cfg["metricstoken"] = token
+	return p.client.Configuration.SavePluginConfig(cfg)
 }
 
 // metricsEndpointURL returns the full URL Prometheus scrapes.

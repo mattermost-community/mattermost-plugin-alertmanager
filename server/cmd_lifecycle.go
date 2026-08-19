@@ -973,12 +973,19 @@ func (p *Plugin) rollbackCreatedChannel(created bool, channelID, teamSlug, chann
 	// this pod's in-memory snapshot) and skip the archive if anything is now
 	// bound to this team+channel — leave the empty channel for explicit cleanup
 	// rather than risk removing another pod's in-use channel.
-	if fresh, err := p.loadAlertConfigsFromKV(); err == nil {
-		for _, c := range fresh {
-			if c.Team == teamSlug && c.Channel == channelSlug {
-				p.API.LogWarn("skipped channel rollback: a receiver is now bound to it (HA concurrent add)", "channelID", channelID)
-				return
-			}
+	fresh, err := p.loadAlertConfigsFromKV()
+	if err != nil {
+		// Fail CLOSED: if we can't read the list, we can't prove the channel is
+		// unused, so don't archive it — a transient KV/parse error during the
+		// concurrent-add window could otherwise delete another pod's live
+		// destination. Leave the (possibly empty) channel for explicit cleanup.
+		p.API.LogWarn("skipped channel rollback: could not read receiver list to confirm non-use (failing closed)", "channelID", channelID, "err", err.Error())
+		return
+	}
+	for _, c := range fresh {
+		if c.Team == teamSlug && c.Channel == channelSlug {
+			p.API.LogWarn("skipped channel rollback: a receiver is now bound to it (HA concurrent add)", "channelID", channelID)
+			return
 		}
 	}
 	if appErr := p.API.DeleteChannel(channelID); appErr != nil {

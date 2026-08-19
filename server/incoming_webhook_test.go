@@ -25,6 +25,34 @@ func TestWebhookDeleteError(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("delete error must wrap the underlying cause")
 	}
+
+	// The Client4 cause commonly embeds the raw hook ID in its request URL — that
+	// must be scrubbed from the rendered message too (not just the prefix), while
+	// Unwrap still returns the original cause for errors.Is/As.
+	urlCause := errors.New(`Delete "https://mm.example/api/v4/hooks/incoming/` + id + `": dial tcp: i/o timeout`)
+	err2 := webhookDeleteError(id, urlCause)
+	if strings.Contains(err2.Error(), id) {
+		t.Fatalf("delete error leaks the raw hook ID from the wrapped cause URL: %q", err2.Error())
+	}
+	if !errors.Is(err2, urlCause) {
+		t.Fatalf("scrubbed error must still unwrap to the original cause")
+	}
+}
+
+// TestScrubHookID pins the runtime hook-ID scrubber used on Client4 error text.
+func TestScrubHookID(t *testing.T) {
+	const id = "abcdef0123456789abcdef0123456789"
+	in := `Get "https://mm/api/v4/hooks/incoming/` + id + `": connection refused`
+	got := scrubHookID(in, id)
+	if strings.Contains(got, id) {
+		t.Fatalf("scrubHookID left the raw ID in place: %q", got)
+	}
+	if !strings.Contains(got, redactHookID(id)) {
+		t.Fatalf("scrubHookID should substitute the redacted fingerprint: %q", got)
+	}
+	if scrubHookID("no id here", "") != "no id here" {
+		t.Fatalf("empty hookID must be a no-op")
+	}
 }
 
 // TestRedactHookID pins the CL-13 log-redaction contract: the raw webhook ID (a

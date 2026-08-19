@@ -232,14 +232,43 @@ func (p *Plugin) deleteIncomingWebhook(callerUserID, hookID string) error {
 	return nil
 }
 
+// scrubHookID replaces every raw occurrence of hookID in s with its redaction.
+// Client4 transport errors embed the failed request URL — for webhook ops that
+// path is /api/v4/hooks/incoming/<id>, so the raw hook ID (a durable bearer
+// token) can ride into logs/errors through err.Error() even when the dedicated
+// log field is redacted (CL-13). The static redaction guard can't see that
+// runtime value, so scrub it at the boundary. No-op for an empty ID.
+func scrubHookID(s, hookID string) string {
+	if hookID == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, hookID, redactHookID(hookID))
+}
+
+// redactedError carries a log-safe, redacted message while preserving the
+// original cause for errors.Is / errors.As / Unwrap. Used where the cause's text
+// can embed a bearer credential (see scrubHookID) — %w alone would copy that text
+// verbatim into Error().
+type redactedError struct {
+	msg   string
+	cause error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.cause }
+
 // webhookDeleteError wraps a webhook-delete failure WITHOUT the raw hook ID in
-// the message. The returned error flows to the logs via err.Error() at several
-// call sites — a raw ID here would undo the redaction those sites apply to the
-// dedicated log field (CL-13): a webhook ID is a durable bearer token and logs
-// reach a wider audience than the bound channel. The fingerprint still lets an
-// operator correlate the failure with the redacted field on the same line.
+// the message OR the wrapped cause's text. The returned error flows to the logs
+// via err.Error() at several call sites — a raw ID (in the message prefix OR in
+// the Client4 transport error's request URL) would undo the redaction those
+// sites apply to the dedicated log field (CL-13): a webhook ID is a durable
+// bearer token and logs reach a wider audience than the bound channel. The
+// original cause is preserved via Unwrap for errors.Is/As.
 func webhookDeleteError(hookID string, err error) error {
-	return fmt.Errorf("delete incoming webhook %s: %w", redactHookID(hookID), err)
+	return &redactedError{
+		msg:   fmt.Sprintf("delete incoming webhook %s: %s", redactHookID(hookID), scrubHookID(err.Error(), hookID)),
+		cause: err,
+	}
 }
 
 // webhookURLForReceiver resolves the api_url with per-receiver

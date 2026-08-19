@@ -1,11 +1,55 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 )
+
+// TestRawConfigMapCoversSchema is the drift guard for rawConfiguration.toConfigMap:
+// it must render EXACTLY the settings_schema keys from plugin.json (lowercased).
+// A mismatch means a setting was added/removed without updating toConfigMap —
+// which would make /alertmanager metrics-token generate silently drop or invent a
+// setting when it rewrites the whole plugin-config map.
+func TestRawConfigMapCoversSchema(t *testing.T) {
+	blob, err := os.ReadFile("../plugin.json")
+	if err != nil {
+		t.Fatalf("read plugin.json: %v", err)
+	}
+	var manifest struct {
+		SettingsSchema struct {
+			Settings []struct {
+				Key string `json:"key"`
+			} `json:"settings"`
+		} `json:"settings_schema"`
+	}
+	if err := json.Unmarshal(blob, &manifest); err != nil {
+		t.Fatalf("parse plugin.json: %v", err)
+	}
+
+	schemaKeys := make(map[string]bool)
+	for _, s := range manifest.SettingsSchema.Settings {
+		schemaKeys[strings.ToLower(s.Key)] = true
+	}
+	mapKeys := make(map[string]bool)
+	for k := range (rawConfiguration{}).toConfigMap() {
+		mapKeys[k] = true
+	}
+
+	for k := range schemaKeys {
+		if !mapKeys[k] {
+			t.Errorf("settings_schema key %q is missing from rawConfiguration.toConfigMap — add it, or metrics-token generate will wipe it", k)
+		}
+	}
+	for k := range mapKeys {
+		if !schemaKeys[k] {
+			t.Errorf("toConfigMap writes %q which is not a settings_schema key — remove it", k)
+		}
+	}
+}
 
 // TestValidateWebhookHost guards the only sysadmin-typed setting in the
 // plugin's System Console form. Garbage here propagates straight into

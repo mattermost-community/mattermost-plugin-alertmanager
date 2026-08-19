@@ -40,6 +40,23 @@ type rawConfiguration struct {
 	WebhookRotationDays   int
 }
 
+// toConfigMap renders every settings_schema field as the lowercased-key map that
+// SavePluginConfig expects. Callers that persist ONE setting (e.g. the
+// metrics-token command) must preserve all the others — SavePluginConfig replaces
+// the whole map — so they build from here. Keeping this next to the struct means
+// a new setting is added in one obvious place instead of silently dropped by a
+// stale key list in a distant file. Guarded by TestRawConfigMapCoversSchema.
+func (r rawConfiguration) toConfigMap() map[string]any {
+	return map[string]any{
+		"webhookhost":           r.WebhookHost,
+		"webhookhostpreset":     r.WebhookHostPreset,
+		"assembledyamlttlhours": r.AssembledYAMLTTLHours,
+		"alertmanagercabundle":  r.AlertManagerCABundle,
+		"metricstoken":          r.MetricsToken,
+		"webhookrotationdays":   r.WebhookRotationDays,
+	}
+}
+
 // kvKeyAlertConfigs is the plugin KV-store key holding the JSON-serialized
 // receiver list. The KV store is not surfaced by GET /api/v4/config, so the
 // webhook IDs and Alertmanager passwords in these entries are not readable by

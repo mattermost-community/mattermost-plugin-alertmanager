@@ -174,6 +174,7 @@ func isSecretSink(fun ast.Expr) bool {
 var knownRedactors = map[string]bool{
 	"redactHookID":       true, // sha256-prefix of a hook ID
 	"webhookDeleteError": true, // returns an error whose text already redacts the hook ID
+	"scrubHookID":        true, // replaces any raw hook ID in a string with its redaction
 }
 
 // isKnownRedactor reports whether a call expression is one of the sanctioned
