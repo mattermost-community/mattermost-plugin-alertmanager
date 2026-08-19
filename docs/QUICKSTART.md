@@ -76,20 +76,29 @@ Management**:
 
 ---
 
-## Step 2 — (Optional) plugin settings  **[Mattermost]**
+## Step 2 — plugin settings  **[Mattermost]**
 
-**System Console → Plugins → Alertmanager.** All optional — defaults work for
-a basic setup.
+**System Console → Plugins → Alertmanager.** Most are optional, but set
+**Alertmanager allowed destinations** if your Alertmanager is on a private/
+in-cluster address (see the note below the table).
 
 | Setting | What it does | When you need it |
 |---|---|---|
 | **Webhook host override** | Replaces the host in the generated `api_url` so Alertmanager can reach Mattermost over a different network path | Docker/K8s where AM can't hit your SiteURL (see [KUBERNETES.md](KUBERNETES.md)) |
+| **Alertmanager allowed destinations (CIDRs)** | Allowlist of networks the plugin may connect to for AM API calls | **Required for a private-IP / in-cluster / same-host Alertmanager** — list its CIDR (e.g. `10.0.0.0/8`) |
 | **Alertmanager CA bundle (PEM)** | Trust bundle for a TLS Alertmanager | AM served over HTTPS with a private CA |
 | **Metrics endpoint bearer token** | Auth for the plugin's `/metrics` endpoint | Only if Prometheus will scrape the plugin — see Step 8 |
 | **Auto-delete DM'd YAML after (hours)** | TTL on exported config files DM'd to you | Tighten if the YAML embeds sensitive hosts |
 | **Webhook rotation reminder (days)** | Nudges to rotate webhooks | Opt-in per receiver with the `on` flag on `add` |
 
-<!-- SHOT: the Alertmanager plugin settings page | HIGHLIGHT: the 5 fields above | REDACT: MetricsToken value, any real hostnames in Webhook host / CA bundle -->
+> **Alertmanager allowed destinations.** As an SSRF safeguard the plugin only
+> connects to **public** addresses by default — private/internal, loopback, and
+> cloud-metadata addresses are blocked. If your Alertmanager is in-cluster or on a
+> private IP (the usual case), put its network in this setting (e.g. `10.0.0.0/8`,
+> or your cluster's service/pod CIDR) or the `add`/`validate`/inventory calls to it
+> will fail with a connection error. A public Alertmanager needs nothing here.
+
+<!-- SHOT: the Alertmanager plugin settings page | HIGHLIGHT: the 6 fields above | REDACT: MetricsToken value, any real hostnames in Webhook host / CA bundle -->
 ![Plugin settings](images/mattermost-plugin-settings.png)
 
 ---
@@ -243,6 +252,7 @@ job:
 | Alert commands show `<no value>` for namespace/pod | Alert rule doesn't emit those labels | Add `namespace`/`pod` labels to the rule (Step 6) |
 | Posts don't look like `@alertmanagerbot` | Override toggles off | Enable both override toggles (Step 1) |
 | Alertmanager can't reach the webhook | AM can't hit your SiteURL | Set **Webhook host override** (Step 2) / see [KUBERNETES.md](KUBERNETES.md) |
+| `/alertmanager add`, `validate`, or the inventory page can't reach Alertmanager (connection refused / blocked) | AM is on a private/internal IP, which is blocked by default (SSRF guard) | Add the AM's network to **Alertmanager allowed destinations** (Step 2), e.g. `10.0.0.0/8` |
 | `/metrics` returns 401 | Token mismatch | Match the Prometheus `credentials` to the **MetricsToken** setting |
 | Alertmanager TLS handshake fails | Private CA not trusted | Paste the CA into **Alertmanager CA bundle** (Step 2) |
 
