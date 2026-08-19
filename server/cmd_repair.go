@@ -57,15 +57,22 @@ func (p *Plugin) repairAlertConfigsKV(userID, channelID string, force bool) stri
 			perr, len(inMemory))
 	}
 
-	// Force path: serialize the known-good in-memory snapshot.
-	newBytes, merr := json.MarshalIndent(inMemory, "", "  ")
+	// Force path: serialize the known-good in-memory snapshot and validate it
+	// BEFORE persisting — never replace one unreadable blob with another (F-003).
+	snapshotBytes, merr := json.MarshalIndent(inMemory, "", "  ")
 	if merr != nil {
 		return fmt.Sprintf(":warning: Failed to serialize the in-memory receiver list: %v", merr)
 	}
-	// F-003: validate the snapshot BEFORE persisting — never replace one unreadable
-	// blob with another (a stale/invalid in-memory list must not be written).
-	if _, verr := parseAlertConfigs(string(newBytes)); verr != nil {
+	parsed, verr := parseAlertConfigs(string(snapshotBytes))
+	if verr != nil {
 		return fmt.Sprintf(":warning: The in-memory snapshot is itself invalid (%v) — refusing to write it. The KV value needs manual repair.", verr)
+	}
+	// Persist the SANITIZED parsed result, not the raw snapshot: parseAlertConfigs
+	// neuters e.g. a stale ?/# or embedded creds in a pre-hardening stored URL, so
+	// repair writes a clean value rather than round-tripping the un-sanitized one.
+	newBytes, merr := json.MarshalIndent(parsed, "", "  ")
+	if merr != nil {
+		return fmt.Sprintf(":warning: Failed to serialize the sanitized receiver list: %v", merr)
 	}
 	// F-002: compare-and-set on the EXACT corrupt bytes we read. If another node
 	// already changed KV (e.g. repaired it) since our read, abort rather than

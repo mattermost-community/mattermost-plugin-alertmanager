@@ -67,6 +67,28 @@ func TestRepairAlertConfigsKV(t *testing.T) {
 		}
 	})
 
+	t.Run("--force writes the SANITIZED snapshot, not the raw one (F-002)", func(t *testing.T) {
+		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}}
+		p := &Plugin{}
+		p.API = api
+		// In-memory holds an un-sanitized URL (a stale ?query a pre-hardening build
+		// might have accepted). parseAlertConfigs strips it; repair must persist the
+		// sanitized form.
+		p.setConfiguration(newConfiguration([]alertConfig{
+			{Name: "probe--t-c", Team: "t", Channel: "c", AlertManagerURL: "http://am.example.com?x", WebhookID: "h1"},
+		}, "", 0, "", "", 0))
+		if msg := p.repairAlertConfigsKV("u1", "c1", true); !strings.Contains(msg, "Repaired") {
+			t.Fatalf("got %q", msg)
+		}
+		written := string(api.store[kvKeyAlertConfigs])
+		if strings.Contains(written, "?x") {
+			t.Fatalf("repair wrote the UN-sanitized URL (F-002):\n%s", written)
+		}
+		if _, err := parseAlertConfigs(written); err != nil {
+			t.Fatalf("written KV must be valid: %v", err)
+		}
+	})
+
 	t.Run("--force refuses an invalid in-memory snapshot (F-003)", func(t *testing.T) {
 		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}}
 		p := &Plugin{}

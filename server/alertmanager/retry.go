@@ -18,6 +18,13 @@ import (
 func NewTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DisableCompression = true
+	// Disable HTTP(S) proxying (F-001): the cloned DefaultTransport inherits
+	// Proxy: ProxyFromEnvironment, so with HTTP_PROXY/HTTPS_PROXY set the client
+	// would DIAL THE PROXY — the SSRF dial guard below would then validate the
+	// proxy's IP, not the real Alertmanager destination, and the proxy would
+	// happily fetch a blocked internal/metadata URL on our behalf. The plugin
+	// always talks to Alertmanager directly, so no proxy is ever needed.
+	t.Proxy = nil
 	// Install the SSRF dial guard (F-001): validate the resolved IP after DNS but
 	// before connect, on every Alertmanager call, so a hostile URL can't reach
 	// cloud-metadata / loopback / non-allowlisted internal targets. Timeouts match

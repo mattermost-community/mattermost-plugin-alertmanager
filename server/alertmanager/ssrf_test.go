@@ -120,3 +120,15 @@ func TestHardBlockedNotOverridable(t *testing.T) {
 		t.Errorf("public IP should be permitted under a /0 allowlist: %v", err)
 	}
 }
+
+// TestNewTransportDisablesProxy is the F-001 regression: the Alertmanager
+// transport must not use an environment proxy, or a proxied request would make
+// the dial guard validate the PROXY's IP while the proxy fetches the real
+// (possibly blocked/internal) destination.
+func TestNewTransportDisablesProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://corp-proxy.example:3128")
+	t.Setenv("HTTPS_PROXY", "http://corp-proxy.example:3128")
+	if NewTransport().Proxy != nil {
+		t.Fatal("NewTransport must set Proxy=nil so the SSRF dial guard sees the real destination IP, not a proxy")
+	}
+}

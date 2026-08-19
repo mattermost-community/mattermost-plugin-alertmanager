@@ -85,6 +85,36 @@ func TestRedactOtherChannelsInDiff(t *testing.T) {
 		}
 	})
 
+	t.Run("proxy_url credentials are redacted (F-004)", func(t *testing.T) {
+		diff := `  receivers:
+    - name: other-team
+      slack_configs:
+        - http_config:
+            proxy_url: 'http://proxyuser:proxypass@proxy.example.com:8080'
+`
+		got := redactOtherChannelsInDiff(diff, nil)
+		if strings.Contains(got, "proxypass") || strings.Contains(got, "proxyuser") {
+			t.Fatalf("proxy_url credentials leaked:\n%s", got)
+		}
+	})
+
+	t.Run("block-scalar secrets incl. continuation lines are redacted (F-003)", func(t *testing.T) {
+		diff := `  receivers:
+    - name: other-team
+      webhook_configs:
+        - url: |
+            https://mattermost.example.com/hooks/block-scalar-secret
+          send_resolved: true
+`
+		got := redactOtherChannelsInDiff(diff, nil)
+		if strings.Contains(got, "block-scalar-secret") {
+			t.Fatalf("block-scalar secret leaked on a continuation line:\n%s", got)
+		}
+		if !strings.Contains(got, "send_resolved") {
+			t.Fatalf("sibling key after the block scalar was over-redacted (block not bounded by key column):\n%s", got)
+		}
+	})
+
 	t.Run("vendor tokens (service_key, routing_key) also redacted", func(t *testing.T) {
 		diff := `  receivers:
     - name: pagerduty-other-team
