@@ -126,6 +126,33 @@ one manual). No duplicate prune events for the same receiver.
 **Fail:** manual command hangs, or two pods race on
 `saveConfigs` and one of them returns an error.
 
+### E. Verify receiver-list changes propagate across nodes
+
+The receiver list lives in the plugin KV store. A KV write does NOT
+fire `OnConfigurationChange` on peer nodes, so the plugin broadcasts a
+`reload_alertconfigs` cluster event after every committed write; peers
+reload from KV in `OnPluginClusterEvent`. This confirms a change made
+via one pod is visible on the others.
+
+```bash
+# Find two distinct pods.
+kubectl get pods -n mattermost -l app=mattermost -o name
+
+# 1. Run `/alertmanager add testing prop-check <am-url>` from the app
+#    (the request lands on whichever pod the LB picks).
+# 2. Immediately hit the admin inventory / `/alertmanager list` a few
+#    times so the LB routes you to different pods (or curl each pod
+#    directly). Every pod must show the new receiver right away.
+# 3. Then `/alertmanager remove prop-check` and repeat — it must
+#    disappear on every pod without waiting for a reconciler cycle.
+```
+
+**Pass:** the add/remove is visible on all pods within a second or two
+(cluster-event latency), not only after the ≤5-min reconciler cycle.
+**Fail:** a pod keeps showing the old list until the next reconciler
+cycle or a config-settings toggle — the broadcast isn't reaching peers;
+check for `could not broadcast receiver-list reload` warnings.
+
 ## Recording results
 
 Append to the project's release-notes checklist before tagging
@@ -134,5 +161,5 @@ a release that touches the reconciler. Include:
 - Pod count tested
 - Mattermost version
 - Plugin version
-- A/B/C/D pass/fail
+- A/B/C/D/E pass/fail
 - Any unexpected log lines

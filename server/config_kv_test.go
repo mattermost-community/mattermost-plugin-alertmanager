@@ -18,6 +18,14 @@ type fakeKVAPI struct {
 	store                map[string][]byte
 	casFailuresRemaining int
 	casCalls             int
+	publishedEvents      []string // event IDs broadcast via PublishPluginClusterEvent
+}
+
+// PublishPluginClusterEvent records the broadcast so tests can assert peers are
+// notified to reload after a committed KV write.
+func (f *fakeKVAPI) PublishPluginClusterEvent(ev model.PluginClusterEvent, _ model.PluginClusterEventSendOptions) error {
+	f.publishedEvents = append(f.publishedEvents, ev.Id)
+	return nil
 }
 
 func (f *fakeKVAPI) KVGet(key string) ([]byte, *model.AppError) {
@@ -80,6 +88,12 @@ func TestUpdateConfigsAtomicRoundTrip(t *testing.T) {
 
 	if got := p.getConfiguration().AlertConfigs; len(got) != 1 || got[0].WebhookID != "abc123" {
 		t.Fatalf("in-memory config not refreshed after save: %#v", got)
+	}
+
+	// A committed write must broadcast a reload to peers (KV writes don't fire
+	// OnConfigurationChange on other nodes).
+	if len(api.publishedEvents) != 1 || api.publishedEvents[0] != clusterEventReloadConfigs {
+		t.Fatalf("expected one %q cluster broadcast after commit, got %v", clusterEventReloadConfigs, api.publishedEvents)
 	}
 
 	loaded, err := p.loadAlertConfigsFromKV()
@@ -148,5 +162,33 @@ func TestLoadAlertConfigsFromKVEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty list for absent key, got %#v", got)
+	}
+}
+
+// TestClusterEventReloadsFromKV is the HA cross-pod regression: a KV write on one
+// node does not fire OnConfigurationChange on peers, so peers only converge when
+// they receive the reload cluster event. Simulates a peer whose in-memory list is
+// empty while KV already holds a receiver written by another node.
+func TestClusterEventReloadsFromKV(t *testing.T) {
+	blob := `[{"name":"high-cpu--team-chan","team":"team","channel":"chan","webhookID":"hook1"}]`
+	api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(blob)}}
+	p := &Plugin{}
+	p.API = api
+
+	if got := p.getConfiguration().AlertConfigs; len(got) != 0 {
+		t.Fatalf("precondition: peer should start with an empty in-memory list, got %d", len(got))
+	}
+
+	// Delivering the reload event syncs in-memory from KV.
+	p.OnPluginClusterEvent(nil, model.PluginClusterEvent{Id: clusterEventReloadConfigs})
+	if got := p.getConfiguration().AlertConfigs; len(got) != 1 || got[0].Name != "high-cpu--team-chan" {
+		t.Fatalf("cluster event did not reload the receiver list from KV: %#v", got)
+	}
+
+	// An unrelated event ID must be ignored (no reload).
+	api.store[kvKeyAlertConfigs] = []byte(`[]`)
+	p.OnPluginClusterEvent(nil, model.PluginClusterEvent{Id: "unrelated-event"})
+	if got := p.getConfiguration().AlertConfigs; len(got) != 1 {
+		t.Fatalf("unrelated cluster event should be ignored, got %#v", got)
 	}
 }

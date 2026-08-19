@@ -1062,10 +1062,12 @@ func (p *Plugin) updateConfigsAtomic(transform func(current []alertConfig) ([]al
 			continue // another pod wrote between our read and write — reload + retry
 		}
 
-		// Refresh in-memory config from the committed write; the other settings
-		// live in the config map and are untouched by this KV write.
-		cur := p.getConfiguration()
-		p.setConfiguration(newConfiguration(parsed, cur.WebhookHost, cur.AssembledYAMLTTLHours, cur.AlertManagerCABundle, cur.MetricsToken, cur.WebhookRotationDays))
+		// Refresh THIS node's in-memory config from the committed write, then tell
+		// peers to reload from KV — a KV write does not fire OnConfigurationChange
+		// on other nodes, so without the broadcast they'd serve a stale list. The
+		// config-map-backed settings are untouched by this write.
+		p.applyAlertConfigsToMemory(parsed)
+		p.broadcastConfigReload()
 		return current, parsed, nil
 	}
 	return nil, nil, fmt.Errorf("receiver list is being modified concurrently; please retry")

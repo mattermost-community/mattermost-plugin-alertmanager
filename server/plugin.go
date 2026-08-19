@@ -156,6 +156,34 @@ func (p *Plugin) OnDeactivate() error {
 	return nil
 }
 
+// broadcastConfigReload tells peer nodes to reload the receiver list from KV
+// after a committed write. Best-effort: a failed broadcast is logged, not fatal —
+// the writing node is already fresh, and peers still converge on their next
+// reconcile cycle or config change. Called once per successful commit (outside
+// the CAS retry loop). Reliable send so a briefly-unreachable peer still gets it.
+func (p *Plugin) broadcastConfigReload() {
+	if err := p.API.PublishPluginClusterEvent(
+		model.PluginClusterEvent{Id: clusterEventReloadConfigs},
+		model.PluginClusterEventSendOptions{SendType: model.PluginClusterEventSendTypeReliable},
+	); err != nil {
+		p.API.LogWarn("could not broadcast receiver-list reload to peers (they converge on next reconcile/config change)", "err", err.Error())
+	}
+}
+
+// OnPluginClusterEvent handles intra-cluster plugin events. The only event is
+// clusterEventReloadConfigs: another node wrote the receiver list to KV (which
+// does NOT fire OnConfigurationChange on peers), so reload it here to stop this
+// node serving a stale in-memory list. Idempotent — it just syncs to whatever KV
+// currently holds, so duplicate or out-of-order events are harmless.
+func (p *Plugin) OnPluginClusterEvent(_ *plugin.Context, ev model.PluginClusterEvent) {
+	if ev.Id != clusterEventReloadConfigs {
+		return
+	}
+	if err := p.reloadAlertConfigsFromKV(); err != nil {
+		p.API.LogWarn("failed to reload receiver list on cluster event", "err", err.Error())
+	}
+}
+
 // getConfiguration returns the current snapshot. Treat as immutable;
 // mutation requires Clone + setConfiguration.
 func (p *Plugin) getConfiguration() *configuration {

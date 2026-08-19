@@ -503,6 +503,36 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 // receivers via /alertmanager add. This is a deliberate dev/redeploy boundary
 // (see the BREAKING CHANGE note and docs/CONFIGURATION.md); a migration shim was
 // explicitly out of scope. Do not "fix" this by reading the old config value.
+// clusterEventReloadConfigs is the plugin-cluster event ID that tells peer nodes
+// to reload the receiver list from KV. KV writes are cluster-consistent, but they
+// do NOT fire OnConfigurationChange on other nodes — so without this broadcast a
+// peer keeps serving a stale in-memory receiver list after another node writes
+// (add/remove/rotate/reconcile). See broadcastConfigReload + OnPluginClusterEvent.
+const clusterEventReloadConfigs = "reload_alertconfigs"
+
+// applyAlertConfigsToMemory swaps the in-memory receiver list to `configs`,
+// preserving the config-map-backed settings (WebhookHost, TTL, CA bundle, metrics
+// token, rotation days) — those sync independently via OnConfigurationChange.
+// Shared by the writing node (post-commit) and peers (on cluster event) so both
+// refresh identically.
+func (p *Plugin) applyAlertConfigsToMemory(configs []alertConfig) {
+	cur := p.getConfiguration()
+	p.setConfiguration(newConfiguration(configs, cur.WebhookHost, cur.AssembledYAMLTTLHours, cur.AlertManagerCABundle, cur.MetricsToken, cur.WebhookRotationDays))
+}
+
+// reloadAlertConfigsFromKV re-reads the receiver list from KV and swaps it into
+// the in-memory config. Called on peers when they receive a
+// clusterEventReloadConfigs broadcast, so a write on one node becomes visible to
+// list/export/scope-checks/reconcile on every node — not just the writer.
+func (p *Plugin) reloadAlertConfigsFromKV() error {
+	configs, err := p.loadAlertConfigsFromKV()
+	if err != nil {
+		return err
+	}
+	p.applyAlertConfigsToMemory(configs)
+	return nil
+}
+
 func (p *Plugin) loadAlertConfigsFromKV() ([]alertConfig, error) {
 	data, appErr := p.API.KVGet(kvKeyAlertConfigs)
 	if appErr != nil {
