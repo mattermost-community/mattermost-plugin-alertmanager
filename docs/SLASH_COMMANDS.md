@@ -8,7 +8,7 @@ the channel where you ran the command.
 
 | Subcommand | Args | Purpose | Sysadmin? |
 |---|---|---|---|
-| `about` | _(none)_ | Plugin build info, settings, reconciler health, links | any user |
+| `about` | _(none)_ | Plugin build info, this channel's receiver count, links (any user). Org-wide counts, reconciler health, and configured-setting presence are shown to sysadmins only. | any user |
 | `add` | `<team> <channel> <am-url> [target] [on] [--format=standard\|crd] [--namespace=]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`--format=standard`, default), or an `AlertmanagerConfig` v1alpha1 + Secret (`--format=crd`; `--namespace=` default `monitoring`). Trailing `on` opts in to rotation reminders. | sysadmin / team_admin |
 | `add-custom` | `<team> <channel> <am-url> <name> [--webhook-host=<url>]` | Create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. No `runbook=` route is generated — you wire the matcher manually (`export` includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
 | `alerts` | _(none)_ | Currently firing alerts, grouped by Alertmanager URL | any user |

@@ -73,8 +73,14 @@ func TestValidateWebhookHost(t *testing.T) {
 		{"empty host is rejected", "https://", true, "host"},
 		{"path is rejected", "https://mattermost.example.com/plugins", true, "path"},
 		{"trailing slash alone is allowed", "https://mattermost.example.com/", false, ""},
-		{"query string is rejected", "https://mattermost.example.com?foo=bar", true, "query"},
-		{"fragment is rejected", "https://mattermost.example.com#section", true, "query"},
+		{"query string is rejected", "https://mattermost.example.com?foo=bar", true, "'?'"},
+		{"fragment is rejected", "https://mattermost.example.com#section", true, "'?'"},
+		// Hardened to the validateAlertManagerURL bar — a second attacker-controllable
+		// URL (per-receiver --webhook-host) that drives a webhook-test POST and lands
+		// in generated api_url YAML, so it must reject the same SSRF/injection shapes.
+		{"embedded credentials rejected", "http://user:pass@mattermost.example.com", true, "credential"},
+		{"single quote in host rejected (YAML injection)", "http://mattermost.example.com'", true, "invalid characters"},
+		{"literal cloud-metadata IP rejected", "http://169.254.169.254", true, "blocked destination"},
 	}
 
 	for _, tc := range cases {

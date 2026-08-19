@@ -91,13 +91,26 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	if !receiverNameInScope(scoped, resolved) {
 		return fmt.Sprintf("Receiver %q not found.", name), nil
 	}
+	// Capture the WebhookID we previewed so the CAS transform deletes only THIS
+	// receiver, not a same-name one that another node removed+re-created between
+	// our scoped snapshot and the fresh-KV write (identity, not just name).
+	expectedHookID := webhookIDForName(scoped, resolved)
 
 	var hookID string
+	var identityChanged bool
 	_, filtered, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
 		hookID = "" // reset per attempt — the transform may run more than once
+		identityChanged = false
 		out := make([]alertConfig, 0, len(current))
 		for _, c := range current {
 			if c.Name == resolved {
+				if c.WebhookID != expectedHookID {
+					// Same name, different webhook — a different receiver now. Leave
+					// it in place rather than delete something we never previewed.
+					identityChanged = true
+					out = append(out, c)
+					continue
+				}
 				hookID = c.WebhookID
 				continue
 			}
@@ -107,6 +120,9 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	})
 	if err != nil {
 		return fmt.Sprintf("Failed to persist config: %v", err), nil
+	}
+	if identityChanged {
+		return fmt.Sprintf("Receiver %q changed since you last listed it (it was re-created elsewhere with a new webhook). Nothing removed — re-run `/alertmanager list` then remove again.", resolved), nil
 	}
 	if hookID == "" {
 		// In scope per the in-memory snapshot but absent from the freshly-read KV
@@ -123,6 +139,30 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 	}
 
 	return fmt.Sprintf(":wastebasket: Removed receiver `%s`. Don't forget to delete the corresponding `slack_configs` block from `alertmanager.yml`.", resolved), nil
+}
+
+// webhookIDForName returns the WebhookID of the named receiver in the snapshot,
+// or "" if absent. Used to pin a remove to the exact receiver identity that was
+// previewed, so a same-name re-create on another node isn't deleted by mistake.
+func webhookIDForName(entries []alertConfig, name string) string {
+	for _, c := range entries {
+		if c.Name == name {
+			return c.WebhookID
+		}
+	}
+	return ""
+}
+
+// expectedIdentities maps receiver Name -> previewed WebhookID across a set of
+// entries. Bulk/set remove transforms delete an entry only when BOTH its name
+// and webhook ID match this map, so a same-name receiver re-created on another
+// node between preview and the fresh-KV write is left intact.
+func expectedIdentities(entries []alertConfig) map[string]string {
+	m := make(map[string]string, len(entries))
+	for _, c := range entries {
+		m[c.Name] = c.WebhookID
+	}
+	return m
 }
 
 // webhookStillReferenced returns true when at least one entry in the
@@ -194,17 +234,25 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 
 	// Build the set of names to prune (channel-scoped) and walk the full
 	// config so we keep entries from other channels intact.
-	namesToRemove := make(map[string]bool, len(scoped))
-	for _, c := range scoped {
-		namesToRemove[c.Name] = true
-	}
+	expected := expectedIdentities(scoped)
 
 	removed := make([]string, 0, len(scoped))
+	skippedChanged := make([]string, 0)
 	current, filtered, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
 		removed = removed[:0] // reset per attempt
+		skippedChanged = skippedChanged[:0]
 		out := make([]alertConfig, 0, len(current))
 		for _, c := range current {
-			if !namesToRemove[c.Name] {
+			want, targeted := expected[c.Name]
+			if !targeted {
+				out = append(out, c)
+				continue
+			}
+			if c.WebhookID != want {
+				// Same name, different webhook — re-created elsewhere since we
+				// scoped. Keep it and report rather than delete a receiver we
+				// never previewed.
+				skippedChanged = append(skippedChanged, c.Name)
 				out = append(out, c)
 				continue
 			}
@@ -240,6 +288,10 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 	if len(webhookFailures) > 0 {
 		b.WriteString(fmt.Sprintf("\n:warning: Couldn't delete %d underlying webhook(s) — config entries are gone, but the webhooks may still be live. Find them by name in System Console → Integrations → Incoming Webhooks and remove them. Fingerprints: `%s`\n",
 			len(webhookFailures), strings.Join(webhookFailures, "`, `")))
+	}
+	if len(skippedChanged) > 0 {
+		b.WriteString(fmt.Sprintf("\n:information_source: Left %d receiver(s) untouched — they were re-created (new webhook) since you last listed this channel: `%s`. Re-run `/alertmanager list` then remove again if you still want them gone.\n",
+			len(skippedChanged), strings.Join(skippedChanged, "`, `")))
 	}
 	b.WriteString("\nClean up the corresponding `slack_configs` blocks in `alertmanager.yml` and reload AM.")
 	return b.String(), nil
@@ -293,17 +345,24 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 		return b.String(), nil
 	}
 
-	namesToRemove := make(map[string]bool, len(matched))
-	for _, c := range matched {
-		namesToRemove[c.Name] = true
-	}
+	expected := expectedIdentities(matched)
 
 	removed := make([]string, 0, len(matched))
+	skippedChanged := make([]string, 0)
 	current, filtered, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
 		removed = removed[:0] // reset per attempt
+		skippedChanged = skippedChanged[:0]
 		out := make([]alertConfig, 0, len(current))
 		for _, c := range current {
-			if !namesToRemove[c.Name] {
+			want, targeted := expected[c.Name]
+			if !targeted {
+				out = append(out, c)
+				continue
+			}
+			if c.WebhookID != want {
+				// Re-created elsewhere since we scoped — keep it, don't delete a
+				// receiver we never previewed.
+				skippedChanged = append(skippedChanged, c.Name)
 				out = append(out, c)
 				continue
 			}
@@ -339,6 +398,10 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 	if len(webhookFailures) > 0 {
 		b.WriteString(fmt.Sprintf("\n:warning: Couldn't delete %d underlying webhook(s) — config entries gone, but the webhooks may still be live. Find them by name in System Console → Integrations → Incoming Webhooks and remove them. Fingerprints: `%s`\n",
 			len(webhookFailures), strings.Join(webhookFailures, "`, `")))
+	}
+	if len(skippedChanged) > 0 {
+		b.WriteString(fmt.Sprintf("\n:information_source: Left %d receiver(s) untouched — re-created (new webhook) since you last listed this channel: `%s`. Re-run `/alertmanager list` then remove again if you still want them gone.\n",
+			len(skippedChanged), strings.Join(skippedChanged, "`, `")))
 	}
 	b.WriteString("\nRemove the matching `slack_configs` and `routes:` entries from your `alertmanager.yml` and reload AM.")
 	return b.String(), nil

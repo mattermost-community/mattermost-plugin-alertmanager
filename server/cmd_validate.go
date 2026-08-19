@@ -506,6 +506,21 @@ func doValidateAMStatus(amURL string) (out struct {
 	return out
 }
 
+// webhookTestClient is the guarded HTTP client for validate/inventory
+// webhook-test POSTs. The webhook host is team-admin-controllable (per-receiver
+// --webhook-host or the global setting), so this is a server-side request to an
+// attacker-influenced URL — the same SSRF class the Alertmanager client defends
+// against. It reuses that posture: alertmanager.NewTransport() disables env
+// proxies (Proxy=nil) and installs the dial guard (CheckDestinationIP, post-DNS),
+// and RefuseRedirect stops a 302 → internal redirect. Without this the POST ran
+// on http.DefaultClient (proxy-honoring, redirect-following, no dial guard) and
+// could reach cloud metadata / loopback / internal services.
+var webhookTestClient = &http.Client{
+	Timeout:       5 * time.Second,
+	Transport:     alertmanager.NewTransport(),
+	CheckRedirect: alertmanager.RefuseRedirect,
+}
+
 // postValidateTestMessage POSTs a clearly-marked test message directly
 // to the receiver's webhook URL. Confirms (from the plugin's network
 // perspective) that the URL is valid and MM accepts the post.
@@ -531,7 +546,7 @@ func postValidateTestMessage(webhookURL, hookID, receiverName string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := webhookTestClient.Do(req)
 	if err != nil {
 		// Do() returns a *url.Error containing the full webhook URL (with the raw
 		// hook ID) on transport failure — scrub it before it reaches the result.

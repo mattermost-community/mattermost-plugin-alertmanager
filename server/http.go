@@ -87,15 +87,14 @@ func (p *Plugin) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, format, args...)
 	}
 
-	emit("# HELP alertmanager_plugin_receivers_total Number of receivers registered in plugin config, grouped by destination channel.\n")
+	// Emit the receiver count WITHOUT a per-channel label. The /metrics endpoint
+	// is bearer-protected but typically reachable by observability users who are
+	// NOT members of these Mattermost channels, so raw channel names as labels
+	// leak topology past MM's ACLs (finding: metrics expose raw channel names).
+	// Aggregate counts below carry the operational signal without the names.
+	emit("# HELP alertmanager_plugin_receivers_total Total receivers registered in plugin config.\n")
 	emit("# TYPE alertmanager_plugin_receivers_total gauge\n")
-	if len(byChannel) == 0 {
-		emit("alertmanager_plugin_receivers_total 0\n")
-	} else {
-		for ch, n := range byChannel {
-			emit("alertmanager_plugin_receivers_total{channel=%q} %d\n", ch, n)
-		}
-	}
+	emit("alertmanager_plugin_receivers_total %d\n", len(configs))
 
 	emit("# HELP alertmanager_plugin_receivers_grand_total Total receivers across all channels.\n")
 	emit("# TYPE alertmanager_plugin_receivers_grand_total gauge\n")

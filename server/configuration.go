@@ -386,6 +386,15 @@ func validateWebhookHost(raw string) error {
 	if raw == "" {
 		return nil
 	}
+	// WebhookHost is a SECOND team-admin-controllable URL (per-receiver via
+	// --webhook-host, or the global setting): it drives a server-side webhook-test
+	// POST AND is concatenated into generated `api_url:` YAML/CRD/export. So it must
+	// meet the SAME bar as validateAlertManagerURL — reject embedded credentials,
+	// literal-IP SSRF targets, YAML-breaking hostnames, and trailing '?'/'#' — or it
+	// re-opens the exact SSRF/injection surface the AM-URL hardening closed.
+	if strings.ContainsAny(raw, "?#") {
+		return errors.New("WebhookHost must not contain '?' or '#' — even a trailing one truncates the appended /hooks/... path")
+	}
 	u, err := neturl.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("WebhookHost is not a valid URL: %w", err)
@@ -393,14 +402,35 @@ func validateWebhookHost(raw string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("WebhookHost must use http:// or https:// (got %q)", u.Scheme)
 	}
-	if u.Host == "" {
-		return fmt.Errorf("WebhookHost has no host portion")
+	// Reject embedded creds (http://user:pass@host): they would persist into the
+	// generated api_url YAML/CRD, the DM'd export, and the webhook-test URL.
+	if u.User != nil {
+		return errors.New("WebhookHost must not contain embedded credentials")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("WebhookHost has no host portion")
+	}
+	// SSRF check for a literal-IP host, allowlist-aware via the SAME decision the
+	// dial guard uses — so --webhook-host=http://169.254.169.254 (cloud metadata)
+	// or a non-allowlisted private IP is rejected at save, not just at dial.
+	if ip := net.ParseIP(host); ip != nil {
+		if err := alertmanager.CheckDestinationIP(ip); err != nil {
+			return fmt.Errorf("WebhookHost %q is a blocked destination: %w", host, err)
+		}
+	}
+	// Safe host grammar: blocks quotes and other YAML-breaking characters that a
+	// single quote in `api_url: '<host>/hooks/...'` would otherwise inject with.
+	if !alertManagerHostRegex.MatchString(host) {
+		return errors.New("WebhookHost host contains invalid characters")
+	}
+	if port := u.Port(); port != "" {
+		if _, err := strconv.Atoi(port); err != nil {
+			return errors.New("WebhookHost has a non-numeric port")
+		}
 	}
 	if u.Path != "" && u.Path != "/" {
 		return fmt.Errorf("WebhookHost must be a host:port only, no path (got %q)", u.Path)
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("WebhookHost cannot contain query string or fragment")
 	}
 	return nil
 }
