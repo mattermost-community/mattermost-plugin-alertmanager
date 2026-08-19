@@ -22,20 +22,30 @@ func (p *Plugin) handleRepair(args *model.CommandArgs) (string, error) {
 	if err := p.requireSystemAdmin(args.UserId); err != nil {
 		return err.Error(), nil
 	}
-
 	fields := strings.Fields(args.Command)
 	force := len(fields) >= 3 && fields[2] == "--force"
+	return p.repairAlertConfigsKV(args.UserId, args.ChannelId, force), nil
+}
+
+// repairAlertConfigsKV is the KV-recovery core of handleRepair, split out (no
+// auth) so the CAS/validation behavior is unit-testable.
+func (p *Plugin) repairAlertConfigsKV(userID, channelID string, force bool) string {
+	// Hold configWriteMu across read → parse → snapshot → write so a same-node
+	// writer can't interleave; a cross-node race is caught by the compare-and-set
+	// below (F-002).
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
 
 	raw, appErr := p.API.KVGet(kvKeyAlertConfigs)
 	if appErr != nil {
-		return fmt.Sprintf(":warning: Could not read the receiver-list KV key: %v", appErr), nil
+		return fmt.Sprintf(":warning: Could not read the receiver-list KV key: %v", appErr)
 	}
 	inMemory := p.getConfiguration().AlertConfigs
 
 	// If KV parses cleanly there's nothing to repair — say so rather than let an
 	// admin destructively overwrite a healthy list.
 	if parsed, perr := parseAlertConfigs(string(raw)); perr == nil {
-		return fmt.Sprintf(":white_check_mark: The receiver list in KV is valid (%d receiver(s)); no repair needed. (In-memory: %d.)", len(parsed), len(inMemory)), nil
+		return fmt.Sprintf(":white_check_mark: The receiver list in KV is valid (%d receiver(s)); no repair needed. (In-memory: %d.)", len(parsed), len(inMemory))
 	} else if !force {
 		return fmt.Sprintf(
 			":warning: The receiver list in KV is UNREADABLE: %v\n\n"+
@@ -44,24 +54,30 @@ func (p *Plugin) handleRepair(args *model.CommandArgs) (string, error) {
 				"```\n/alertmanager repair --force\n```\n"+
 				":warning: **Destructive** — anything in the corrupt blob not present in the in-memory list is lost. "+
 				"Copy the raw KV value out first if you need to inspect it.",
-			perr, len(inMemory)), nil
+			perr, len(inMemory))
 	}
 
-	// Force path: serialize the known-good in-memory snapshot and write it over the
-	// corrupt value. Unconditional KVSet (not CAS) — CAS would key off the corrupt
-	// bytes we're trying to replace. Held under configWriteMu so it serializes with
-	// normal writers.
+	// Force path: serialize the known-good in-memory snapshot.
 	newBytes, merr := json.MarshalIndent(inMemory, "", "  ")
 	if merr != nil {
-		return fmt.Sprintf(":warning: Failed to serialize the in-memory receiver list: %v", merr), nil
+		return fmt.Sprintf(":warning: Failed to serialize the in-memory receiver list: %v", merr)
 	}
-	p.configWriteMu.Lock()
-	setErr := p.API.KVSet(kvKeyAlertConfigs, newBytes)
-	p.configWriteMu.Unlock()
-	if setErr != nil {
-		return fmt.Sprintf(":warning: Failed to write the repaired receiver list to KV: %v", setErr), nil
+	// F-003: validate the snapshot BEFORE persisting — never replace one unreadable
+	// blob with another (a stale/invalid in-memory list must not be written).
+	if _, verr := parseAlertConfigs(string(newBytes)); verr != nil {
+		return fmt.Sprintf(":warning: The in-memory snapshot is itself invalid (%v) — refusing to write it. The KV value needs manual repair.", verr)
+	}
+	// F-002: compare-and-set on the EXACT corrupt bytes we read. If another node
+	// already changed KV (e.g. repaired it) since our read, abort rather than
+	// clobber the newer valid state with our stale snapshot.
+	set, appErr := p.API.KVCompareAndSet(kvKeyAlertConfigs, raw, newBytes)
+	if appErr != nil {
+		return fmt.Sprintf(":warning: Failed to write the repaired receiver list to KV: %v", appErr)
+	}
+	if !set {
+		return ":warning: The receiver list in KV changed while repairing (another node may have already fixed it). Re-run `/alertmanager repair` to re-check before forcing."
 	}
 	go p.broadcastConfigReload() // peers reload the now-valid KV
-	p.auditLog("config.repair", args.UserId, "", args.ChannelId, "success")
-	return fmt.Sprintf(":white_check_mark: Repaired the receiver-list KV value from the in-memory snapshot (**%d** receiver(s)). Peers notified to reload.", len(inMemory)), nil
+	p.auditLog("config.repair", userID, "", channelID, "success")
+	return fmt.Sprintf(":white_check_mark: Repaired the receiver-list KV value from the in-memory snapshot (**%d** receiver(s)). Peers notified to reload.", len(inMemory))
 }

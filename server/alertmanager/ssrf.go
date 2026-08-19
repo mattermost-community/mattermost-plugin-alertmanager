@@ -36,45 +36,69 @@ var cgnatNet = func() *net.IPNet {
 	return n
 }()
 
-// IsBlockedIP reports whether ip is in a range the plugin blocks BY DEFAULT for
-// an Alertmanager call (i.e. when no allowlist is configured). Two tiers, both
-// blocked by default; an explicit AlertManagerAllowedCIDRs entry overrides either
-// (see CheckDestinationIP):
-//   - Never-legit: loopback (reaches Mattermost itself), link-local (incl. the
-//     169.254.169.254 cloud-metadata endpoint), multicast, unspecified.
-//   - Internal/non-public: RFC1918 + IPv6 ULA (net.IP.IsPrivate) and CGNAT
-//     (100.64/10). These CAN be a legitimate in-cluster Alertmanager, so the
-//     admin re-enables them by allowlisting the specific CIDR — that is the
-//     deliberate "block internal SSRF by default" posture (F-001).
+// normalizeIP maps an IPv4-mapped IPv6 address to its 4-byte form so mapped
+// variants (e.g. ::ffff:169.254.169.254) are classified the same as the bare v4.
+func normalizeIP(ip net.IP) net.IP {
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	return ip
+}
+
+// isHardBlockedIP reports whether ip is in a range that is NEVER a legitimate
+// Alertmanager and must be blocked even when an allowlist matches it (F-001
+// hardening): link-local (incl. the 169.254.169.254 cloud-metadata endpoint and
+// fe80::/10), multicast, and unspecified. This is what stops a broad allowlist
+// entry (e.g. a mistaken 10.0.0.0/8-that-somehow-widens, or the /0 we reject
+// outright) from re-enabling metadata SSRF. Loopback is deliberately NOT here —
+// a same-host Alertmanager on 127.0.0.1 is a real (if narrow) case, re-enabled
+// only by an explicit allowlist entry.
+func isHardBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	ip = normalizeIP(ip)
+	return ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
+}
+
+// IsBlockedIP reports whether ip is blocked BY DEFAULT (no allowlist): the
+// hard-blocked ranges above PLUS the soft tier that an allowlist CAN re-enable —
+// loopback (reaches Mattermost itself) and internal/non-public ranges (RFC1918 +
+// IPv6 ULA via net.IP.IsPrivate, and CGNAT 100.64/10). The soft tier can be a
+// legitimate in-cluster/same-host Alertmanager, so the admin re-enables it by
+// allowlisting its specific CIDR.
 func IsBlockedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4 // normalize IPv4-mapped IPv6 so mapped forms are caught too
+	if isHardBlockedIP(ip) {
+		return true
 	}
-	return ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified() ||
-		ip.IsPrivate() ||
-		cgnatNet.Contains(ip)
+	n := normalizeIP(ip)
+	return n.IsLoopback() || n.IsPrivate() || cgnatNet.Contains(n)
 }
 
 // CheckDestinationIP reports whether ip may be dialed for an Alertmanager call,
 // returning a descriptive error when it may not. Single source of truth for both
 // the dial-time guard and the save-time URL validation, so the two never disagree
-// (F-006: a literal loopback/private URL the admin allowlisted must SAVE, not just
-// dial).
+// (F-006).
 //
-// Precedence — an explicit allowlist entry ALWAYS wins (matches "reject … unless
-// allowlisted"): if AlertManagerAllowedCIDRs contains ip, permit it even if it's a
-// normally-blocked range (this re-enables a same-host or in-cluster Alertmanager).
-// If an allowlist is set and ip is NOT in it, reject. With NO allowlist, block the
-// default-blocked ranges (see IsBlockedIP) and allow only public addresses.
+// Precedence:
+//  1. Hard-blocked ranges (metadata/link-local/multicast/unspecified) are ALWAYS
+//     rejected — no allowlist entry, however broad, can re-enable them (F-001:
+//     an "allow all" CIDR must not turn the guard off for cloud metadata).
+//  2. Otherwise, if an allowlist is configured, permit iff ip is in it (this
+//     re-enables loopback/private/in-cluster targets), else reject.
+//  3. With no allowlist, block the soft tier (loopback + private) and allow only
+//     public addresses.
 func CheckDestinationIP(ip net.IP) error {
+	if isHardBlockedIP(ip) {
+		return fmt.Errorf("refusing to connect to %s: link-local/cloud-metadata/multicast/unspecified addresses are never valid Alertmanager targets (not overridable by AlertManagerAllowedCIDRs)", ip)
+	}
 	if allowed := allowedNets.Load(); allowed != nil && len(*allowed) > 0 {
 		for _, n := range *allowed {
 			if n.Contains(ip) {
@@ -84,7 +108,7 @@ func CheckDestinationIP(ip net.IP) error {
 		return fmt.Errorf("refusing to connect to %s: not in the configured Alertmanager allowlist (AlertManagerAllowedCIDRs)", ip)
 	}
 	if IsBlockedIP(ip) {
-		return fmt.Errorf("refusing to connect to %s: loopback/link-local/metadata/multicast/private/internal addresses are blocked by default (SSRF guard); add its CIDR to AlertManagerAllowedCIDRs to permit an in-cluster Alertmanager", ip)
+		return fmt.Errorf("refusing to connect to %s: loopback/private/internal addresses are blocked by default (SSRF guard); add its CIDR to AlertManagerAllowedCIDRs to permit an in-cluster Alertmanager", ip)
 	}
 	return nil
 }

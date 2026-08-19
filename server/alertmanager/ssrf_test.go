@@ -99,3 +99,24 @@ func TestSetAllowedNetsParsesForDial(t *testing.T) {
 		t.Errorf("out-of-range IP should be rejected with an allowlist message, got %v", err)
 	}
 }
+
+// TestHardBlockedNotOverridable is the F-001 hardening: metadata/link-local/
+// multicast/unspecified stay blocked even when an allowlist (including a
+// catch-all /0) matches them, so no single broad setting can re-enable
+// cloud-metadata SSRF.
+func TestHardBlockedNotOverridable(t *testing.T) {
+	t.Cleanup(func() { SetAllowedNets(nil) })
+	SetAllowedNets([]*net.IPNet{mustCIDR("0.0.0.0/0"), mustCIDR("::/0")})
+
+	for _, s := range []string{"169.254.169.254", "169.254.1.1", "fe80::1", "224.0.0.1", "0.0.0.0", "::"} {
+		if err := CheckDestinationIP(net.ParseIP(s)); err == nil {
+			t.Errorf("%s must stay blocked even under a /0 allowlist", s)
+		}
+	}
+	// The soft tier (public/loopback/private) IS re-enabled by /0 at the dial
+	// layer — which is exactly why the config parser rejects /0 (see the
+	// updateAlertmanagerAllowlist test); non-overridability is only for the hard tier.
+	if err := CheckDestinationIP(net.ParseIP("8.8.8.8")); err != nil {
+		t.Errorf("public IP should be permitted under a /0 allowlist: %v", err)
+	}
+}

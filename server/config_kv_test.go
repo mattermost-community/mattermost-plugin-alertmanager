@@ -42,6 +42,13 @@ func (f *fakeKVAPI) publishedEventIDs() []string {
 	return append([]string(nil), f.publishedEvents...)
 }
 
+// Logging/audit no-ops so paths that log (e.g. repair's auditLog) don't nil-deref.
+func (f *fakeKVAPI) LogInfo(string, ...any)               {}
+func (f *fakeKVAPI) LogWarn(string, ...any)               {}
+func (f *fakeKVAPI) LogError(string, ...any)              {}
+func (f *fakeKVAPI) LogAuditRec(*model.AuditRecord)       {}
+func (f *fakeKVAPI) KVSet(string, []byte) *model.AppError { return nil }
+
 func (f *fakeKVAPI) KVGet(key string) ([]byte, *model.AppError) {
 	return f.store[key], nil // absent key returns nil, treated as empty
 }

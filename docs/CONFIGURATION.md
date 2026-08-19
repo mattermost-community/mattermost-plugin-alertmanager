@@ -90,10 +90,13 @@ network your Alertmanager runs in:
 10.0.0.0/8
 ```
 
-An explicit entry also re-enables an otherwise-blocked address (e.g.
-`127.0.0.1/32` for a same-host Alertmanager). A malformed setting where **no**
-entry is a valid CIDR is ignored and the previous allowlist is kept (fail-closed),
-so a typo can't silently widen egress.
+An explicit entry re-enables an otherwise-blocked address (e.g. `127.0.0.1/32`
+for a same-host Alertmanager), **except** link-local / cloud-metadata /
+multicast / unspecified addresses, which are never reachable even if an entry
+would match them. A catch-all `0.0.0.0/0` or `::/0` is rejected outright — it
+would defeat the guard, so name your actual networks instead. A malformed
+setting where **no** entry is usable (all invalid, or only `/0`) is ignored and
+the previous allowlist is kept (fail-closed), so a typo can't silently widen egress.
 
 ### `MetricsToken`
 

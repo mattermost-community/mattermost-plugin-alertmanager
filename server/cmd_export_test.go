@@ -50,19 +50,38 @@ func TestRedactOtherChannelsInDiff(t *testing.T) {
 		}
 	})
 
-	t.Run("lines outside receivers block pass through", func(t *testing.T) {
+	t.Run("global-level secrets are redacted; non-secret global passes through (F-004)", func(t *testing.T) {
 		diff := `  global:
     smtp_from: alerts@example.com
-    smtp_password: 'global-pw-stays'
+    smtp_auth_password: 'global-pw-leak'
+    slack_api_url: 'https://hooks.slack.com/services/global-secret'
+    victorops_api_key: 'vo-key-leak'
+  receivers:
+    - name: webhook-other
+      webhook_configs:
+        - url: 'https://internal/hook-leak'
+      msteams_configs:
+        - authorization:
+            credentials: 'bearer-leak'
+      slack_configs:
+        - http_config:
+            oauth2:
+              client_secret: 'oauth-leak'
   route:
     receiver: default
 `
 		got := redactOtherChannelsInDiff(diff, nil)
-		// We only redact INSIDE receivers blocks. Global-level
-		// smtp_password is technically a secret but it's not in
-		// the redactor's scope today.
-		if !strings.Contains(got, "global-pw-stays") {
-			t.Fatalf("global-level content should pass through, got:\n%s", got)
+		for _, secret := range []string{"global-pw-leak", "global-secret", "vo-key-leak", "hook-leak", "bearer-leak", "oauth-leak"} {
+			if strings.Contains(got, secret) {
+				t.Fatalf("secret %q leaked through the diff (F-004):\n%s", secret, got)
+			}
+		}
+		// Non-secret global content and route structure still visible.
+		if !strings.Contains(got, "alerts@example.com") {
+			t.Fatalf("non-secret global content should pass through:\n%s", got)
+		}
+		if !strings.Contains(got, "receiver: default") {
+			t.Fatalf("route structure should pass through:\n%s", got)
 		}
 	})
 

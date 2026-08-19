@@ -29,12 +29,20 @@ func (p *Plugin) updateAlertmanagerAllowlist(raw string) {
 	}
 
 	var nets []*net.IPNet
-	invalid := 0
 	for _, field := range fields {
 		_, n, err := net.ParseCIDR(field)
 		if err != nil {
-			invalid++
 			p.API.LogWarn("ignoring invalid AlertManagerAllowedCIDRs entry", "entry", field, "err", err.Error())
+			continue
+		}
+		// Reject a catch-all /0 (0.0.0.0/0, ::/0): it would allow every address,
+		// re-enabling loopback (Mattermost's own API) and every internal service —
+		// turning "SSRF blocked by default" into "SSRF disabled by one setting"
+		// (F-001). An allowlist must name actual networks; hard-blocked ranges
+		// (metadata/link-local/multicast) stay blocked regardless via
+		// CheckDestinationIP, but /0 is never a sensible allowlist entry.
+		if ones, _ := n.Mask.Size(); ones == 0 {
+			p.API.LogWarn("ignoring catch-all AlertManagerAllowedCIDRs entry (/0 would disable the SSRF guard); list the actual Alertmanager network instead", "entry", field)
 			continue
 		}
 		nets = append(nets, n)
@@ -45,7 +53,7 @@ func (p *Plugin) updateAlertmanagerAllowlist(raw string) {
 	// widen egress. Preserve the previous known-good allowlist and log loudly
 	// instead of installing an empty (allow-more) one.
 	if len(nets) == 0 {
-		p.API.LogError("AlertManagerAllowedCIDRs has entries but NONE are valid CIDRs; keeping the previous allowlist unchanged (fix the setting to change egress policy)")
+		p.API.LogError("AlertManagerAllowedCIDRs has entries but none are usable (all invalid or catch-all /0); keeping the previous allowlist unchanged (fix the setting to change egress policy)")
 		return
 	}
 	alertmanager.SetAllowedNets(nets)

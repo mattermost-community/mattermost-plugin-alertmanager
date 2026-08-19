@@ -405,7 +405,15 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 // service_key + routing_key + integration_url (PagerDuty / Opsgenie
 // / generic webhook). Adding more is cheap; the conservative default
 // avoids redacting keys that look secret but aren't.
-var redactSensitiveLineRegex = regexp.MustCompile(`^(\s+(?:-\s+)?(?:api_url|password|service_key|routing_key|integration_url|auth_token|bearer_token|webhook_url|url|secret):\s+).+$`)
+// redactSensitiveLineRegex matches a YAML scalar line whose KEY looks
+// secret-bearing, case-insensitively and by substring so it catches the many
+// Alertmanager variants (F-004): password / auth_password / smtp_auth_password,
+// secret / client_secret, *_token / bot_token / bearer_token, api_key,
+// credentials (incl. authorization.credentials), service_key, routing_key,
+// integration_url, webhook_url, api_url / slack_api_url — plus a key named
+// exactly `url` (generic webhook_configs). Over-matching a non-secret URL in the
+// diff is acceptable; leaking a real secret is not.
+var redactSensitiveLineRegex = regexp.MustCompile(`(?i)^(\s+(?:-\s+)?(?:[a-z0-9_]*(?:password|passwd|secret|token|api[_-]?key|credential|service_key|routing_key|integration_url|webhook_url|api_url)[a-z0-9_]*|url):\s+).+$`)
 
 // receiverNameLineRegex captures the receiver name on a `- name: foo`
 // list entry. Used by redactOtherChannelsInDiff to track which
@@ -462,14 +470,16 @@ func redactOtherChannelsInDiff(diffDisplay string, ownReceiverNames map[string]b
 			}
 		}
 
-		// Redaction trigger: context line (not addition), inside the
-		// receivers block, inside a receiver that isn't ours.
-		shouldRedact := prefix == "  " &&
-			inReceiversBlock &&
-			currentReceiver != "" &&
-			!ownReceiverNames[currentReceiver]
-
-		if shouldRedact {
+		// Redact a sensitive line EVERYWHERE except:
+		//   - additions (`+ `): the caller's own proposed config — they need the
+		//     api_url to paste, so it's shown intentionally.
+		//   - context inside the caller's OWN receiver block: their own secrets.
+		// So global/top-level secrets (e.g. global.smtp_auth_password,
+		// global.slack_api_url) and other channels' receiver secrets are all
+		// redacted from the DM'd diff, not just non-owned receiver blocks (F-004).
+		isAddition := prefix == "+ "
+		inOwnReceiver := inReceiversBlock && currentReceiver != "" && ownReceiverNames[currentReceiver]
+		if !isAddition && !inOwnReceiver {
 			if m := redactSensitiveLineRegex.FindStringSubmatch(body); m != nil {
 				body = m[1] + "<REDACTED>"
 				line = prefix + body
