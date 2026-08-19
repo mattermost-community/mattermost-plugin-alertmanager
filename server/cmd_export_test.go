@@ -130,6 +130,40 @@ func TestRedactOtherChannelsInDiff(t *testing.T) {
 			t.Fatalf("routing_key leaked, got:\n%s", got)
 		}
 	})
+
+	t.Run("flow-style YAML secrets are redacted", func(t *testing.T) {
+		// Alertmanager accepts flow-style ({ } / [ ]); the line-anchored block-style
+		// regex can't see keys that aren't at the start of the line. All three secrets
+		// below sit inside flow collections and must still be masked.
+		diff := `  receivers:
+    - name: other-team
+      webhook_configs: [{url: "https://mm.example/hooks/flow-secret", send_resolved: true}]
+      http_config: {proxy_url: "http://fuser:fpass@proxy.example:8080"}
+      pagerduty_configs: [{service_key: flow-pd-key}]
+`
+		got := redactOtherChannelsInDiff(diff, nil)
+		for _, secret := range []string{"flow-secret", "fuser", "fpass", "flow-pd-key"} {
+			if strings.Contains(got, secret) {
+				t.Fatalf("flow-style secret %q leaked through the diff:\n%s", secret, got)
+			}
+		}
+		// Non-secret flow keys on the same line stay visible (only the value is masked).
+		if !strings.Contains(got, "send_resolved") {
+			t.Fatalf("non-secret flow key over-redacted:\n%s", got)
+		}
+	})
+
+	t.Run("own-channel flow-style secrets are NOT redacted", func(t *testing.T) {
+		// The caller needs their own additions/context intact to paste.
+		diff := `  receivers:
+    - name: own-team
+      webhook_configs: [{url: "https://mm.example/hooks/keep-me"}]
+`
+		got := redactOtherChannelsInDiff(diff, map[string]bool{"own-team": true})
+		if !strings.Contains(got, "keep-me") {
+			t.Fatalf("own-channel flow-style URL should be preserved:\n%s", got)
+		}
+	})
 }
 
 // TestValidateMergedConfig pins the contract that schema-invalid

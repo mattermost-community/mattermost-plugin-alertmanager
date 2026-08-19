@@ -19,15 +19,44 @@ import (
 // (a hostname that resolves to a safe IP at save time and to metadata at request
 // time) which a save-time-only string check cannot.
 
-// allowedNets is the admin-configured allowlist of CIDRs an Alertmanager may
-// resolve to. Empty/nil => allow any address EXCEPT the always-blocked ranges.
-// Held in an atomic.Pointer because it's set on the config-change goroutine and
-// read on every dial from request goroutines.
-var allowedNets atomic.Pointer[[]*net.IPNet]
+// allowlistState is the installed SSRF destination policy. Three states so a
+// misconfigured (non-empty but unusable) allowlist can fail CLOSED instead of
+// falling back to the wider "no allowlist" default on a cold start:
+//   - Load() == nil OR (denyAll=false, nets empty): NO allowlist — public
+//     destinations are allowed, the soft tier (loopback/private) is blocked.
+//   - denyAll == true: block EVERY destination. Installed when the admin set a
+//     non-empty AlertManagerAllowedCIDRs that parsed to zero usable CIDRs and no
+//     previous good allowlist exists (see updateAlertmanagerAllowlist).
+//   - nets non-empty: permit only IPs inside these CIDRs (re-enables loopback/
+//     private/in-cluster targets); everything else is blocked.
+type allowlistState struct {
+	denyAll bool
+	nets    []*net.IPNet
+}
+
+// allowlist holds the current destination policy in an atomic.Pointer because
+// it's set on the config-change goroutine and read on every dial from request
+// goroutines.
+var allowlist atomic.Pointer[allowlistState]
 
 // SetAllowedNets replaces the Alertmanager destination allowlist. Passing nil or
 // an empty slice means "no allowlist" — only the always-blocked ranges are denied.
-func SetAllowedNets(nets []*net.IPNet) { allowedNets.Store(&nets) }
+func SetAllowedNets(nets []*net.IPNet) { allowlist.Store(&allowlistState{nets: nets}) }
+
+// SetDenyAll installs the fail-closed state: every Alertmanager destination is
+// refused. Used when a non-empty allowlist setting yields zero usable CIDRs and
+// there is no previous good allowlist to preserve — the admin tried to RESTRICT
+// egress, so falling back to "allow public" would fail open (finding: all-invalid
+// allowlist fails open on cold start).
+func SetDenyAll() { allowlist.Store(&allowlistState{denyAll: true}) }
+
+// HasUsableAllowlist reports whether a non-empty CIDR allowlist is currently
+// installed. Lets the config parser distinguish "keep the live allowlist on a
+// transient bad edit" from "cold start with no allowlist → deny all".
+func HasUsableAllowlist() bool {
+	st := allowlist.Load()
+	return st != nil && !st.denyAll && len(st.nets) > 0
+}
 
 // cgnatNet is the RFC 6598 shared address space (carrier-grade NAT), which
 // net.IP.IsPrivate does NOT cover but which is still internal/non-public.
@@ -91,21 +120,28 @@ func IsBlockedIP(ip net.IP) bool {
 //  1. Hard-blocked ranges (metadata/link-local/multicast/unspecified) are ALWAYS
 //     rejected — no allowlist entry, however broad, can re-enable them (F-001:
 //     an "allow all" CIDR must not turn the guard off for cloud metadata).
-//  2. Otherwise, if an allowlist is configured, permit iff ip is in it (this
+//  2. Deny-all state (a non-empty setting that yielded zero usable CIDRs, cold
+//     start): reject everything until the setting is fixed — fail closed.
+//  3. Otherwise, if an allowlist is configured, permit iff ip is in it (this
 //     re-enables loopback/private/in-cluster targets), else reject.
-//  3. With no allowlist, block the soft tier (loopback + private) and allow only
+//  4. With no allowlist, block the soft tier (loopback + private) and allow only
 //     public addresses.
 func CheckDestinationIP(ip net.IP) error {
 	if isHardBlockedIP(ip) {
 		return fmt.Errorf("refusing to connect to %s: link-local/cloud-metadata/multicast/unspecified addresses are never valid Alertmanager targets (not overridable by AlertManagerAllowedCIDRs)", ip)
 	}
-	if allowed := allowedNets.Load(); allowed != nil && len(*allowed) > 0 {
-		for _, n := range *allowed {
-			if n.Contains(ip) {
-				return nil
-			}
+	if st := allowlist.Load(); st != nil {
+		if st.denyAll {
+			return fmt.Errorf("refusing to connect to %s: AlertManagerAllowedCIDRs is set but has no usable CIDRs; all Alertmanager egress is denied until the setting is fixed", ip)
 		}
-		return fmt.Errorf("refusing to connect to %s: not in the configured Alertmanager allowlist (AlertManagerAllowedCIDRs)", ip)
+		if len(st.nets) > 0 {
+			for _, n := range st.nets {
+				if n.Contains(ip) {
+					return nil
+				}
+			}
+			return fmt.Errorf("refusing to connect to %s: not in the configured Alertmanager allowlist (AlertManagerAllowedCIDRs)", ip)
+		}
 	}
 	if IsBlockedIP(ip) {
 		return fmt.Errorf("refusing to connect to %s: loopback/private/internal addresses are blocked by default (SSRF guard); add its CIDR to AlertManagerAllowedCIDRs to permit an in-cluster Alertmanager", ip)

@@ -105,8 +105,10 @@ for a same-host Alertmanager), **except** link-local / cloud-metadata /
 multicast / unspecified addresses, which are never reachable even if an entry
 would match them. A catch-all `0.0.0.0/0` or `::/0` is rejected outright — it
 would defeat the guard, so name your actual networks instead. A malformed
-setting where **no** entry is usable (all invalid, or only `/0`) is ignored and
-the previous allowlist is kept (fail-closed), so a typo can't silently widen egress.
+setting where **no** entry is usable (all invalid, or only `/0`) fails closed: if
+a previous good allowlist is live it is kept (a typo can't silently widen egress);
+if none is (e.g. first load / server start), **all** Alertmanager egress is denied
+until the setting is fixed — it never falls back to allowing public destinations.
 
 ### `MetricsToken`
 

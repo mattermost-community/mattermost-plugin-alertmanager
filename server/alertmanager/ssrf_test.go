@@ -121,6 +121,39 @@ func TestHardBlockedNotOverridable(t *testing.T) {
 	}
 }
 
+// TestDenyAll is the fail-closed state used when a non-empty allowlist yields
+// zero usable CIDRs on a cold start: EVERY destination — public included — is
+// refused until the setting is fixed. HasUsableAllowlist must report false in
+// that state so the config parser doesn't mistake deny-all for a live allowlist.
+func TestDenyAll(t *testing.T) {
+	t.Cleanup(func() { SetAllowedNets(nil) })
+
+	SetDenyAll()
+	if HasUsableAllowlist() {
+		t.Fatal("deny-all is not a usable allowlist")
+	}
+	for _, s := range []string{"8.8.8.8", "203.0.113.9", "10.0.0.5", "127.0.0.1"} {
+		if err := CheckDestinationIP(net.ParseIP(s)); err == nil {
+			t.Errorf("deny-all must refuse %s", s)
+		}
+	}
+
+	// A valid allowlist clears deny-all and is reported usable.
+	SetAllowedNets([]*net.IPNet{mustCIDR("10.0.0.0/8")})
+	if !HasUsableAllowlist() {
+		t.Fatal("a non-empty allowlist must be reported usable")
+	}
+	if err := CheckDestinationIP(net.ParseIP("10.0.0.5")); err != nil {
+		t.Errorf("allowlisted IP should be permitted after clearing deny-all: %v", err)
+	}
+
+	// No allowlist (nil) is not "usable" either — it's the allow-public default.
+	SetAllowedNets(nil)
+	if HasUsableAllowlist() {
+		t.Fatal("nil allowlist must not report as usable")
+	}
+}
+
 // TestNewTransportDisablesProxy is the F-001 regression: the Alertmanager
 // transport must not use an environment proxy, or a proxied request would make
 // the dial guard validate the PROXY's IP while the proxy fetches the real

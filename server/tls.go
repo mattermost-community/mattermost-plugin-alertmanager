@@ -14,9 +14,12 @@ import (
 // updateAlertmanagerAllowlist parses the AlertManagerAllowedCIDRs setting and
 // installs it as the SSRF destination allowlist (F-001). Entries may be comma-,
 // space-, or newline-separated CIDRs. Invalid entries are logged and skipped
-// rather than failing the config load; an empty/all-invalid result means "no
-// allowlist" — the always-blocked ranges (loopback/link-local/metadata/multicast/
-// unspecified) are still denied by the dial guard regardless.
+// rather than failing the config load. An EMPTY setting means "no allowlist"
+// (public allowed, soft tier blocked). A NON-EMPTY setting that yields zero
+// usable CIDRs fails closed: keep a previous good allowlist if one is live, else
+// deny all egress (cold start must not fall back to allow-public). The always-
+// blocked ranges (loopback/link-local/metadata/multicast/unspecified) are denied
+// by the dial guard regardless of this setting.
 func (p *Plugin) updateAlertmanagerAllowlist(raw string) {
 	split := func(r rune) bool { return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t' }
 	fields := strings.FieldsFunc(raw, split)
@@ -48,12 +51,21 @@ func (p *Plugin) updateAlertmanagerAllowlist(raw string) {
 		nets = append(nets, n)
 	}
 
-	// F-002: fail CLOSED on an all-invalid (non-empty) allowlist. A typo that
-	// leaves zero valid CIDRs must NOT silently drop the allowlist — that would
-	// widen egress. Preserve the previous known-good allowlist and log loudly
-	// instead of installing an empty (allow-more) one.
+	// Fail CLOSED on a non-empty-but-unusable allowlist (all invalid or catch-all
+	// /0). The admin intended to RESTRICT egress and got it wrong, so we must not
+	// fall back to the wider "no allowlist = public allowed" default.
 	if len(nets) == 0 {
-		p.API.LogError("AlertManagerAllowedCIDRs has entries but none are usable (all invalid or catch-all /0); keeping the previous allowlist unchanged (fix the setting to change egress policy)")
+		if alertmanager.HasUsableAllowlist() {
+			// A previous good allowlist is live — keep it rather than break a
+			// running deployment on a transient fat-finger. This never widens.
+			p.API.LogError("AlertManagerAllowedCIDRs has entries but none are usable (all invalid or catch-all /0); keeping the previous allowlist unchanged (fix the setting to change egress policy)")
+			return
+		}
+		// Cold start / no previous allowlist: deny ALL Alertmanager egress until
+		// the setting is fixed. Preserving the nil default here would fail OPEN —
+		// public destinations would stay dialable despite an attempted allowlist.
+		p.API.LogError("AlertManagerAllowedCIDRs has entries but none are usable (all invalid or catch-all /0) and no previous allowlist exists; denying ALL Alertmanager egress until the setting is fixed")
+		alertmanager.SetDenyAll()
 		return
 	}
 	alertmanager.SetAllowedNets(nets)

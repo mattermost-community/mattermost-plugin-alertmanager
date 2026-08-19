@@ -84,6 +84,12 @@ func (p *Plugin) repairAlertConfigsKV(userID, channelID string, force bool) stri
 	if !set {
 		return ":warning: The receiver list in KV changed while repairing (another node may have already fixed it). Re-run `/alertmanager repair` to re-check before forcing."
 	}
+	// Apply the sanitized parsed list to THIS node's memory now — the CAS only
+	// fixed KV. Without this, the writing node keeps serving its stale (possibly
+	// un-sanitized, pre-hardening) in-memory snapshot until the next periodic
+	// reload; peers converge via the broadcast below (finding: repair leaves local
+	// memory unsanitized until reload).
+	p.applyAlertConfigsToMemory(parsed)
 	go p.broadcastConfigReload() // peers reload the now-valid KV
 	p.auditLog("config.repair", userID, "", channelID, "success")
 	return fmt.Sprintf(":white_check_mark: Repaired the receiver-list KV value from the in-memory snapshot (**%d** receiver(s)). Peers notified to reload.", len(inMemory))

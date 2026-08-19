@@ -415,6 +415,17 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 // URL in the diff is acceptable; leaking a real secret is not.
 var redactSensitiveLineRegex = regexp.MustCompile(`(?i)^(\s+(?:-\s+)?(?:[a-z0-9_]*(?:password|passwd|secret|token|api[_-]?key|credential|service_key|routing_key)[a-z0-9_]*|[a-z0-9_]*url):\s+).+$`)
 
+// redactFlowStyleValueRegex catches a sensitive key/value pair embedded in
+// FLOW-style YAML — inside { } or [ ] — which the line-anchored block-style regex
+// above cannot see because the key isn't at the start of the line. Alertmanager
+// accepts flow-style, so a user's loaded alertmanager.yml can carry secrets this
+// way, e.g. `webhook_configs: [{url: "https://…/hooks/secret"}]` or
+// `http_config: {proxy_url: "http://user:pass@proxy:8080"}`. Same key set as the
+// block regex; ReplaceAll masks EVERY pair on the line. Group 1 is the retained
+// `key:` prefix, group 2 is the value (double-quoted, single-quoted, or an
+// unquoted run up to the next `,`/`}`/`]`/space) that gets masked.
+var redactFlowStyleValueRegex = regexp.MustCompile(`(?i)((?:[a-z0-9_]*(?:password|passwd|secret|token|api[_-]?key|credential|service_key|routing_key)[a-z0-9_]*|[a-z0-9_]*url)\s*:\s*)("(?:[^"\\]|\\.)*"|'[^']*'|[^,}\]\s]+)`)
+
 // receiverNameLineRegex captures the receiver name on a `- name: foo`
 // list entry. Used by redactOtherChannelsInDiff to track which
 // receiver block we're currently inside while walking the diff.
@@ -524,6 +535,12 @@ func redactOtherChannelsInDiff(diffDisplay string, ownReceiverNames map[string]b
 				if strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
 					blockScalarKeyCol = keyColumn(body)
 				}
+			} else if redactFlowStyleValueRegex.MatchString(body) {
+				// No block-style match, but the line carries a sensitive key/value
+				// pair in flow-style YAML (inside { } / [ ]). Mask every such value
+				// on the line so flow-style configs don't leak secrets the anchored
+				// block regex can't see.
+				line = prefix + redactFlowStyleValueRegex.ReplaceAllString(body, "${1}<REDACTED>")
 			}
 		}
 		out = append(out, line)
