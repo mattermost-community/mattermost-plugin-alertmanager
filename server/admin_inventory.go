@@ -793,7 +793,7 @@ func (p *Plugin) runInventoryWebhookTest(targetSlugs []string, configs []alertCo
 			continue
 		}
 		webhookURL := p.webhookURLForReceiver(ac)
-		err := postValidateTestMessage(webhookURL, ac.Name)
+		err := postValidateTestMessage(webhookURL, ac.WebhookID, ac.Name)
 		item := actionResult{Name: ac.Name, OK: err == nil}
 		if err == nil {
 			item.Detail = "Posted test payload — check the channel for the message."

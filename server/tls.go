@@ -19,14 +19,34 @@ import (
 // unspecified) are still denied by the dial guard regardless.
 func (p *Plugin) updateAlertmanagerAllowlist(raw string) {
 	split := func(r rune) bool { return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t' }
+	fields := strings.FieldsFunc(raw, split)
+
+	// Empty setting = no allowlist. Under the block-by-default posture that means
+	// only public destinations are dialable (secure), so it's safe to install.
+	if len(fields) == 0 {
+		alertmanager.SetAllowedNets(nil)
+		return
+	}
+
 	var nets []*net.IPNet
-	for _, field := range strings.FieldsFunc(raw, split) {
+	invalid := 0
+	for _, field := range fields {
 		_, n, err := net.ParseCIDR(field)
 		if err != nil {
+			invalid++
 			p.API.LogWarn("ignoring invalid AlertManagerAllowedCIDRs entry", "entry", field, "err", err.Error())
 			continue
 		}
 		nets = append(nets, n)
+	}
+
+	// F-002: fail CLOSED on an all-invalid (non-empty) allowlist. A typo that
+	// leaves zero valid CIDRs must NOT silently drop the allowlist — that would
+	// widen egress. Preserve the previous known-good allowlist and log loudly
+	// instead of installing an empty (allow-more) one.
+	if len(nets) == 0 {
+		p.API.LogError("AlertManagerAllowedCIDRs has entries but NONE are valid CIDRs; keeping the previous allowlist unchanged (fix the setting to change egress policy)")
+		return
 	}
 	alertmanager.SetAllowedNets(nets)
 }

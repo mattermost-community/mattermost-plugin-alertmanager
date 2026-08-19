@@ -114,6 +114,7 @@ func TestValidateAlertManagerURL(t *testing.T) {
 		{"IPv4 loopback rejected", "http://127.0.0.1:8065", true},
 		{"cloud metadata (link-local) rejected", "http://169.254.169.254", true},
 		{"unspecified address rejected", "http://0.0.0.0:9093", true},
+		{"private RFC1918 rejected by default (no allowlist)", "http://10.0.0.5:9093", true},
 		{"ftp scheme rejected", "ftp://am:9093", true},
 		{"embedded credentials rejected", "http://user:pass@am:9093", true},
 		{"query string rejected", "http://am:9093?x=y", true},

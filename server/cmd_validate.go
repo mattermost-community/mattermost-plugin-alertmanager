@@ -191,7 +191,7 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		// (c) Webhook accepts POST — opt-in
 		if webhookTest {
 			webhookURL := p.webhookURLForReceiver(c)
-			if err := postValidateTestMessage(webhookURL, c.Name); err != nil {
+			if err := postValidateTestMessage(webhookURL, c.WebhookID, c.Name); err != nil {
 				r.WebhookAccepts = "✗ " + err.Error()
 			} else {
 				r.WebhookAccepts = "✓ (test post sent to channel)"
@@ -512,7 +512,7 @@ func doValidateAMStatus(amURL string) (out struct {
 //
 // The message is visible in the channel — that's the cost of running
 // check (c). User opts in by passing --webhook-test.
-func postValidateTestMessage(webhookURL, receiverName string) error {
+func postValidateTestMessage(webhookURL, hookID, receiverName string) error {
 	payload := map[string]any{
 		"text":     fmt.Sprintf(":mag: Validate check: this is a test message confirming the `%s` receiver's webhook is reachable. Safe to delete.", receiverName),
 		"username": "alertmanagerbot",
@@ -524,13 +524,18 @@ func postValidateTestMessage(webhookURL, receiverName string) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("bad URL: %w", err)
+		// Scrub: a url/parse error can echo the webhook URL, whose /hooks/<id> is
+		// a bearer token (F-002). These errors surface in the command/inventory
+		// result, so the raw ID must not ride along.
+		return fmt.Errorf("bad URL: %s", scrubHookID(err.Error(), hookID))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST failed: %w", err)
+		// Do() returns a *url.Error containing the full webhook URL (with the raw
+		// hook ID) on transport failure — scrub it before it reaches the result.
+		return fmt.Errorf("POST failed: %s", scrubHookID(err.Error(), hookID))
 	}
 	defer func() { _ = resp.Body.Close() }()
 

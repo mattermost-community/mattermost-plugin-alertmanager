@@ -37,7 +37,7 @@
                 "key": "AlertManagerAllowedCIDRs",
                 "display_name": "Alertmanager allowed destinations (CIDRs)",
                 "type": "longtext",
-                "help_text": "Optional SSRF allowlist of CIDRs the plugin may connect to for Alertmanager API calls (one per line or comma-separated, e.g. `10.0.0.0/8` or `10.42.7.9/32`). Empty allows any address EXCEPT always-blocked ranges (loopback, link-local incl. cloud metadata 169.254.169.254, multicast, unspecified). Set this to the network your Alertmanager runs in to also block SSRF to other internal services.",
+                "help_text": "SSRF allowlist of CIDRs the plugin may connect to for Alertmanager API calls (one per line or comma-separated, e.g. `10.0.0.0/8` or `10.42.7.9/32`). The plugin BLOCKS private/internal, loopback, link-local (incl. cloud metadata 169.254.169.254), multicast, and unspecified addresses by default, so an in-cluster Alertmanager on a private IP / *.svc requires listing its CIDR here. Empty = only PUBLIC destinations are reachable. An explicit entry also re-enables an otherwise-blocked address (e.g. `127.0.0.1/32` for a same-host Alertmanager).",
                 "placeholder": "10.0.0.0/8\n192.168.0.0/16",
                 "default": ""
             },

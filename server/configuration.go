@@ -319,11 +319,14 @@ func validateAlertManagerURL(raw string) error {
 	if host == "" {
 		return fmt.Errorf("AlertManagerURL has no host")
 	}
-	// Fast SSRF feedback for a literal-IP host (F-001): reject the always-blocked
-	// ranges at save time. Hostnames are validated at dial time (post-DNS), which
-	// is authoritative and defeats DNS rebinding — see the alertmanager dial guard.
-	if ip := net.ParseIP(host); ip != nil && alertmanager.IsBlockedIP(ip) {
-		return fmt.Errorf("AlertManagerURL points at a blocked address %q: loopback, link-local / cloud-metadata, multicast, and unspecified addresses are not valid Alertmanager targets", host)
+	// SSRF check for a literal-IP host (F-001), allowlist-aware via the SAME
+	// decision the dial guard uses (F-006: an allowlisted loopback/private literal
+	// must save, not just dial). Hostnames are validated at dial time (post-DNS,
+	// authoritative, rebinding-safe) — see the alertmanager dial guard.
+	if ip := net.ParseIP(host); ip != nil {
+		if err := alertmanager.CheckDestinationIP(ip); err != nil {
+			return fmt.Errorf("AlertManagerURL %q is a blocked destination: %w", host, err)
+		}
 	}
 	if !alertManagerHostRegex.MatchString(host) {
 		return fmt.Errorf("AlertManagerURL host contains invalid characters")
@@ -581,6 +584,11 @@ func (p *Plugin) OnConfigurationChange() error {
 		return err
 	}
 
+	// Install the SSRF destination allowlist BEFORE loading the receiver list, so
+	// the load-time URL validation below (which consults it, F-006) sees the
+	// current allowlist and doesn't blank an allowlisted loopback/private URL.
+	p.updateAlertmanagerAllowlist(raw.AlertManagerAllowedCIDRs)
+
 	// Load the receiver list from KV and swap the config under configWriteMu, so
 	// this can't interleave with a concurrent local updateConfigsAtomic and clobber
 	// a newer write with an older snapshot (F-003). KVGet needs a live API, so skip
@@ -617,8 +625,6 @@ func (p *Plugin) OnConfigurationChange() error {
 	// CA bundle (if set). Applied on every config change so admins
 	// can rotate certificates without a plugin restart.
 	p.updateAlertmanagerHTTPClient(raw.AlertManagerCABundle)
-	// Install the SSRF destination allowlist (F-001) — read live by the dial guard.
-	p.updateAlertmanagerAllowlist(raw.AlertManagerAllowedCIDRs)
 	return nil
 }
 

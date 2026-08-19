@@ -27,19 +27,21 @@ func TestIsBlockedIP(t *testing.T) {
 		"169.254.169.254", "169.254.1.1", "fe80::1", // link-local incl. metadata
 		"0.0.0.0", "::", // unspecified
 		"224.0.0.1", "ff02::1", // multicast
+		"10.0.0.5", "192.168.1.9", "172.16.3.4", // RFC1918 private (blocked by default)
+		"100.64.1.2",   // CGNAT / RFC6598
+		"fd12:3456::1", // IPv6 ULA
 	}
 	for _, s := range blocked {
 		if !IsBlockedIP(net.ParseIP(s)) {
-			t.Errorf("expected %s to be blocked", s)
+			t.Errorf("expected %s to be blocked by default", s)
 		}
 	}
 	allowed := []string{
-		"10.0.0.5", "192.168.1.9", "172.16.3.4", // private (legit in-cluster AM)
-		"8.8.8.8", "2001:db8::1", // public / documentation
+		"8.8.8.8", "1.1.1.1", "203.0.113.9", "2606:4700::1", // public
 	}
 	for _, s := range allowed {
 		if IsBlockedIP(net.ParseIP(s)) {
-			t.Errorf("expected %s NOT to be blocked", s)
+			t.Errorf("expected public %s NOT to be blocked", s)
 		}
 	}
 	if !IsBlockedIP(nil) {
@@ -53,10 +55,13 @@ func TestIsBlockedIP(t *testing.T) {
 func TestSafeDialControl(t *testing.T) {
 	t.Cleanup(func() { SetAllowedNets(nil) })
 
-	// No allowlist.
+	// No allowlist: only PUBLIC destinations are dialable (block-by-default).
 	SetAllowedNets(nil)
-	if err := safeDialControl("tcp", "10.0.0.5:9093", nil); err != nil {
-		t.Errorf("private IP should be allowed with no allowlist: %v", err)
+	if err := safeDialControl("tcp", "8.8.8.8:9093", nil); err != nil {
+		t.Errorf("public IP should be allowed with no allowlist: %v", err)
+	}
+	if err := safeDialControl("tcp", "10.0.0.5:9093", nil); err == nil {
+		t.Error("private RFC1918 must be blocked by default (no allowlist)")
 	}
 	if err := safeDialControl("tcp", "169.254.169.254:80", nil); err == nil {
 		t.Error("cloud metadata must be blocked with no allowlist")

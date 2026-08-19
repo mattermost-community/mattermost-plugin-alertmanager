@@ -225,7 +225,7 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 		if err := p.deleteIncomingWebhook(args.UserId, hookID); err != nil {
 			p.API.LogWarn("remove-all: could not delete orphaned webhook (config entries pruned)",
 				"webhook", redactHookID(hookID), "err", err.Error())
-			webhookFailures = append(webhookFailures, hookID)
+			webhookFailures = append(webhookFailures, redactHookID(hookID)) // F-002: fingerprint, not the raw bearer ID
 		}
 	}
 
@@ -238,7 +238,7 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 		b.WriteString(fmt.Sprintf("\nDeleted %d Mattermost webhook(s) whose last receiver was just removed.\n", len(orphans)-len(webhookFailures)))
 	}
 	if len(webhookFailures) > 0 {
-		b.WriteString(fmt.Sprintf("\n:warning: Couldn't delete %d underlying webhook(s) (config entries are gone, but webhook IDs may linger in System Console → Integrations): `%s`\n",
+		b.WriteString(fmt.Sprintf("\n:warning: Couldn't delete %d underlying webhook(s) — config entries are gone, but the webhooks may still be live. Find them by name in System Console → Integrations → Incoming Webhooks and remove them. Fingerprints: `%s`\n",
 			len(webhookFailures), strings.Join(webhookFailures, "`, `")))
 	}
 	b.WriteString("\nClean up the corresponding `slack_configs` blocks in `alertmanager.yml` and reload AM.")
@@ -324,7 +324,7 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 		if err := p.deleteIncomingWebhook(args.UserId, hookID); err != nil {
 			p.API.LogWarn("remove-set: could not delete orphaned webhook (config entries pruned)",
 				"webhook", redactHookID(hookID), "err", err.Error())
-			webhookFailures = append(webhookFailures, hookID)
+			webhookFailures = append(webhookFailures, redactHookID(hookID)) // F-002: fingerprint, not the raw bearer ID
 		}
 	}
 
@@ -337,7 +337,7 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 		b.WriteString(fmt.Sprintf("\nDeleted %d Mattermost webhook(s) whose last receiver was just removed.\n", len(orphans)-len(webhookFailures)))
 	}
 	if len(webhookFailures) > 0 {
-		b.WriteString(fmt.Sprintf("\n:warning: Couldn't delete %d underlying webhook(s) (config entries gone; webhook IDs may linger in System Console → Integrations): `%s`\n",
+		b.WriteString(fmt.Sprintf("\n:warning: Couldn't delete %d underlying webhook(s) — config entries gone, but the webhooks may still be live. Find them by name in System Console → Integrations → Incoming Webhooks and remove them. Fingerprints: `%s`\n",
 			len(webhookFailures), strings.Join(webhookFailures, "`, `")))
 	}
 	b.WriteString("\nRemove the matching `slack_configs` and `routes:` entries from your `alertmanager.yml` and reload AM.")

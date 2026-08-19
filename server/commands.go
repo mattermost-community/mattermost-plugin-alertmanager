@@ -27,6 +27,7 @@ const (
 		"- `/alertmanager metrics-token [generate]` — Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The token is `secret:true` in System Console so it can't be read back — regenerate here if lost (sysadmin)\n" +
 		"- `/alertmanager reconcile` — prune receivers whose Mattermost webhook has been deleted out-of-band (sysadmin; runs automatically every 5 min)\n" +
 		"- `/alertmanager remove <name|set|all> [--force]` — delete a receiver, a runbook set, or everything in this channel\n" +
+		"- `/alertmanager repair [--force]` — diagnose the receiver-list KV store; `--force` rewrites a corrupt blob from the plugin's last-known in-memory list (sysadmin; recovery-only)\n" +
 		"- `/alertmanager rotate <name>` — delete + recreate the webhook (new hook-id, new URL)\n" +
 		"- `/alertmanager rules` — links to the shipped sample Prometheus alerting rules (browsable HTML + downloadable YAML) so you can wire up the Prometheus side without cloning the repo\n" +
 		"- `/alertmanager silences` — list active silences (grouped by Alertmanager URL)\n" +
@@ -193,6 +194,12 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	root.AddCommand(remove)
 
+	repair := model.NewAutocompleteData("repair", "[--force]", "Diagnose/repair the receiver-list KV store; --force rewrites a corrupt blob from the last-known in-memory list (sysadmin; recovery-only)")
+	repair.AddStaticListArgument("Optional: overwrite a corrupt KV value from the in-memory snapshot (destructive)", false, []model.AutocompleteListItem{
+		{Item: "--force", HelpText: "Rewrite the receiver-list KV value from the plugin's last-known in-memory list. Use only when `repair` reports the KV blob is unreadable."},
+	})
+	root.AddCommand(repair)
+
 	rotate := model.NewAutocompleteData("rotate", "[name|all --overdue]", "Recreate webhook with a new hook-id. `all --overdue` rotates everything past the threshold set by System Console → WebhookRotationDays.")
 	rotate.AddTextArgument("Receiver name to rotate, OR `all` followed by --overdue to rotate everything past the rotation threshold in this channel", "[name|all]", "")
 	rotate.AddStaticListArgument("Optional flag — only valid after `all`", false, []model.AutocompleteListItem{
@@ -298,6 +305,9 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 		return joinErr(msg, err)
 	case "remove":
 		msg, err := p.handleRemove(args)
+		return joinErr(msg, err)
+	case "repair":
+		msg, err := p.handleRepair(args)
 		return joinErr(msg, err)
 	case "rotate":
 		msg, err := p.handleRotate(args)

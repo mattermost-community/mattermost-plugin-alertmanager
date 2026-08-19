@@ -21,6 +21,7 @@ the channel where you ran the command.
 | `metrics-token` | `[generate]` | Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The `MetricsToken` setting is `secret:true` and can't be read back from System Console — regenerate here if lost. | sysadmin |
 | `reconcile` | _(none)_ | Prune entries whose Mattermost webhook was deleted out-of-band | sysadmin |
 | `remove` | `<name>` \| `<set> --force` \| `all --force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
+| `repair` | `[--force]` | Diagnose the receiver-list KV store; `--force` rewrites a corrupt blob from the plugin's last-known in-memory list. Recovery-only — normal operation never needs it. | sysadmin |
 | `rotate` | `<name>` \| `all --overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
 | `silences` | _(none)_ | Active Alertmanager silences, grouped by AM URL | any user |
 | `status` | _(none)_ | Alertmanager version + uptime per backend | any user |

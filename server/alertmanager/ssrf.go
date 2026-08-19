@@ -29,11 +29,23 @@ var allowedNets atomic.Pointer[[]*net.IPNet]
 // an empty slice means "no allowlist" — only the always-blocked ranges are denied.
 func SetAllowedNets(nets []*net.IPNet) { allowedNets.Store(&nets) }
 
-// IsBlockedIP reports whether ip is in a range the plugin must never dial for an
-// Alertmanager call, regardless of allowlist: loopback (127/8, ::1 — reaches
-// Mattermost itself), link-local (169.254/16 incl. the 169.254.169.254 cloud
-// metadata endpoint, and fe80::/10), unspecified (0.0.0.0, ::), and multicast.
-// None is ever a legitimate Alertmanager. Exported for the save-time URL check.
+// cgnatNet is the RFC 6598 shared address space (carrier-grade NAT), which
+// net.IP.IsPrivate does NOT cover but which is still internal/non-public.
+var cgnatNet = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("100.64.0.0/10")
+	return n
+}()
+
+// IsBlockedIP reports whether ip is in a range the plugin blocks BY DEFAULT for
+// an Alertmanager call (i.e. when no allowlist is configured). Two tiers, both
+// blocked by default; an explicit AlertManagerAllowedCIDRs entry overrides either
+// (see CheckDestinationIP):
+//   - Never-legit: loopback (reaches Mattermost itself), link-local (incl. the
+//     169.254.169.254 cloud-metadata endpoint), multicast, unspecified.
+//   - Internal/non-public: RFC1918 + IPv6 ULA (net.IP.IsPrivate) and CGNAT
+//     (100.64/10). These CAN be a legitimate in-cluster Alertmanager, so the
+//     admin re-enables them by allowlisting the specific CIDR — that is the
+//     deliberate "block internal SSRF by default" posture (F-001).
 func IsBlockedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -46,20 +58,23 @@ func IsBlockedIP(ip net.IP) bool {
 		ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() ||
 		ip.IsMulticast() ||
-		ip.IsUnspecified()
+		ip.IsUnspecified() ||
+		ip.IsPrivate() ||
+		cgnatNet.Contains(ip)
 }
 
-// ipAllowed reports whether ip may be dialed.
+// CheckDestinationIP reports whether ip may be dialed for an Alertmanager call,
+// returning a descriptive error when it may not. Single source of truth for both
+// the dial-time guard and the save-time URL validation, so the two never disagree
+// (F-006: a literal loopback/private URL the admin allowlisted must SAVE, not just
+// dial).
 //
-// Precedence (matches "reject … unless allowlisted"): an explicit allowlist entry
-// ALWAYS wins — if the admin configured AlertManagerAllowedCIDRs and ip is in it,
-// permit it even if it's a normally-blocked range (this is how a legitimate
-// same-host Alertmanager on 127.0.0.1 is re-enabled: allowlist 127.0.0.1/32). If
-// an allowlist is set and ip is NOT in it, reject. With NO allowlist, block the
-// always-dangerous ranges (loopback/link-local/metadata/multicast/unspecified)
-// and allow everything else (so an in-cluster private-IP Alertmanager works
-// out of the box while cloud-metadata / self-SSRF are closed by default).
-func ipAllowed(ip net.IP) error {
+// Precedence — an explicit allowlist entry ALWAYS wins (matches "reject … unless
+// allowlisted"): if AlertManagerAllowedCIDRs contains ip, permit it even if it's a
+// normally-blocked range (this re-enables a same-host or in-cluster Alertmanager).
+// If an allowlist is set and ip is NOT in it, reject. With NO allowlist, block the
+// default-blocked ranges (see IsBlockedIP) and allow only public addresses.
+func CheckDestinationIP(ip net.IP) error {
 	if allowed := allowedNets.Load(); allowed != nil && len(*allowed) > 0 {
 		for _, n := range *allowed {
 			if n.Contains(ip) {
@@ -69,7 +84,7 @@ func ipAllowed(ip net.IP) error {
 		return fmt.Errorf("refusing to connect to %s: not in the configured Alertmanager allowlist (AlertManagerAllowedCIDRs)", ip)
 	}
 	if IsBlockedIP(ip) {
-		return fmt.Errorf("refusing to connect to %s: loopback/link-local/metadata/multicast/unspecified addresses are not valid Alertmanager targets (SSRF guard); allowlist it via AlertManagerAllowedCIDRs if this is intentional", ip)
+		return fmt.Errorf("refusing to connect to %s: loopback/link-local/metadata/multicast/private/internal addresses are blocked by default (SSRF guard); add its CIDR to AlertManagerAllowedCIDRs to permit an in-cluster Alertmanager", ip)
 	}
 	return nil
 }
@@ -86,5 +101,5 @@ func safeDialControl(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("SSRF guard: resolved address %q is not an IP", host)
 	}
-	return ipAllowed(ip)
+	return CheckDestinationIP(ip)
 }

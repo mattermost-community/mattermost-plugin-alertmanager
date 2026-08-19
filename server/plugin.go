@@ -181,19 +181,34 @@ const configReloadPollInterval = 2 * time.Minute
 func (p *Plugin) startConfigReloadPoll() func() {
 	ticker := time.NewTicker(configReloadPollInterval)
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
+				// select picks randomly when both channels are ready, so a tick
+				// that fired concurrently with stop must not trigger a reload —
+				// re-check done first (F-007) so no KV/config work runs after
+				// OnDeactivate.
+				select {
+				case <-done:
+					return
+				default:
+				}
 				p.reloadConfigsFromKVLocked()
 			}
 		}
 	}()
+	// The stop func waits for the goroutine to actually exit (including any
+	// in-flight reload) so the old instance can't keep touching KV/config after
+	// OnDeactivate returns.
 	return func() {
 		ticker.Stop()
 		close(done)
+		<-stopped
 	}
 }
 
