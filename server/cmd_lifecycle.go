@@ -1066,8 +1066,15 @@ func (p *Plugin) updateConfigsAtomic(transform func(current []alertConfig) ([]al
 		// peers to reload from KV — a KV write does not fire OnConfigurationChange
 		// on other nodes, so without the broadcast they'd serve a stale list. The
 		// config-map-backed settings are untouched by this write.
+		//
+		// The broadcast runs in a short-lived goroutine (fire-and-forget): callers
+		// invoke updateConfigsAtomic while holding configWriteMu, and
+		// PublishPluginClusterEvent is a cluster send we don't want to run under
+		// that lock. It's best-effort anyway (this node is already fresh; peers
+		// also converge via the reconciler), and the reload event is idempotent, so
+		// racing/reordered sends are harmless.
 		p.applyAlertConfigsToMemory(parsed)
-		p.broadcastConfigReload()
+		go p.broadcastConfigReload()
 		return current, parsed, nil
 	}
 	return nil, nil, fmt.Errorf("receiver list is being modified concurrently; please retry")

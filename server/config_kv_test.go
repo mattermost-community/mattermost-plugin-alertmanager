@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,14 +20,26 @@ type fakeKVAPI struct {
 	store                map[string][]byte
 	casFailuresRemaining int
 	casCalls             int
-	publishedEvents      []string // event IDs broadcast via PublishPluginClusterEvent
+
+	mu              sync.Mutex // guards publishedEvents (broadcast fires from a goroutine)
+	publishedEvents []string   // event IDs broadcast via PublishPluginClusterEvent
 }
 
 // PublishPluginClusterEvent records the broadcast so tests can assert peers are
-// notified to reload after a committed KV write.
+// notified to reload after a committed KV write. Thread-safe: updateConfigsAtomic
+// fires the broadcast in a goroutine.
 func (f *fakeKVAPI) PublishPluginClusterEvent(ev model.PluginClusterEvent, _ model.PluginClusterEventSendOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.publishedEvents = append(f.publishedEvents, ev.Id)
 	return nil
+}
+
+// publishedEventIDs returns a copy of the broadcast event IDs seen so far.
+func (f *fakeKVAPI) publishedEventIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.publishedEvents...)
 }
 
 func (f *fakeKVAPI) KVGet(key string) ([]byte, *model.AppError) {
@@ -92,9 +105,17 @@ func TestUpdateConfigsAtomicRoundTrip(t *testing.T) {
 	}
 
 	// A committed write must broadcast a reload to peers (KV writes don't fire
-	// OnConfigurationChange on other nodes).
-	if len(api.publishedEvents) != 1 || api.publishedEvents[0] != clusterEventReloadConfigs {
-		t.Fatalf("expected one %q cluster broadcast after commit, got %v", clusterEventReloadConfigs, api.publishedEvents)
+	// OnConfigurationChange on other nodes). The broadcast is fire-and-forget
+	// (off the write lock), so poll briefly for it.
+	var events []string
+	for range 200 {
+		if events = api.publishedEventIDs(); len(events) == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(events) != 1 || events[0] != clusterEventReloadConfigs {
+		t.Fatalf("expected one %q cluster broadcast after commit, got %v", clusterEventReloadConfigs, events)
 	}
 
 	loaded, err := p.loadAlertConfigsFromKV()
