@@ -5,12 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.2.0...v1.3.0) (2026-08-12)
+## [1.4.17](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.2.0...v1.4.17) (2026-08-20)
 
+Rolls up the `add-custom` feature (previously drafted as 1.3.0, never tagged) plus a
+broad round of hardening and reliability work. Versions 1.3.x–1.4.16 were internal
+development bumps and were never released as tags.
+
+> **⚠️ BREAKING — action required for an in-cluster Alertmanager.** The plugin now
+> restricts which network destinations it will contact for Alertmanager: **non-public
+> (private / in-cluster) addresses must be explicitly allowlisted**. If your
+> Alertmanager is reachable only on a private or in-cluster IP (e.g.
+> `alertmanager.monitoring.svc.cluster.local`), set the new **`AlertManagerAllowedCIDRs`**
+> setting (System Console → Plugins → Alertmanager) to its network — the Service
+> ClusterIP as a `/32`, or your Kubernetes Service CIDR — **before or right after
+> upgrading**, or Alertmanager calls (`alerts` / `status` / `validate` / inventory) will
+> be refused as an un-allowlisted destination. A publicly-routable Alertmanager needs
+> no change.
 
 ### Features
 
 * `/alertmanager add-custom <team> <channel> <am-url> <name>` — create a generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook, for custom alerts that don't map to a shipped runbook. No `runbook=` route is generated; `/alertmanager export` includes a commented matcher stub you wire manually. See `/alertmanager docs configuration`.
+* `--private` on `/alertmanager add` / `add-custom` — create the destination channel as private when it doesn't already exist.
+* `/alertmanager metrics-token generate|reveal` — manage the bearer token for the Prometheus `/metrics` endpoint from chat.
+* High availability: receiver-list changes propagate across cluster nodes, so `list` / `export` / scope checks stay consistent on every node.
+* `/alertmanager repair` (system admin) — rebuild the receiver list if its stored value ever becomes unreadable.
+* Autocomplete: suggest the Prometheus Operator Alertmanager URL; load the channel list for `add-custom`.
+* Mattermost incoming webhooks are named to mirror the receiver format (`<base>--<team>-<channel>`) for easy identification in System Console.
+
+### Hardening & reliability
+
+* A broad set of internal hardening and robustness improvements across input handling, configuration storage, outbound network calls, authorization scoping, and multi-node consistency. The new `AlertManagerAllowedCIDRs` setting (see the migration note above) is the only operator-visible change.
+
+### Bug Fixes
+
+* `rotate`: report all overdue members when a shared-webhook group rotation fails; dedup group double-rotation in `rotate --overdue`.
+* `validate`: pad the synthetic firing alert's TTL past `group_wait` so the end-to-end delivery check works.
+* `inventory`: parse operator column-0 receiver dashes in the Alertmanager config.
+* Alertmanager HTTP client swap made race-free; response bodies closed on retry.
 
 ## [1.2.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.1.0...v1.2.0) (2026-08-12)
 
