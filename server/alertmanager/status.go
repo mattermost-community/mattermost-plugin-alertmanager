@@ -1,7 +1,6 @@
 package alertmanager
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 )
@@ -29,7 +28,7 @@ func Status(alertmanagerURL, user, password string) (StatusResponse, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if err := json.NewDecoder(resp.Body).Decode(&statusResponse); err != nil {
+	if err := DecodeJSONLimited(resp.Body, &statusResponse); err != nil {
 		return statusResponse, err
 	}
 	return statusResponse, nil

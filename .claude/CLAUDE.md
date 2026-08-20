@@ -22,7 +22,7 @@ pre-filled with the failing host/pod from the alert's labels.
 - `docs/*.md` — embedded docs, shown in chat (`/alertmanager docs`) and rendered to HTML.
 - `samples/prometheus-rules.yaml` — the shipped example rules. **Single source of truth** for the in-plugin rules page.
 - `build/render-docs/main.go` — renders `docs/*.md` + `runbooks/*.md` **and** `samples/prometheus-rules.yaml` → `public/*.html` at bundle time. Its own Go module.
-- `public/` — **generated** (`make render-docs`, run by `make bundle`). Gitignored. Never hand-edit; edit the source + regenerate.
+- `public/help/` + `public/runbooks/` — **generated** HTML (`make render-docs`, run by `make bundle`). Gitignored (plus `/public/*.html`). Never hand-edit; edit the source + regenerate. Note: `public/` itself is NOT blanket-ignored — `public/alertmanager-logo.png` is a committed asset.
 - `plugin.json` — manifest + System Console `settings_schema` (header/footer/settings).
 - `.github/workflows/` — `lint`, `test`, `build`, `security`, `release-please`, `pages`, `release`.
 

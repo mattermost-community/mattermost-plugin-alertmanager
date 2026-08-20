@@ -405,7 +405,26 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 // service_key + routing_key + integration_url (PagerDuty / Opsgenie
 // / generic webhook). Adding more is cheap; the conservative default
 // avoids redacting keys that look secret but aren't.
-var redactSensitiveLineRegex = regexp.MustCompile(`^(\s+(?:-\s+)?(?:api_url|password|service_key|routing_key|integration_url|auth_token|bearer_token|webhook_url|url|secret):\s+).+$`)
+// redactSensitiveLineRegex matches a YAML scalar line whose KEY looks
+// secret-bearing, case-insensitively and by substring so it catches the many
+// Alertmanager variants (F-004): password / auth_password / smtp_auth_password,
+// secret / client_secret, *_token / bot_token / bearer_token, api_key,
+// credentials (incl. authorization.credentials), service_key, routing_key — plus
+// ANY key ending in `url` (url, api_url, slack_api_url, webhook_url, integration_url,
+// and proxy_url, which can embed proxyuser:proxypass@). Over-matching a non-secret
+// URL in the diff is acceptable; leaking a real secret is not.
+var redactSensitiveLineRegex = regexp.MustCompile(`(?i)^(\s+(?:-\s+)?(?:[a-z0-9_]*(?:password|passwd|secret|token|api[_-]?key|credential|service_key|routing_key)[a-z0-9_]*|[a-z0-9_]*url):\s+).+$`)
+
+// redactFlowStyleValueRegex catches a sensitive key/value pair embedded in
+// FLOW-style YAML — inside { } or [ ] — which the line-anchored block-style regex
+// above cannot see because the key isn't at the start of the line. Alertmanager
+// accepts flow-style, so a user's loaded alertmanager.yml can carry secrets this
+// way, e.g. `webhook_configs: [{url: "https://…/hooks/secret"}]` or
+// `http_config: {proxy_url: "http://user:pass@proxy:8080"}`. Same key set as the
+// block regex; ReplaceAll masks EVERY pair on the line. Group 1 is the retained
+// `key:` prefix, group 2 is the value (double-quoted, single-quoted, or an
+// unquoted run up to the next `,`/`}`/`]`/space) that gets masked.
+var redactFlowStyleValueRegex = regexp.MustCompile(`(?i)((?:[a-z0-9_]*(?:password|passwd|secret|token|api[_-]?key|credential|service_key|routing_key)[a-z0-9_]*|[a-z0-9_]*url)\s*:\s*)("(?:[^"\\]|\\.)*"|'[^']*'|[^,}\]\s]+)`)
 
 // receiverNameLineRegex captures the receiver name on a `- name: foo`
 // list entry. Used by redactOtherChannelsInDiff to track which
@@ -427,25 +446,59 @@ var receiverNameLineRegex = regexp.MustCompile(`^\s+-\s+name:\s+([^\s]+)`)
 // caller's set. Lines outside receiver blocks (global config, route
 // tree, etc.) pass through unchanged because they don't typically
 // carry secrets.
+// keyColumn returns the column at which the mapping key begins on a YAML line
+// body: leading spaces plus an optional "- " sequence indicator. A block
+// scalar's content is indented deeper than this, so it bounds the redaction of
+// a `key: |` block's continuation lines.
+func keyColumn(body string) int {
+	lead := len(body) - len(strings.TrimLeft(body, " "))
+	rest := body[lead:]
+	if strings.HasPrefix(rest, "-") {
+		afterDash := strings.TrimLeft(rest[1:], " ")
+		lead += 1 + (len(rest[1:]) - len(afterDash))
+	}
+	return lead
+}
+
 func redactOtherChannelsInDiff(diffDisplay string, ownReceiverNames map[string]bool) string {
 	lines := strings.Split(diffDisplay, "\n")
 	out := make([]string, 0, len(lines))
 
 	inReceiversBlock := false
 	currentReceiver := ""
+	// blockScalarKeyCol >= 0 means we're inside a redacted block scalar (`key: |`
+	// or `key: >`) whose key sat at that column; more-indented following lines are
+	// the block's (secret) content and must be redacted too (F-003).
+	blockScalarKeyCol := -1
 
 	for _, line := range lines {
 		if len(line) < 2 {
-			out = append(out, line)
+			out = append(out, line) // blank/short: stays part of any open block scalar
 			continue
 		}
 		prefix := line[:2]
 		body := line[2:]
+		bodyIndent := len(body) - len(strings.TrimLeft(body, " "))
+		bodyTrim := strings.TrimSpace(body)
+
+		// If we're inside a redacted block scalar, redact its content lines (those
+		// indented deeper than the key) and only exit when indentation dedents back
+		// to the key column or shallower.
+		if blockScalarKeyCol >= 0 {
+			if bodyTrim == "" {
+				out = append(out, line) // blank line inside the block — no secret
+				continue
+			}
+			if bodyIndent > blockScalarKeyCol {
+				out = append(out, prefix+strings.Repeat(" ", bodyIndent)+"<REDACTED>")
+				continue
+			}
+			blockScalarKeyCol = -1 // dedented out of the block; fall through
+		}
 
 		// Track entry into / exit from the `receivers:` block. We
 		// only consider TOP-LEVEL `receivers:` — nested mentions in
 		// comments or doc strings don't shift state.
-		bodyTrim := strings.TrimSpace(body)
 		if bodyTrim == "receivers:" {
 			inReceiversBlock = true
 			currentReceiver = ""
@@ -462,17 +515,32 @@ func redactOtherChannelsInDiff(diffDisplay string, ownReceiverNames map[string]b
 			}
 		}
 
-		// Redaction trigger: context line (not addition), inside the
-		// receivers block, inside a receiver that isn't ours.
-		shouldRedact := prefix == "  " &&
-			inReceiversBlock &&
-			currentReceiver != "" &&
-			!ownReceiverNames[currentReceiver]
-
-		if shouldRedact {
+		// Redact a sensitive line EVERYWHERE except:
+		//   - additions (`+ `): the caller's own proposed config — they need the
+		//     api_url to paste, so it's shown intentionally.
+		//   - context inside the caller's OWN receiver block: their own secrets.
+		// So global/top-level secrets (e.g. global.smtp_auth_password,
+		// global.slack_api_url) and other channels' receiver secrets are all
+		// redacted from the DM'd diff, not just non-owned receiver blocks (F-004).
+		isAddition := prefix == "+ "
+		inOwnReceiver := inReceiversBlock && currentReceiver != "" && ownReceiverNames[currentReceiver]
+		if !isAddition && !inOwnReceiver {
 			if m := redactSensitiveLineRegex.FindStringSubmatch(body); m != nil {
-				body = m[1] + "<REDACTED>"
-				line = prefix + body
+				value := strings.TrimSpace(body[len(m[1]):])
+				line = prefix + m[1] + "<REDACTED>"
+				// If the value is a YAML block scalar (| or >, with optional
+				// chomping/indent indicators), redact the following indented
+				// content lines too (F-003) — otherwise the secret sits on the
+				// continuation lines, unmasked.
+				if strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
+					blockScalarKeyCol = keyColumn(body)
+				}
+			} else if redactFlowStyleValueRegex.MatchString(body) {
+				// No block-style match, but the line carries a sensitive key/value
+				// pair in flow-style YAML (inside { } / [ ]). Mask every such value
+				// on the line so flow-style configs don't leak secrets the anchored
+				// block regex can't see.
+				line = prefix + redactFlowStyleValueRegex.ReplaceAllString(body, "${1}<REDACTED>")
 			}
 		}
 		out = append(out, line)

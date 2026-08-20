@@ -52,12 +52,12 @@ const crdFallbackReceiver = `    - name: {{NAME}}
           sendResolved: true
           username: 'alertmanagerbot'
           iconURL: '{{ICON_URL}}'
-          title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}] (no runbook-specific template)'
+          title: '[{{ .Status | toUpper }}:{{SAN_TITLE_ALERTNAME}}] (no runbook-specific template)'
           text: |-
             {{ range .Alerts -}}
-            **Alert:** {{ .Labels.alertname }}{{ if .Labels.severity }} - {{ .Labels.severity }}{{ end }}{{ "\n" }}
-            {{- if .Annotations.description }}**Description:** {{ .Annotations.description }}{{ "\n" }}{{ end -}}
-            {{- range .Labels.SortedPairs }}{{ "\n" }}  • **{{ .Name }}:** ` + "`{{ .Value }}`" + `{{ end }}
+            **Alert:** {{SAN_ALERTNAME}}{{ if .Labels.severity }} - {{SAN_SEVERITY}}{{ end }}{{ "\n" }}
+            {{- if .Annotations.description }}**Description:** {{SAN_DESCRIPTION}}{{ "\n" }}{{ end -}}
+            {{- range .Labels.SortedPairs }}{{ "\n" }}  • **{{SAN_LABELNAME}}:** ` + "`{{SAN_LABELVALUE}}`" + `{{ end }}
             {{ end -}}
 `
 
@@ -148,6 +148,10 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	body = strings.NewReplacer(
 		"{{QUICK_DIAGNOSTICS}}", diagText,
 	).Replace(body)
+	// Expand {{SAN_*}} after the runbook section is inlined (same reason as the
+	// file renderer: Replacer doesn't rescan replacement text), so CRD output
+	// sanitizes attacker-controlled fields identically to the file format.
+	body = sanitizerReplacer.Replace(body)
 
 	return header + body
 }
@@ -159,12 +163,12 @@ func renderCRDFallbackReceiver(spec crdReceiverSpec) string {
 	if !strings.HasPrefix(channel, "#") {
 		channel = "#" + channel
 	}
-	return strings.NewReplacer(
+	return sanitizerReplacer.Replace(strings.NewReplacer(
 		"{{NAME}}", spec.name,
 		"{{SECRET}}", spec.secretName,
 		"{{CHANNEL}}", channel,
 		"{{ICON_URL}}", spec.iconURL,
-	).Replace(crdFallbackReceiver)
+	).Replace(crdFallbackReceiver))
 }
 
 // renderAlertmanagerConfig assembles a full AlertmanagerConfig for one group of

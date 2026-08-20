@@ -121,6 +121,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
 	}
 
+	// --private creates the destination channel as PRIVATE when it doesn't yet
+	// exist (the caller is added as a member so their token can create the
+	// webhook). An existing channel keeps whatever type it already has.
+	private, rest := extractBoolFlag(rest, "--private")
+
 	// Extract optional `on` positional anywhere in the args list. Opts
 	// the receivers being created into the rotation reminder system.
 	// Default off — without this, the receivers we create here never
@@ -143,6 +148,12 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	}
 
 	team, channel, amURL := rest[0], rest[1], strings.TrimRight(rest[2], "/")
+	// Validate the AM URL before any side effects so a bad value fails with a
+	// clear message instead of creating a channel + webhook and rolling back
+	// (CL-03/CL-21). IsValid re-checks it at persist time for the KV-import path.
+	if err := validateAlertManagerURL(amURL); err != nil {
+		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+	}
 
 	// Authorize the DESTINATION team, not the invocation channel — a team_admin
 	// must not be able to create a channel or bind a webhook in a team they do
@@ -166,10 +177,15 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	// Resolve the destination channel ONCE rather than per-receiver. All
 	// receivers we create here share a channel, so one lookup is enough.
-	channelID, err := p.resolveOrCreateChannel(team, channel)
+	rc, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
+	// Adopt the canonical team/channel names from the resolved objects for every
+	// downstream use — receiver-name construction, the skip check, and the stored
+	// entries — so nothing persists a raw arg (CL-39).
+	channelID, channelCreated := rc.channelID, rc.created
+	team, channel = rc.teamName, rc.channelName
 
 	// Atomic read-modify-write: acquire configWriteMu here, immediately
 	// before the first getConfiguration read, and hold it through the save
@@ -196,7 +212,8 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// Two-pass: identify slugs that need creation, then create one shared
 	// webhook for the whole batch. Team+channel-qualify every receiver name
 	// (pattern <slug>--<team>-<channel>); the shared webhook itself is named
-	// <group-or-slug>--<channel> in Mattermost.
+	// <category>--<team>-<channel> in Mattermost, mirroring the receiver-name
+	// format so the two line up in System Console.
 	results := make([]scaffoldResult, 0, len(slugs))
 	newSlugs := make([]string, 0, len(slugs))
 	for _, slug := range slugs {
@@ -213,15 +230,18 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	if len(newSlugs) > 0 {
 		// One Mattermost webhook serves every receiver in this add
-		// invocation. Display name follows <group-or-slug>--<channel>
-		// so System Console → Integrations → Incoming Webhooks shows
-		// the unit, not the per-receiver slug.
-		webhookDisplayName := fmt.Sprintf("Alertmanager: %s--%s", groupName, channel)
+		// invocation. Display name follows the receiver-name format
+		// <category>--<team>-<channel> so System Console → Integrations →
+		// Incoming Webhooks shows the unit (and disambiguates channels that
+		// repeat across teams), not the per-receiver slug.
+		webhookDisplayName := webhookDisplayNameFor(groupName, team, channel)
 		hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
 		if hookErr != nil {
 			// Webhook creation failed — every requested new slug fails.
 			// Existing skipped slugs remain in the results; rendering
-			// below shows the full picture.
+			// below shows the full picture. If we created the channel just
+			// for this add, archive it so a failed add leaves no empty squat.
+			p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
 			for _, slug := range newSlugs {
 				results = append(results, scaffoldResult{receiverNameForChannel(slug, team, channel), "failed", hookErr.Error()})
 			}
@@ -241,7 +261,10 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 					LastRotatedAt:            now,
 					RotationRemindersEnabled: rotationOptIn,
 				})
-				results = append(results, scaffoldResult{receiverName, "created", sharedHookID})
+				// Detail is rendered into the chat response table; show the redacted
+				// fingerprint, never the raw hook ID (a reusable bearer token — F-002).
+				// The real webhook URL reaches the admin only in the DM'd YAML/CRD.
+				results = append(results, scaffoldResult{receiverName, "created", redactHookID(sharedHookID)})
 			}
 		}
 	}
@@ -251,13 +274,25 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// firings = atomic-to-plugin-settings semantics. If the save fails, we
 	// roll back the shared webhook so the user isn't left with an orphan.
 	if len(newEntries) > 0 {
-		// slices.Concat allocates a fresh backing array — guards against
-		// the append-aliasing pitfall where reusing the source slice's
-		// capacity would mutate p.getConfiguration().AlertConfigs in place.
-		merged := slices.Concat(p.getConfiguration().AlertConfigs, newEntries)
-		if err := p.saveConfigsLocked(merged); err != nil {
-			_ = p.deleteIncomingWebhook(args.UserId, sharedHookID)
-			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v", err), nil
+		// Append the new entries to the freshly-read KV list under compare-and-set
+		// (CL-24). slices.Concat allocates a fresh backing array — guards against the
+		// append-aliasing pitfall of reusing the source slice's capacity. A
+		// concurrent add of a colliding name surfaces as a validation failure inside
+		// updateConfigsAtomic, which rolls back the webhook + channel below.
+		_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+			if capErr := enforceReceiverCap(len(current), len(newEntries)); capErr != nil {
+				return nil, capErr
+			}
+			return slices.Concat(current, newEntries), nil
+		})
+		if err != nil {
+			warn := ""
+			if delErr := p.deleteIncomingWebhook(args.UserId, sharedHookID); delErr != nil {
+				p.API.LogWarn("scaffold rollback: could not delete shared webhook (orphan may remain)", "webhook", redactHookID(sharedHookID), "err", delErr.Error())
+				warn = webhookRollbackWarning(webhookDisplayNameFor(groupName, team, channel))
+			}
+			p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
+			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v%s", err, warn), nil
 		}
 	}
 
@@ -573,6 +608,21 @@ func receiverNameForChannel(slug, teamSlug, channelSlug string) string {
 	return slug + "--" + teamSlug + "-" + channelSlug
 }
 
+// webhookDisplayNameFor builds the Mattermost incoming-webhook display name.
+// It deliberately mirrors the Alertmanager receiver-name format
+// (<base>--<team>-<channel>) so the System Console → Integrations → Incoming
+// Webhooks list reads the same way as the receiver names, and the team segment
+// disambiguates channels that repeat across teams (`town-square` is in every
+// team — channel name alone is not unique). For an individual runbook add,
+// `base` is the runbook slug, so the display name is identical to the receiver
+// name; for a group add it's the category, since one webhook serves the whole
+// category. No "Alertmanager:" prefix — the bot identity on the posts already
+// makes ownership obvious, and dropping it buys headroom against the 64-char
+// display-name cap (createIncomingWebhook truncates past that).
+func webhookDisplayNameFor(base, teamSlug, channelSlug string) string {
+	return base + "--" + teamSlug + "-" + channelSlug
+}
+
 // receiverBaseSlug returns the runbook slug portion of a receiver name.
 // For new-style names like `high-cpu-usage--alert-slo-channel`,
 // returns `high-cpu-usage`. For legacy unsuffixed names (created before
@@ -643,10 +693,17 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		}
 	}
 
+	// --private creates the destination channel as PRIVATE when it's new.
+	private, rest := extractBoolFlag(rest, "--private")
+
 	if len(rest) != 4 {
 		return addCustomUsageMessage(), nil
 	}
 	team, channel, amURL, rawName := rest[0], rest[1], strings.TrimRight(rest[2], "/"), rest[3]
+	// Reject a dangerous AM URL up front (CL-03/CL-21) — see handleAdd.
+	if err := validateAlertManagerURL(amURL); err != nil {
+		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+	}
 
 	// Authorize the DESTINATION team, not the invocation channel — otherwise a
 	// team_admin could create a channel and bind a webhook in a team they do
@@ -660,10 +717,15 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		return ":warning: " + err.Error(), nil
 	}
 
-	channelID, err := p.resolveOrCreateChannel(team, channel)
+	rc, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
 	}
+	// Persist canonical names (CL-39). receiverName was already validated and
+	// built from the raw args above, which equal these canonical values for any
+	// name Mattermost accepts on lookup.
+	channelID, channelCreated := rc.channelID, rc.created
+	team, channel = rc.teamName, rc.channelName
 
 	// Atomic read-modify-write — same discipline as handleAdd.
 	p.configWriteMu.Lock()
@@ -671,13 +733,18 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 
 	for _, c := range p.getConfiguration().AlertConfigs {
 		if c.Team == team && c.Channel == channel && c.Name == receiverName {
+			// A duplicate means the channel already had this receiver, so it
+			// pre-existed — channelCreated is false and nothing is rolled back.
 			return fmt.Sprintf(":warning: Receiver `%s` already exists in this channel.", receiverName), nil
 		}
 	}
 
-	webhookDisplayName := fmt.Sprintf("Alertmanager: %s--%s", receiverBaseSlug(receiverName), channel)
+	// Mirror the receiver-name format; for an individual add this is exactly
+	// the receiver name (<slug>--<team>-<channel>).
+	webhookDisplayName := webhookDisplayNameFor(receiverBaseSlug(receiverName), team, channel)
 	hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
 	if hookErr != nil {
+		p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
 		return fmt.Sprintf("Failed to create Mattermost webhook: %v", hookErr), nil
 	}
 
@@ -693,10 +760,20 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		LastRotatedAt:       time.Now().UTC(),
 	}
 
-	merged := slices.Concat(p.getConfiguration().AlertConfigs, []alertConfig{entry})
-	if err := p.saveConfigsLocked(merged); err != nil {
-		_ = p.deleteIncomingWebhook(args.UserId, hookID)
-		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v", err), nil
+	_, _, err = p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		if capErr := enforceReceiverCap(len(current), 1); capErr != nil {
+			return nil, capErr
+		}
+		return slices.Concat(current, []alertConfig{entry}), nil
+	})
+	if err != nil {
+		warn := ""
+		if delErr := p.deleteIncomingWebhook(args.UserId, hookID); delErr != nil {
+			p.API.LogWarn("add-custom rollback: could not delete webhook (orphan may remain)", "webhook", redactHookID(hookID), "err", delErr.Error())
+			warn = webhookRollbackWarning(webhookDisplayNameFor(receiverBaseSlug(receiverName), team, channel))
+		}
+		p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
+		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v%s", err, warn), nil
 	}
 
 	// Build the runbook-free receiver block + the commented route stub and DM
@@ -832,6 +909,20 @@ func extractFlagValue(args []string, prefix string) (value string, rest []string
 		rest = append(rest, a)
 	}
 	return value, rest
+}
+
+// extractBoolFlag removes a bare boolean flag (e.g. `--private`) from anywhere in
+// args, returning whether it was present and the remaining positionals.
+func extractBoolFlag(args []string, flag string) (present bool, rest []string) {
+	rest = make([]string, 0, len(args))
+	for _, a := range args {
+		if a == flag {
+			present = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return present, rest
 }
 
 // runbookSlugs reads the embedded runbooks/ directory and returns the

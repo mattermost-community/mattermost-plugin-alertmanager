@@ -1,7 +1,78 @@
 package main
 
 import (
+	"fmt"
 	"strings"
+)
+
+// CL-06: alert label VALUES, label NAMES, and annotations are all
+// attacker-influenceable — anyone who can POST an alert to Alertmanager sets
+// them — yet they land in a Mattermost post that renders markdown. Without
+// escaping, a hostile `description` like `[Reset your password](https://evil)`
+// or a value that closes its code span with a backtick can inject disguised
+// links, images, headings, or list items into the on-call channel (phishing /
+// UI spoofing). We sanitize at the template sink, in the Alertmanager side, so
+// the defense travels with the generated config.
+//
+// maxRunes caps the field: `printf "%.Ns"` truncates by runes in Go's fmt, so a
+// giant annotation can't flood the channel. Values differ by field so a hostile
+// free-text description can't crowd out the label details below it.
+const (
+	sanitizeAlertNameMaxRunes   = 256
+	sanitizeSeverityMaxRunes    = 64
+	sanitizeDescriptionMaxRunes = 1024
+	sanitizeLabelNameMaxRunes   = 128
+	sanitizeLabelValueMaxRunes  = 512
+	sanitizeURLMaxRunes         = 512
+)
+
+// mdSanitizeDirective builds the Alertmanager template pipeline that strips
+// markdown/shell-breakout characters from an attacker-controlled field and caps
+// its length. Stripped set: backtick (written \x60 so no literal backtick sits
+// in this Go source or the emitted template), CR, LF, parens, and angle
+// brackets. That kills code-span breakout (backtick), heading/list/quote
+// injection (newlines), disguised links and images `[x](y)`/`![x](y)` (parens),
+// and autolinks `<url>` (angle brackets). Residual by design: a bare URL still
+// auto-links (that's the point of a runbook_url annotation) and `*`/`_` emphasis
+// survives (cosmetic, not a phishing vector; MM sanitizes raw HTML server-side).
+//
+// expr is the AM template expression for the field (e.g. ".Annotations.description").
+// reReplaceAll is Alertmanager's own template func; printf is a text/template
+// builtin — both evaluate at delivery time inside Alertmanager, never here.
+func mdSanitizeDirective(expr string, maxRunes int) string {
+	return fmt.Sprintf(`{{ %s | reReplaceAll "%s" "" | printf "%%.%ds" }}`, expr, mdSanitizeStripClass, maxRunes)
+}
+
+// mdSanitizeStripClass is the regex character class of markdown/shell-breakout
+// characters both mdSanitizeDirective and the title-context directives strip:
+// backtick (\x60), CR, LF, parens, and angle brackets. Kept in one place so the
+// body and title sinks can never drift to different rules.
+const mdSanitizeStripClass = `[\x60\r\n()<>]`
+
+// sanitizerReplacer expands the {{SAN_*}} placeholder tokens the shared
+// notification templates carry into the concrete mdSanitizeDirective pipelines.
+// Both the file (alertmanager.yml) and CRD (AlertmanagerConfig) renderers run
+// this pass, so the two output formats sanitize identically and can never drift.
+// The tokens are static (no per-receiver data), so the pass can run at any point.
+var sanitizerReplacer = strings.NewReplacer(
+	"{{SAN_ALERTNAME}}", mdSanitizeDirective(".Labels.alertname", sanitizeAlertNameMaxRunes),
+	"{{SAN_SEVERITY}}", mdSanitizeDirective(".Labels.severity", sanitizeSeverityMaxRunes),
+	"{{SAN_DESCRIPTION}}", mdSanitizeDirective(".Annotations.description", sanitizeDescriptionMaxRunes),
+	"{{SAN_LABELNAME}}", mdSanitizeDirective(".Name", sanitizeLabelNameMaxRunes),
+	"{{SAN_LABELVALUE}}", mdSanitizeDirective(".Value", sanitizeLabelValueMaxRunes),
+	"{{SAN_DASHBOARD_URL}}", mdSanitizeDirective(".Annotations.dashboard_url", sanitizeURLMaxRunes),
+	"{{SAN_RUNBOOK_URL}}", mdSanitizeDirective(".Annotations.runbook_url", sanitizeURLMaxRunes),
+
+	// Title-context tokens. The title renders .CommonLabels.* (not .Labels.*) and
+	// the diff-label pairs iterate $label from .CommonLabels.Remove; both are
+	// attacker-influenceable and must be sanitized just like the body (title gap
+	// found in review of CL-06). The severity variant folds in `toUpper` (the title
+	// uppercases severity), and the diff-label variants carry the whitespace-trim
+	// markers the surrounding template relies on.
+	"{{SAN_TITLE_ALERTNAME}}", mdSanitizeDirective(".CommonLabels.alertname", sanitizeAlertNameMaxRunes),
+	"{{SAN_TITLE_SEVERITY}}", fmt.Sprintf(`{{ .CommonLabels.severity | reReplaceAll "%s" "" | printf "%%.%ds" | toUpper }}`, mdSanitizeStripClass, sanitizeSeverityMaxRunes),
+	"{{SAN_TITLE_LABELNAME}}", fmt.Sprintf(`{{- $label.Name | reReplaceAll "%s" "" | printf "%%.%ds" }}`, mdSanitizeStripClass, sanitizeLabelNameMaxRunes),
+	"{{SAN_TITLE_LABELVALUE}}", fmt.Sprintf(`{{ $label.Value | reReplaceAll "%s" "" | printf "%%.%ds" -}}`, mdSanitizeStripClass, sanitizeLabelValueMaxRunes),
 )
 
 // One canonical slack_configs format, baked in. Every receiver gets it.
@@ -85,38 +156,38 @@ const receiverBodyTemplate = `      # Sidebar color. Mattermost honors Slack-nam
       title: |-
         {{- if eq .Status "firing" -}}
           {{- if .CommonLabels.severity -}}
-            [{{ .CommonLabels.severity | toUpper }}:{{ .CommonLabels.alertname }}]
+            [{{SAN_TITLE_SEVERITY}}:{{SAN_TITLE_ALERTNAME}}]
           {{- else -}}
-            [ALERT:{{ .CommonLabels.alertname }}]
+            [ALERT:{{SAN_TITLE_ALERTNAME}}]
           {{- end -}}
           {{- $count := len .Alerts.Firing -}}
           {{- if gt $count 1 }} ({{ $count }} firing){{- end -}}
         {{- else -}}
-          [✓ RESOLVED:{{ .CommonLabels.alertname }}]
+          [✓ RESOLVED:{{SAN_TITLE_ALERTNAME}}]
         {{- end -}}
         {{- if gt (len .CommonLabels) (len .GroupLabels) -}}
           {{ " " }}(
           {{- with .CommonLabels.Remove .GroupLabels.Names }}
             {{- range $index, $label := .SortedPairs -}}
               {{ if $index }}, {{ end }}
-              {{- $label.Name }}="{{ $label.Value -}}"
+              {{SAN_TITLE_LABELNAME}}="{{SAN_TITLE_LABELVALUE}}"
             {{- end }}
           {{- end -}}
           )
         {{- end }}
       text: |-
         {{ range .Alerts -}}
-        **Alert:** {{ .Labels.alertname }}{{ if .Labels.severity }} - {{ .Labels.severity }}{{ end }}{{ "\n\n" }}
+        **Alert:** {{SAN_ALERTNAME}}{{ if .Labels.severity }} - {{SAN_SEVERITY}}{{ end }}{{ "\n\n" }}
         {{- if .Annotations.description -}}
-        **Description:** {{ .Annotations.description }}{{ "\n\n" }}
+        **Description:** {{SAN_DESCRIPTION}}{{ "\n\n" }}
         {{- end -}}
         **Details:**{{ "\n" }}
         {{- range .Labels.SortedPairs -}}
-        {{ "\n" }}  • **{{ .Name }}:** ` + "`{{ .Value }}`" + `
+        {{ "\n" }}  • **{{SAN_LABELNAME}}:** ` + "`{{SAN_LABELVALUE}}`" + `
         {{- end -}}
         {{ "\n\n" }}
         {{RUNBOOK_SECTION}}
-        {{- if .Annotations.dashboard_url }}**Dashboard:** {{ .Annotations.dashboard_url }}{{ "\n" }}{{ end -}}
+        {{- if .Annotations.dashboard_url }}**Dashboard:** {{SAN_DASHBOARD_URL}}{{ "\n" }}{{ end -}}
         {{QUICK_DIAGNOSTICS}}
         {{ end -}}
 `
@@ -148,13 +219,13 @@ const yamlBlockIndent = "        "
 // if the alert itself sets a runbook_url annotation. Continuation lines carry
 // the 8-space YAML block indent to match the surrounding template.
 const runbookSectionStandard = `{{- if .Annotations.runbook_url -}}
-        **Runbook:** {{ .Annotations.runbook_url }}{{ "\n" }}
+        **Runbook:** {{SAN_RUNBOOK_URL}}{{ "\n" }}
         {{- else -}}
         **Runbook:** {{RUNBOOK_DEFAULT}}{{ "\n" }}
         {{- end -}}`
 
 const runbookSectionCustom = `{{- if .Annotations.runbook_url -}}
-        **Runbook:** {{ .Annotations.runbook_url }}{{ "\n" }}
+        **Runbook:** {{SAN_RUNBOOK_URL}}{{ "\n" }}
         {{- end -}}`
 
 // runbookSection resolves {{RUNBOOK_SECTION}} for a receiver. Custom receivers
@@ -188,7 +259,7 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 	// literal block. Custom receivers skip the lookup ENTIRELY — Custom is the
 	// authoritative "no runbook content" contract, so it must hold even if a
 	// future catalog adds a runbook slug matching a persisted custom name (or an
-	// entry is imported via AlertConfigsJSON, bypassing name-collision validation).
+	// entry is written straight to the KV store, bypassing name-collision validation).
 	diagText := ""
 	if !custom {
 		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(receiverBaseSlug(name)))
@@ -205,7 +276,11 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 		"{{ICON_URL}}", iconURL,
 		"{{QUICK_DIAGNOSTICS}}", diagText,
 	)
-	return r.Replace(canonicalTemplate)
+	// Expand the {{SAN_*}} tokens LAST, in a second pass: the runbook section
+	// inserted just above carries {{SAN_RUNBOOK_URL}}, and strings.Replacer does
+	// not rescan its own replacement text — so the token must be resolved after
+	// {{RUNBOOK_SECTION}} is filled, not in the same NewReplacer call.
+	return sanitizerReplacer.Replace(r.Replace(canonicalTemplate))
 }
 
 // indentForYAMLBlock applies `indent` to every line of `s` except the

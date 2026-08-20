@@ -63,8 +63,43 @@ func (p *Plugin) renderInventoryCSV(w http.ResponseWriter, configs []alertConfig
 		return sorted[i].Name < sorted[j].Name
 	})
 	for _, c := range sorted {
-		_ = cw.Write([]string{c.Name, c.Team, c.Channel, c.AlertManagerURL})
+		_ = cw.Write([]string{csvSafe(c.Name), csvSafe(c.Team), csvSafe(c.Channel), csvSafe(c.AlertManagerURL)})
 	}
+}
+
+// csvSafe neutralizes spreadsheet formula injection independently of URL
+// validation — a different output context with different metacharacters (CL-21).
+// A cell whose first character is one a spreadsheet may treat as a formula lead
+// (= + - @, or a leading TAB/CR) is prefixed with a single quote so Excel/Sheets
+// render it as literal text rather than evaluating it (e.g. =HYPERLINK(...) that
+// exfiltrates the row on open). Applied to every exported cell, not just the URL,
+// since the defense is cheap and the sink is the spreadsheet, not the value.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
+// simSideEffectAllowed reports whether a simulate mode may run given the request
+// method and its X-Requested-With header. The side-effecting modes (webhook-test,
+// end-to-end) require BOTH a POST and X-Requested-With: XMLHttpRequest (CL-20).
+//
+// Requiring POST alone would lean entirely on the platform stripping
+// Mattermost-User-Id when a POST fails CSRF — a Mattermost internal we can't
+// verify from here. Also requiring X-Requested-With makes the gate self-contained:
+// a cross-site <form> or top-level navigation cannot set a custom header, and the
+// page's own Fire button sends it via fetch. Read-only modes are unrestricted.
+// Extracted so the gate is unit-testable without the full HTTP handler.
+func simSideEffectAllowed(method, requestedWith, mode string) bool {
+	if mode == "webhook-test" || mode == "end-to-end" {
+		return method == http.MethodPost && requestedWith == "XMLHttpRequest"
+	}
+	return true
 }
 
 // inventoryGroup represents one collapsible section on the inventory
@@ -150,10 +185,12 @@ func (r *inventoryRow) computeHealth() {
 	r.HealthClass = "ok"
 }
 
-// renderInventoryHTML is the main page renderer. Reads ?group= for the
-// grouping mode (channel|team|am, default channel).
+// renderInventoryHTML is the main page renderer. Reads the grouping mode
+// (channel|team|am, default channel) from group= — via FormValue so it survives
+// the CSRF-driven POST swap (which drops the query string) the same way the
+// simulate_* fields do.
 func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, configs []alertConfig) {
-	groupMode := r.URL.Query().Get("group")
+	groupMode := r.FormValue("group")
 	if groupMode != "team" && groupMode != "am" {
 		groupMode = "channel"
 	}
@@ -291,13 +328,15 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 	// channel filters the target receiver list to those in a specific
 	// channel (only relevant for webhook-test + end-to-end; simulate
 	// walks the route tree at the AM level).
-	simMode := strings.TrimSpace(r.URL.Query().Get("simulate_mode"))
-	simType := strings.TrimSpace(r.URL.Query().Get("simulate_type"))
-	simValue := strings.TrimSpace(r.URL.Query().Get("simulate_value"))
-	simChannel := strings.TrimSpace(r.URL.Query().Get("simulate_channel"))
-	simTeam := strings.TrimSpace(r.URL.Query().Get("simulate_team"))
-	simSeverity := strings.TrimSpace(r.URL.Query().Get("simulate_severity"))
-	simExtra := strings.TrimSpace(r.URL.Query().Get("simulate_extra"))
+	// Read via FormValue so the side-effecting modes can arrive as a POST body
+	// (see the CL-20 gate below); read-only simulate still works as a GET query.
+	simMode := strings.TrimSpace(r.FormValue("simulate_mode"))
+	simType := strings.TrimSpace(r.FormValue("simulate_type"))
+	simValue := strings.TrimSpace(r.FormValue("simulate_value"))
+	simChannel := strings.TrimSpace(r.FormValue("simulate_channel"))
+	simTeam := strings.TrimSpace(r.FormValue("simulate_team"))
+	simSeverity := strings.TrimSpace(r.FormValue("simulate_severity"))
+	simExtra := strings.TrimSpace(r.FormValue("simulate_extra"))
 
 	// Severity is a knob only for end-to-end (it sets the severity the
 	// synthetic alert fires at). Webhook-test ignores it, and simulate routes
@@ -321,10 +360,26 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		filteredConfigs := filterConfigsByChannel(configs, simTeam, simChannel)
 
 		switch simMode {
-		case "webhook-test":
-			simActionResult = p.runInventoryWebhookTest(targetSlugs, filteredConfigs)
-		case "end-to-end":
-			simActionResult = p.runInventoryEndToEnd(targetSlugs, simSeverity, simExtra, filteredConfigs, amStatus)
+		case "webhook-test", "end-to-end":
+			// CL-20: these modes cause side effects — webhook-test POSTs to real
+			// incoming webhooks, end-to-end fires synthetic alerts. Mattermost
+			// exempts GET from CSRF validation for plugin routes (and strips
+			// Referer), so a GET-driven link would let an attacker trigger these
+			// with a logged-in sysadmin's ambient session. Require POST, which the
+			// platform DOES CSRF-check (it only sets Mattermost-User-Id after that
+			// check passes). The page's Fire button submits these as a POST with
+			// X-Requested-With; a cross-site link cannot.
+			switch {
+			case !simSideEffectAllowed(r.Method, r.Header.Get("X-Requested-With"), simMode):
+				simActionResult = inventoryActionResult{
+					Mode:  "error",
+					Error: "This action changes state (posts to webhooks / fires alerts). Run it with the Fire button, not by opening a link — the request must be a POST issued by the page (CSRF protection).",
+				}
+			case simMode == "webhook-test":
+				simActionResult = p.runInventoryWebhookTest(targetSlugs, filteredConfigs)
+			default:
+				simActionResult = p.runInventoryEndToEnd(targetSlugs, simSeverity, simExtra, filteredConfigs, amStatus)
+			}
 		default:
 			// simulate (default)
 			switch {
@@ -738,7 +793,7 @@ func (p *Plugin) runInventoryWebhookTest(targetSlugs []string, configs []alertCo
 			continue
 		}
 		webhookURL := p.webhookURLForReceiver(ac)
-		err := postValidateTestMessage(webhookURL, ac.Name)
+		err := postValidateTestMessage(webhookURL, ac.WebhookID, ac.Name)
 		item := actionResult{Name: ac.Name, OK: err == nil}
 		if err == nil {
 			item.Detail = "Posted test payload — check the channel for the message."
@@ -1116,7 +1171,7 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
                 <li><strong>End-to-end</strong> — fires a synthetic alert through Alertmanager. Tests the full chain. Real chat posts result.</li>
             </ul>
         </div>
-        <form method="get" action="" style="display: flex; flex-direction: column; gap: 10px;">
+        <form id="simform" method="get" action="" style="display: flex; flex-direction: column; gap: 10px;">
             <input type="hidden" name="group" value="{{.GroupMode}}">
             <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
                 <div style="display: flex; flex-direction: column; gap: 4px;">
@@ -1340,6 +1395,70 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
     {{end}}
 
     <script>
+        // CL-20: the side-effecting simulate modes (webhook-test, end-to-end)
+        // must be submitted as a POST so Mattermost applies CSRF validation — a
+        // plain GET link would let a cross-site page fire them with the admin's
+        // ambient session. The read-only "simulate" mode stays a shareable GET.
+        // We keep the form method="get" (so read-only submits and deep links
+        // work) and, only for the two side-effecting modes, intercept submit and
+        // re-issue it as a fetch POST that carries BOTH Mattermost's CSRF token
+        // (X-CSRF-Token, read from the MMCSRF cookie below — the real MM check)
+        // AND X-Requested-With (the plugin's own simSideEffectAllowed gate). The
+        // response is the full page, so we swap the document with it.
+        (function () {
+            var form = document.getElementById('simform');
+            var modeSel = form ? form.querySelector('select[name="simulate_mode"]') : null;
+            if (!form || !modeSel) {
+                return;
+            }
+            form.addEventListener('submit', function (e) {
+                var mode = modeSel.value;
+                if (mode !== 'webhook-test' && mode !== 'end-to-end') {
+                    return; // read-only: let the normal GET submit proceed
+                }
+                e.preventDefault();
+                // Send Mattermost's CSRF token (the MMCSRF cookie, which MM
+                // sets non-HttpOnly precisely so page JS can echo it back) as the
+                // X-CSRF-Token header — the modern check MM expects. Relying on
+                // X-Requested-With alone is deprecated: MM logs "CSRF Check
+                // failed ... XMLHttpRequest is deprecated" on every POST and,
+                // where ServiceSettings.ExperimentalStrictCSRFEnforcement is on,
+                // HARD-REJECTS it (403) so the panel silently does nothing. We
+                // still send X-Requested-With too: the plugin's own
+                // simSideEffectAllowed gate (CL-20) requires it independently.
+                var headers = { 'X-Requested-With': 'XMLHttpRequest' };
+                var cookieParts = document.cookie.split(';');
+                for (var ci = 0; ci < cookieParts.length; ci++) {
+                    var kv = cookieParts[ci].split('=');
+                    if (kv[0].trim() === 'MMCSRF') {
+                        headers['X-CSRF-Token'] = decodeURIComponent(kv.slice(1).join('=').trim());
+                        break;
+                    }
+                }
+                fetch(window.location.pathname, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: headers,
+                    body: new URLSearchParams(new FormData(form))
+                }).then(function (resp) {
+                    return resp.text();
+                }).then(function (html) {
+                    // Not a DOM-XSS sink: 'html' is this same handler's response,
+                    // rendered by Go html/template (auto-escaping) from same-origin
+                    // server state — the only reflected user input (SimulateExtra) is
+                    // HTML-attribute-escaped, and the template.JS blobs are
+                    // json.Marshal'd server data, not raw input. document.write is
+                    // used (vs innerHTML) so the page's own <script> re-runs and the
+                    // cascade dropdowns re-initialize.
+                    document.open();
+                    document.write(html);
+                    document.close();
+                }).catch(function (err) {
+                    window.alert('Action failed: ' + err);
+                });
+            });
+        })();
+
         // Client-side filter: hide receiver rows whose text doesn't
         // include the query (case-insensitive substring match). Group
         // headers stay visible even when all their rows are filtered

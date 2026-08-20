@@ -37,7 +37,7 @@ Set it in System Console → Plugins → Alertmanager → Webhook host override.
 ## Required: route alerts to the right receiver
 
 The plugin creates **one receiver per runbook slug, channel-suffixed**
-(e.g. `high-cpu-usage--alert-slo-channel`). For Alertmanager to
+(e.g. `high-cpu-usage--sre-alert-slo-channel`). For Alertmanager to
 actually route alerts to those receivers — instead of dumping
 everything on the fallback — your routing tree needs sub-routes that
 match labels.
@@ -73,13 +73,13 @@ route:
   routes:
     # ↓ PASTE FROM alertmanager-routes.yml HERE
     - matchers: [runbook="high-cpu-usage"]
-      receiver: high-cpu-usage--alert-slo-channel
+      receiver: high-cpu-usage--sre-alert-slo-channel
       continue: true
     - matchers: [runbook="high-memory-usage"]
-      receiver: high-memory-usage--alert-slo-channel
+      receiver: high-memory-usage--sre-alert-slo-channel
       continue: true
     - matchers: [runbook="pod-crashloopbackoff"]
-      receiver: pod-crashloopbackoff--alert-slo-channel
+      receiver: pod-crashloopbackoff--sre-alert-slo-channel
       continue: true
     # ... one route per receiver, 30 total for the standard set
 ```
@@ -138,8 +138,16 @@ Create one Secret per receiver (or reuse one per group webhook), in the **same
 namespace** as the `AlertmanagerConfig`. The URL is the one `/alertmanager add`
 DMs you.
 
+> **Generated object names carry a short hash suffix.** The examples below use
+> readable names like `alertmanager-webhook-sre-alert-slo-channel`, but
+> `/alertmanager export --format=crd` appends a short hash (e.g.
+> `…-slo-channel-1a2b3c4d`) to every generated Secret / `AlertmanagerConfig` /
+> fallback-receiver name. That keeps two teams sharing a channel name from
+> colliding on identical object names in one namespace. Use whatever names the
+> exported manifest actually contains — the Secret ref wiring is the same either way.
+
 ```
-kubectl create secret generic alertmanager-webhook-high-cpu-usage \
+kubectl create secret generic alertmanager-webhook-sre-alert-slo-channel \
   --from-literal=url='<webhook URL from /alertmanager add>' \
   -n monitoring
 ```
@@ -150,7 +158,7 @@ Or declaratively (GitOps / air-gapped):
 apiVersion: v1
 kind: Secret
 metadata:
-  name: alertmanager-webhook-high-cpu-usage
+  name: alertmanager-webhook-sre-alert-slo-channel
   namespace: monitoring
 stringData:
   url: "<webhook URL from /alertmanager add>"
@@ -165,7 +173,7 @@ The operator-native equivalent of the plugin's generated `route:` + `receivers:`
 apiVersion: monitoring.coreos.com/v1alpha1
 kind: AlertmanagerConfig
 metadata:
-  name: mattermost-alertmanager
+  name: mattermost-alertmanager-sre-alert-slo-channel
   namespace: monitoring
 spec:
   route:
@@ -177,20 +185,27 @@ spec:
     routes:
       # one per receiver — matcher keys on the BASE slug, continue:true for fan-out
       - matchers: [{name: runbook, value: high-cpu-usage, matchType: "="}]
-        receiver: high-cpu-usage--alert-slo-channel
+        receiver: high-cpu-usage--sre-alert-slo-channel
         continue: true
       - matchers: [{name: runbook, value: high-memory-usage, matchType: "="}]
-        receiver: high-memory-usage--alert-slo-channel
+        receiver: high-memory-usage--sre-alert-slo-channel
         continue: true
       # ... one route per receiver
   receivers:
-    - name: high-cpu-usage--alert-slo-channel
+    - name: high-cpu-usage--sre-alert-slo-channel
       slackConfigs:
-        - apiURL: {name: alertmanager-webhook-high-cpu-usage, key: url}
+        - apiURL: {name: alertmanager-webhook-sre-alert-slo-channel, key: url}
           channel: "#alert-slo-channel"
           sendResolved: true
           username: alertmanagerbot
           iconURL: https://<your-mm-host>/plugins/com.mattermost.alertmanager/public/alertmanager-logo.png
+          # NOTE: simplified for readability. What the plugin actually GENERATES
+          # wraps every attacker-influenceable label/annotation in a sanitizer —
+          # in the title, e.g. `{{ .CommonLabels.alertname | reReplaceAll "[\x60\r\n()<>]" "" | printf "%.256s" }}`,
+          # and the same for label values in the text body — stripping
+          # markdown/shell-breakout chars so a hostile alert can't inject links or
+          # code spans into the post. Prefer `/alertmanager add --format=crd` over
+          # hand-authoring so you get the hardened templates.
           title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}]'
           text: |-
             {{ range .Alerts -}}
@@ -225,6 +240,20 @@ Field renames vs the file format (same meaning, camelCased, secret-backed URL):
 - **Selector.** Your `Alertmanager` resource must select this CR via
   `alertmanagerConfigSelector` (plus `alertmanagerConfigNamespaceSelector` for
   cross-namespace).
+- **Object names are team-qualified.** Generated `metadata.name` values (Secret,
+  AlertmanagerConfig, fallback receiver) include the Mattermost **team** as well
+  as the channel — e.g. `mattermost-alertmanager-<team>-<channel>` — because
+  channel names are unique only per team. Without the team, two teams both
+  exporting their `~alerts` channel into the same namespace would produce
+  byte-identical object names, and `kubectl apply` would silently merge them
+  (one team's Secret/route overwriting the other's).
+  - **Migration:** if you applied manifests from a build that named objects by
+    channel only, the new names differ, so `kubectl apply` **creates** the new
+    objects and leaves the old ones orphaned — alerts can double-deliver until you
+    remove the stragglers. Re-export, apply, then delete the old channel-only
+    objects, e.g. `kubectl -n monitoring delete alertmanagerconfig
+    mattermost-alertmanager-<channel>` and the matching
+    `secret alertmanager-webhook-<channel>`.
 
 ### Alerting rules as a PrometheusRule
 
@@ -352,7 +381,14 @@ Match the labels to whatever your MM Helm chart uses for its pods.
 After deploying:
 
 1. **Set `WebhookHost`** in System Console → Plugins → Alertmanager.
-2. **Run `/alertmanager add testing alerts-sre http://alertmanager.monitoring.svc.cluster.local:9093`** from a Mattermost channel. The rendered `api_url:` should now use your cluster-internal MM service URL.
+1a. **Set `AlertManagerAllowedCIDRs`** to your Alertmanager's network (e.g.
+   `10.0.0.0/8`, or your cluster's service/pod CIDR). The plugin blocks
+   private/internal, loopback, and cloud-metadata addresses by default (SSRF
+   protection), so an in-cluster Alertmanager on a private IP or `*.svc` is
+   **unreachable until its CIDR is allowlisted** — inventory probes and
+   `validate` will report connection failures otherwise. See
+   [CONFIGURATION.md → `AlertManagerAllowedCIDRs`](CONFIGURATION.md).
+2. **Run `/alertmanager add testing alerts-sre http://alertmanager-operated.monitoring.svc.cluster.local:9093`** from a Mattermost channel. The Prometheus Operator exposes Alertmanager via the `alertmanager-operated` headless service (not `alertmanager`); swap in your namespace, or use your stack's service name (e.g. `<release>-kube-prometheus-alertmanager`) — confirm with `kubectl get svc -A | grep alertmanager`. The rendered `api_url:` should then use your cluster-internal MM service URL.
 3. **Reload Alertmanager** after pasting the YAML — `kubectl exec -it alertmanager-0 -- /bin/sh -c "killall -HUP alertmanager"` or via the Operator's reconciliation.
 4. **Fire a synthetic alert** (e.g., `up == 0` for a scrape target you deliberately broke). Verify:
    - Post lands in the intended channel

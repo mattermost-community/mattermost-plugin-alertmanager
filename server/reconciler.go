@@ -138,12 +138,10 @@ const reminderRepeatInterval = 7 * 24 * time.Hour
 // and we want them to start a fresh clock rather than fire reminders
 // day-one. This is a one-time migration per receiver.
 func (p *Plugin) checkRotationReminders(sysadminID string) error {
-	// Atomic read-modify-write: hold configWriteMu across the read + save.
-	// Called sequentially after reconcileOrphans by runBackgroundReconcile
-	// (which does not hold the lock), so this is the sole acquirer here.
-	p.configWriteMu.Lock()
-	defer p.configWriteMu.Unlock()
-
+	// Overdue detection and the reminder DMs below run WITHOUT configWriteMu
+	// (the DMs are network calls); a slightly stale detection just defers a
+	// reminder to the next 5-minute cycle. configWriteMu is taken only around the
+	// durable stamp write, which re-reads KV under compare-and-set (CL-24/CL-25).
 	cfg := p.getConfiguration()
 	if cfg.WebhookRotationDays <= 0 {
 		return nil
@@ -171,9 +169,7 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 	// Second pass: find overdue receivers, group by channel, and DM.
 	byChannel := make(map[string][]rotationOverdueEntry)
 	channelToTeam := make(map[string]string)
-	indexByName := make(map[string]int, len(updated))
-	for i, c := range updated {
-		indexByName[c.Name] = i
+	for _, c := range updated {
 		// Per-receiver opt-in: skip receivers that weren't created
 		// with the `on` flag at /alertmanager add time. The global
 		// WebhookRotationDays threshold only fires reminders for
@@ -201,6 +197,10 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 		channelToTeam[c.Channel] = c.Team
 	}
 
+	// Names we DM'd this cycle — their LastReminderAt gets stamped in the durable
+	// write below (keyed by name so it's correct against a concurrently-modified
+	// KV list, not by the stale index).
+	remindedNames := make(map[string]bool)
 	if len(byChannel) > 0 {
 		// Resolve a recipient — for v1, DM the calling sysadmin we
 		// already minted a PAT for. Future: enumerate channel team
@@ -212,20 +212,36 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 
 		for channel, entries := range byChannel {
 			p.sendRotationReminderDM(dm.Id, channel, entries, cfg.WebhookRotationDays)
-			// Stamp LastReminderAt on each entry we just notified.
 			for _, e := range entries {
-				if idx, ok := indexByName[e.Name]; ok {
-					updated[idx].LastReminderAt = now
-					mutated = true
-				}
+				remindedNames[e.Name] = true
 			}
 			p.auditLog("webhook.rotation.reminder", sysadminID, channel,
 				"", fmt.Sprintf("count=%d", len(entries)))
 		}
 	}
 
-	if mutated {
-		if err := p.saveConfigsLocked(updated); err != nil {
+	// Persist stamps under compare-and-set (CL-24): re-apply the migration stamp
+	// to any entry whose LastRotatedAt is still zero in the freshly-read KV list,
+	// and the reminder stamp to every entry we just DM'd. Keyed by zero-ness and
+	// name so a slash command adding/rotating on another pod between our read and
+	// this write is not clobbered. The DMs already went out and are not replayed.
+	if mutated || len(remindedNames) > 0 {
+		p.configWriteMu.Lock()
+		_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+			out := make([]alertConfig, len(current))
+			copy(out, current)
+			for i := range out {
+				if out[i].LastRotatedAt.IsZero() {
+					out[i].LastRotatedAt = now
+				}
+				if remindedNames[out[i].Name] {
+					out[i].LastReminderAt = now
+				}
+			}
+			return out, nil
+		})
+		p.configWriteMu.Unlock()
+		if err != nil {
 			return fmt.Errorf("persist rotation timestamps: %w", err)
 		}
 	}
@@ -279,13 +295,12 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 // it can no longer clobber a concurrent admin add/rotate — the old
 // small-window race is closed by the lock, not tolerated.
 func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
-	// Atomic read-modify-write: hold configWriteMu across the read + save so
-	// the reconciler can't clobber a concurrent admin add/remove (lost
-	// update). Called sequentially by runBackgroundReconcile and by the manual
-	// reconcile command; neither holds the lock, so this is the sole acquirer.
-	p.configWriteMu.Lock()
-	defer p.configWriteMu.Unlock()
-
+	// The webhook probing below makes serial loopback Client4 calls; it runs
+	// WITHOUT configWriteMu so a slow probe can't stall lifecycle commands
+	// (CL-25). Correctness doesn't need the lock here: updateConfigsAtomic
+	// re-reads KV under compare-and-set and applies the orphan decision to that
+	// fresh list, so a concurrent add/rotate is never clobbered. The lock is taken
+	// only around the durable write.
 	current := p.getConfiguration().AlertConfigs
 	if len(current) == 0 {
 		return nil, nil
@@ -307,8 +322,8 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		if _, seen := hookStatus[ac.WebhookID]; seen {
 			continue
 		}
-		_, resp, err := c.GetIncomingWebhook(context.Background(), ac.WebhookID, "")
-		if err == nil {
+		_, resp, getErr := c.GetIncomingWebhook(context.Background(), ac.WebhookID, "")
+		if getErr == nil {
 			hookStatus[ac.WebhookID] = true
 			continue
 		}
@@ -319,17 +334,20 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		// Transient or permission error — don't cache this hookID's
 		// status. Receivers depending on it stay alive this cycle.
 		p.API.LogWarn("reconciler: error checking webhook (will retry next cycle)",
-			"receiver", ac.Name, "webhookID", ac.WebhookID, "err", err.Error())
+			"receiver", ac.Name, "webhook", redactHookID(ac.WebhookID), "err", scrubHookID(getErr.Error(), ac.WebhookID))
 	}
 
-	// Mark every receiver whose shared webhookID came back 404. Cached
-	// status lookups: a single dead webhook in a 6-receiver group
-	// orphans all 6 here.
-	orphanSet := make(map[string]bool)
+	// Mark every receiver whose shared webhookID came back 404, recording the
+	// SPECIFIC dead webhook ID we probed for each name (not just the name). The
+	// prune transform below re-checks that the fresh entry still carries this
+	// exact webhook, so a concurrent rotate that repointed the same receiver name
+	// to a healthy new webhook between the probe and the CAS write is not clobbered.
+	// Cached status: a single dead webhook in a 6-receiver group orphans all 6.
+	orphanSet := make(map[string]string)
 	for _, ac := range current {
 		alive, known := hookStatus[ac.WebhookID]
 		if known && !alive {
-			orphanSet[ac.Name] = true
+			orphanSet[ac.Name] = ac.WebhookID
 		}
 	}
 
@@ -337,27 +355,36 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 		return nil, nil
 	}
 
-	// Re-read inside the write-modify path to minimize the race window
-	// with concurrent add/rotate operations.
-	fresh := p.getConfiguration().AlertConfigs
-	filtered := make([]alertConfig, 0, len(fresh))
+	// Prune the orphaned names from the freshly-read KV list under compare-and-set
+	// (CL-24): the probe above decided WHICH names are orphaned; applying that to
+	// the KV-current list — not the possibly-stale in-memory one — means a
+	// concurrent admin add/rotate on another pod is never clobbered.
 	pruned := make([]string, 0, len(orphanSet))
-	for _, c := range fresh {
-		if orphanSet[c.Name] {
-			pruned = append(pruned, c.Name)
-			continue
+	p.configWriteMu.Lock()
+	_, _, err = p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		pruned = pruned[:0] // reset per attempt
+		out := make([]alertConfig, 0, len(current))
+		for _, c := range current {
+			// Prune only if this name is still bound to the SAME webhook we
+			// probed as dead. A concurrent rotate that gave it a fresh webhook
+			// changes WebhookID, so it survives (and gets re-probed next cycle).
+			if deadHook, ok := orphanSet[c.Name]; ok && c.WebhookID == deadHook {
+				pruned = append(pruned, c.Name)
+				continue
+			}
+			out = append(out, c)
 		}
-		filtered = append(filtered, c)
+		return out, nil
+	})
+	p.configWriteMu.Unlock()
+	if err != nil {
+		p.API.LogWarn("reconciler: failed to persist after pruning orphans",
+			"orphanCount", len(orphanSet), "err", err.Error())
+		return nil, fmt.Errorf("persist filtered config: %w", err)
 	}
 
 	if len(pruned) == 0 {
 		return nil, nil
-	}
-
-	if err := p.saveConfigsLocked(filtered); err != nil {
-		p.API.LogWarn("reconciler: failed to persist after pruning orphans",
-			"pruned", strings.Join(pruned, ","), "err", err.Error())
-		return nil, fmt.Errorf("persist filtered config: %w", err)
 	}
 
 	p.API.LogInfo("reconciler: pruned orphan receivers (webhooks deleted out-of-band)",

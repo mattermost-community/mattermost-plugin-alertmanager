@@ -8,7 +8,7 @@ the channel where you ran the command.
 
 | Subcommand | Args | Purpose | Sysadmin? |
 |---|---|---|---|
-| `about` | _(none)_ | Plugin build info, settings, reconciler health, links | any user |
+| `about` | _(none)_ | Plugin build info, this channel's receiver count, links (any user). Org-wide counts, reconciler health, and configured-setting presence are shown to sysadmins only. | any user |
 | `add` | `<team> <channel> <am-url> [target] [on] [--format=standard\|crd] [--namespace=]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`--format=standard`, default), or an `AlertmanagerConfig` v1alpha1 + Secret (`--format=crd`; `--namespace=` default `monitoring`). Trailing `on` opts in to rotation reminders. | sysadmin / team_admin |
 | `add-custom` | `<team> <channel> <am-url> <name> [--webhook-host=<url>]` | Create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. No `runbook=` route is generated — you wire the matcher manually (`export` includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
 | `alerts` | _(none)_ | Currently firing alerts, grouped by Alertmanager URL | any user |
@@ -18,8 +18,10 @@ the channel where you ran the command.
 | `export` | `[--format=standard\|crd] [--namespace=] [--diff-against-loaded]` | DM this channel's config: `--format=standard` (default) is a fresh `receivers.yml` + `routes.yml`; `--format=crd` is a Prometheus Operator `AlertmanagerConfig` (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded`, diff against AM's loaded config + schema-validate. | sysadmin / team_admin |
 | `help` | _(none)_ | Slash-command reference | any user |
 | `list` | _(none)_ | Receivers bound to this channel (table with Rotated column) | any user |
+| `metrics-token` | `[generate]` | Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The `MetricsToken` setting is `secret:true` and can't be read back from System Console — regenerate here if lost. | sysadmin |
 | `reconcile` | _(none)_ | Prune entries whose Mattermost webhook was deleted out-of-band | sysadmin |
 | `remove` | `<name>` \| `<set> --force` \| `all --force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
+| `repair` | `[--force]` | Diagnose the receiver-list KV store; `--force` rewrites a corrupt blob from the plugin's last-known in-memory list. Recovery-only — normal operation never needs it. | sysadmin |
 | `rotate` | `<name>` \| `all --overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
 | `silences` | _(none)_ | Active Alertmanager silences, grouped by AM URL | any user |
 | `status` | _(none)_ | Alertmanager version + uptime per backend | any user |
@@ -97,7 +99,10 @@ To create just one category:
 
 Available group sets: `all` (default), `application`, `compute`,
 `database`, `networking`, `observability`, `security`, `storage`. Each
-set add creates one shared webhook named `Alertmanager: <set>--<channel>`.
+set add creates one shared webhook named `<set>--<team>-<channel>`, mirroring
+the receiver-name format so the System Console webhook list lines up with the
+receiver names (and the team segment disambiguates channels that repeat across
+teams).
 
 ### Add one specific runbook (individual)
 
@@ -107,9 +112,11 @@ For a single receiver with its own dedicated webhook:
 /alertmanager add testing alert-slo-channel http://alertmanager:9093 high-cpu-usage
 ```
 
-Creates one receiver named `high-cpu-usage--alert-slo-channel` and
-one Mattermost webhook named `Alertmanager: high-cpu-usage--alert-slo-channel`.
-Any runbook slug works — see `/alertmanager docs` for the full list.
+Creates one receiver named `high-cpu-usage--testing-alert-slo-channel` and
+one Mattermost webhook with the identical name
+`high-cpu-usage--testing-alert-slo-channel` (individual adds make the webhook
+name match the receiver name exactly). Any runbook slug works — see
+`/alertmanager docs` for the full list.
 
 If you try to add an individual slug that's already part of an
 existing group in this channel, the add is skipped with a clear

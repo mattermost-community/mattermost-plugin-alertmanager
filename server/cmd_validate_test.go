@@ -3,12 +3,34 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	pmodel "github.com/prometheus/common/model"
 
 	amconfig "github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/dispatch"
 )
+
+// TestSyntheticFiringTTLClearsGroupWait is the regression guard for the
+// end-to-end delivery gap confirmed live via /api/v2/alerts/groups: a FIRING
+// synthetic alert whose lifetime is <= the receiving route's group_wait
+// self-resolves before the dispatcher's first flush and is silently dropped —
+// accepted into the alert store, correct receiver resolved, but never grouped
+// and never notified. The plugin's generated routes use groupWait: 30s (AM's
+// global default is also 30s), so the TTL must stay comfortably above that.
+func TestSyntheticFiringTTLClearsGroupWait(t *testing.T) {
+	// Mirrors the groupWait the CRD/standard route templates emit, and AM's
+	// global default. Keep a wide margin so no realistic group_wait loses the race.
+	const generatedGroupWait = 30 * time.Second
+	if syntheticFiringTTL <= generatedGroupWait {
+		t.Fatalf("syntheticFiringTTL %v must exceed group_wait %v — a firing synthetic alert at/under group_wait self-resolves before the dispatcher's first flush and is never notified",
+			syntheticFiringTTL, generatedGroupWait)
+	}
+	if syntheticFiringTTL < 4*generatedGroupWait {
+		t.Fatalf("syntheticFiringTTL %v is too close to group_wait %v — keep a wide margin (>= 4x) so dispatcher timing jitter can't lose the notification",
+			syntheticFiringTTL, generatedGroupWait)
+	}
+}
 
 // TestParseSimulateLabels pins the input contract for `--simulate
 // <key>=<value>` args. Operators typing at 3am benefit from clear

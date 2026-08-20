@@ -34,6 +34,44 @@ func TestReceiverNameForChannel(t *testing.T) {
 	}
 }
 
+// TestWebhookDisplayNameFor pins the Mattermost webhook display name to the
+// receiver-name format <base>--<team>-<channel>. For an individual runbook add
+// the base is the slug, so the name equals the receiver name; for a group add
+// it's the category. The team segment is what disambiguates a channel name
+// that repeats across teams in the System Console webhook list.
+func TestWebhookDisplayNameFor(t *testing.T) {
+	cases := []struct {
+		base, team, channel, want string
+	}{
+		// Individual add: identical to receiverNameForChannel(slug, team, channel).
+		{"high-cpu-usage", "starlight-alerting", "compute-alerts", "high-cpu-usage--starlight-alerting-compute-alerts"},
+		// Group add: category in the base slot (one webhook serves the category).
+		{"compute", "starlight-alerting", "compute-alerts", "compute--starlight-alerting-compute-alerts"},
+		// Same channel, different teams → distinct webhook names.
+		{"all", "team-a", "town-square", "all--team-a-town-square"},
+		{"all", "team-b", "town-square", "all--team-b-town-square"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.base+"/"+tc.team+"/"+tc.channel, func(t *testing.T) {
+			if got := webhookDisplayNameFor(tc.base, tc.team, tc.channel); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestWebhookDisplayNameMatchesReceiverName is the invariant that makes the
+// System Console list line up: for an individual receiver, the webhook display
+// name and the receiver name must be identical.
+func TestWebhookDisplayNameMatchesReceiverName(t *testing.T) {
+	slug, team, channel := "pod-crashloopbackoff", "sre", "oncall-critical"
+	receiver := receiverNameForChannel(slug, team, channel)
+	webhook := webhookDisplayNameFor(receiverBaseSlug(receiver), team, channel)
+	if receiver != webhook {
+		t.Fatalf("receiver name %q and webhook display name %q must match", receiver, webhook)
+	}
+}
+
 // TestReceiverBaseSlug covers the inverse: extracting the runbook slug
 // portion from a channel-suffixed receiver name. Crucial for the
 // runbook URL fallback — that lookup is keyed by slug, not by full

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"sort"
@@ -126,8 +125,51 @@ func (p *Plugin) probeAMReachability(amURL string) amReachabilityEntry {
 
 	// Cache miss or expired — probe fresh.
 	entry := doAMProbe(amURL)
+	p.evictReachabilityCache(time.Now())
 	p.amReachabilityCache.Store(amURL, &entry)
 	return entry
+}
+
+// amReachabilityMaxEntries hard-caps the probe cache. Without eviction (there
+// was no Delete anywhere), every distinct probed URL pinned its full config body
+// for the process lifetime (CL-09). With the decode limit each body is bounded,
+// and this caps how many are retained.
+const amReachabilityMaxEntries = 256
+
+// evictReachabilityCache drops entries older than the TTL (they'd be re-probed
+// anyway) and, if still over the cap, evicts the single stalest entry. Called
+// before each Store, so the cache stays bounded even under a flood of distinct
+// URLs. O(n) over a small n (distinct AM URLs), on the cold probe path only.
+func (p *Plugin) evictReachabilityCache(now time.Time) {
+	// Drop expired entries (they'd be re-probed anyway); keep the rest so we can
+	// trim any over-cap excess below.
+	type keyedAt struct {
+		key any
+		at  time.Time
+	}
+	live := make([]keyedAt, 0)
+	p.amReachabilityCache.Range(func(k, v any) bool {
+		e := v.(*amReachabilityEntry)
+		if now.Sub(e.CheckedAt) > amReachabilityTTL {
+			p.amReachabilityCache.Delete(k)
+			return true
+		}
+		live = append(live, keyedAt{k, e.CheckedAt})
+		return true
+	})
+	// Eviction and the Store that follows are separate sync.Map ops, so
+	// concurrent cold-misses can push well past the cap in between. Trim ALL
+	// excess (stalest first), not just the single stalest, so the overshoot stays
+	// bounded without taking a lock on the probe hot path. `+1` reserves room for
+	// the entry probeAMReachability is about to Store.
+	excess := len(live) + 1 - amReachabilityMaxEntries
+	if excess <= 0 {
+		return
+	}
+	sort.Slice(live, func(i, j int) bool { return live[i].at.Before(live[j].at) })
+	for i := 0; i < excess && i < len(live); i++ {
+		p.amReachabilityCache.Delete(live[i].key)
+	}
 }
 
 // doAMProbe makes a single GET against AM's /api/v2/status endpoint
@@ -144,7 +186,7 @@ func doAMProbe(amURL string) amReachabilityEntry {
 		return amReachabilityEntry{Reachable: false, Status: "bad URL", CheckedAt: time.Now()}
 	}
 
-	resp, err := alertmanager.Client.Do(req)
+	resp, err := alertmanager.GetClient().Do(req)
 	if err != nil {
 		status := "unreachable"
 		if ctx.Err() == context.DeadlineExceeded {
@@ -166,7 +208,7 @@ func doAMProbe(amURL string) amReachabilityEntry {
 		} `json:"config"`
 	}
 	entry := amReachabilityEntry{Reachable: true, Status: "ok", CheckedAt: time.Now()}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+	if err := alertmanager.DecodeJSONLimited(resp.Body, &body); err == nil {
 		entry.ConfigBody = body.Config.Original
 		entry.receivers = indexAMReceivers(entry.ConfigBody)
 	}
@@ -174,31 +216,67 @@ func doAMProbe(amURL string) amReachabilityEntry {
 }
 
 // extractAMReceiverNames scans an Alertmanager-loaded YAML body for
-// receiver names. Used by the inventory page's inverse drift check
-// — the inverse of LoadedInAM. Given AM's `config.original` we want
-// to know "which receiver names exist in AM that the plugin doesn't
-// track," which is the answer to "did someone hand-edit
-// alertmanager.yml outside the plugin?"
+// receiver names. Used both to build the per-receiver "loaded in AM"
+// index and by the inventory page's inverse drift check — "which
+// receiver names exist in AM that the plugin doesn't track," i.e. "did
+// someone hand-edit alertmanager.yml outside the plugin?"
 //
-// Parsing is regex-based rather than YAML-parsing because the body
-// AM returns is already validated YAML (AM wouldn't have loaded it
-// otherwise). The pattern `^\s+-\s+name: <value>` is unique to
-// receiver list entries — slack_configs sub-blocks lead with
-// `api_url:` and route entries lead with `matchers:`, neither of
-// which would match this regex.
+// Parsing is regex-based rather than YAML-parsing because the body AM
+// returns is already validated YAML (AM wouldn't have loaded it
+// otherwise). Two things matter for correctness:
+//
+//  1. The dash may sit at COLUMN 0. AM's /api/v2/status `config.original`
+//     is the verbatim text of the loaded file. When the Prometheus
+//     Operator manages Alertmanager it marshals that file with
+//     gopkg.in/yaml.v2, which renders sequence items with the dash at the
+//     parent's indentation (column 0):
+//     receivers:
+//     - name: monitoring/<ns>/<amconfig>/<receiver>
+//     A regex requiring leading whitespace (`^\s+-`) matched the plugin's
+//     own indented exports but silently missed EVERY operator-merged
+//     receiver, so CRD-managed receivers all showed "Not in AM YAML".
+//     The pattern therefore allows zero-or-more leading spaces (`^\s*-`).
+//  2. Scanning must be scoped to the top-level `receivers:` block.
+//     `time_intervals:`/`mute_time_intervals:` entries are ALSO `- name:`
+//     lines; without block scoping (and especially now that column-0
+//     dashes match) their names would leak into the receiver set.
+//
+// Within the receivers block, slack_configs sub-blocks lead with
+// `api_url:` and route entries with `matchers:`, so `- name:` remains
+// unique to receiver list entries.
+//
+// amReceiverNameRegex matches a receiver list entry's name. Compiled once
+// at package load rather than per call (this runs on every inventory-page
+// probe).
+var amReceiverNameRegex = regexp.MustCompile(`^\s*-\s+name:\s+([^\s]+)`)
+
 func extractAMReceiverNames(configBody string) []string {
-	re := regexp.MustCompile(`(?m)^\s+-\s+name:\s+([^\s]+)`)
-	matches := re.FindAllStringSubmatch(configBody, -1)
 	seen := make(map[string]bool)
 	var out []string
-	for _, m := range matches {
-		// Trim wrapping quotes — YAML allows quoted or unquoted scalars.
-		name := strings.Trim(m[1], `"'`)
-		if seen[name] {
+
+	inReceivers := false
+	for line := range strings.SplitSeq(configBody, "\n") {
+		// A top-level line is one with no leading whitespace that is a mapping
+		// key (not a sequence item `-`, not a comment). `receivers:` opens the
+		// block; any other top-level key closes it — this keeps sibling blocks
+		// like `time_intervals:` out of the receiver set. A column-0 `- name:`
+		// entry is NOT top-level (leads with `-`), so it stays in the block.
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '-' && line[0] != '#' {
+			inReceivers = strings.TrimSpace(line) == "receivers:"
 			continue
 		}
-		seen[name] = true
-		out = append(out, name)
+		if !inReceivers {
+			continue
+		}
+		if m := amReceiverNameRegex.FindStringSubmatch(line); m != nil {
+			// Trim wrapping quotes — YAML allows quoted or unquoted scalars.
+			name := strings.Trim(m[1], `"'`)
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
 	}
 	sort.Strings(out)
 	return out

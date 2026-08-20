@@ -16,9 +16,13 @@
 
 # Rendered HTML for the docs + runbooks sites. Generated from
 # docs/*.md and runbooks/*.md by build/render-docs on every bundle.
-# Source of truth is the Markdown; do not commit the HTML.
+# Source of truth is the Markdown; do not commit the HTML. The two
+# subdirs are where render-docs writes today; /public/*.html guards
+# against a future root-level render being committed by accident.
+# (public/alertmanager-logo.png is a real tracked asset, NOT generated.)
 /public/help/
 /public/runbooks/
+/public/*.html
 
 # Go test/coverage artifacts.
 *.test

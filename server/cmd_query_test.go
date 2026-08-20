@@ -2,8 +2,62 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/prometheus/alertmanager/api/v2/models"
 )
+
+// TestFormatSilenceLineSanitizesID is the 4th-pass sibling-gap regression: the
+// silence ID is AM-returned and must be sanitized before rendering into the bot
+// post, exactly like its CreatedBy/Comment/matcher siblings — nothing validates
+// it on this render path (silenceIDRegex only gates the request path).
+func TestFormatSilenceLineSanitizesID(t *testing.T) {
+	hostile := "abc`](https://evil)\ndef"
+	s := &models.GettableSilence{}
+	s.ID = &hostile
+
+	out := formatSilenceLine("high-cpu-usage--team-chan", s)
+
+	if strings.Contains(out, "](") {
+		t.Errorf("disguised markdown link survived via silence ID:\n%s", out)
+	}
+	if strings.Contains(out, "abc`]") {
+		t.Errorf("data-supplied backtick in silence ID survived (code-span breakout):\n%s", out)
+	}
+	// Sanitized form present: backtick/newline/parens stripped, bracket kept.
+	if !strings.Contains(out, "abc]https://evildef") {
+		t.Errorf("sanitized silence ID not rendered as expected:\n%s", out)
+	}
+}
+
+// TestSanitizeInlineMarkdown is the C-005 regression: AM-supplied alert
+// summaries and silence comments render into a bot post, so the strip must
+// neutralize code-span breakout, disguised links/images, autolinks, and
+// newline-injected structure while leaving benign text intact.
+func TestSanitizeInlineMarkdown(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"benign text untouched", "disk 90% on web-01", "disk 90% on web-01"},
+		{"backtick stripped (code-span breakout)", "a`b`c", "abc"},
+		{"disguised link broken", "[Reset MFA](https://evil)", "[Reset MFA]https://evil"},
+		{"image broken", "![x](https://evil/beacon)", "![x]https://evil/beacon"},
+		{"autolink broken", "<https://evil>", "https://evil"},
+		{"newlines stripped", "line1\r\n### heading", "line1### heading"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeInlineMarkdown(tc.in); got != tc.want {
+			t.Errorf("sanitizeInlineMarkdown(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		// Belt-and-suspenders: no dangerous char survives, ever.
+		if strings.ContainsAny(sanitizeInlineMarkdown(tc.in), "`()<>\r\n") {
+			t.Errorf("dangerous character survived for input %q", tc.in)
+		}
+	}
+}
 
 // TestGroupByAMURL pins the dedup logic for the alerts/silences/status
 // commands. Without this collapse step, a channel hosting 20 receivers

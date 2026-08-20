@@ -118,10 +118,12 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		}
 		scoped = filtered
 	default:
-		// Treat as receiver name. Smart-resolve so short-form names
-		// work in the current channel.
-		all := p.getConfiguration().AlertConfigs
-		resolved := resolveReceiverName(all, rest[0], args.ChannelId, p)
+		// Treat as receiver name. Smart-resolve so short-form names work in the
+		// current channel. Resolve against the CHANNEL-SCOPED set, not all configs:
+		// a global resolve can exact-match another team's legacy unsuffixed
+		// receiver first, so a valid in-channel receiver then reports "not bound"
+		// (F-006). Scoping also keeps validate from reaching another team's config.
+		resolved := resolveReceiverName(scoped, rest[0], args.ChannelId, p)
 		var matched []alertConfig
 		for _, c := range scoped {
 			if c.Name == resolved {
@@ -189,7 +191,7 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		// (c) Webhook accepts POST — opt-in
 		if webhookTest {
 			webhookURL := p.webhookURLForReceiver(c)
-			if err := postValidateTestMessage(webhookURL, c.Name); err != nil {
+			if err := postValidateTestMessage(webhookURL, c.WebhookID, c.Name); err != nil {
 				r.WebhookAccepts = "✗ " + err.Error()
 			} else {
 				r.WebhookAccepts = "✓ (test post sent to channel)"
@@ -469,7 +471,7 @@ func doValidateAMStatus(amURL string) (out struct {
 		out.statusText = "bad URL"
 		return out
 	}
-	resp, err := alertmanager.Client.Do(req)
+	resp, err := alertmanager.GetClient().Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			out.statusText = "timeout"
@@ -490,7 +492,7 @@ func doValidateAMStatus(amURL string) (out struct {
 			Original string `json:"original"`
 		} `json:"config"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := alertmanager.DecodeJSONLimited(resp.Body, &body); err != nil {
 		// AM responded but we couldn't parse the config body. Treat as
 		// reachable (check a passes) but check b will be inconclusive
 		// since configBody stays empty.
@@ -504,13 +506,28 @@ func doValidateAMStatus(amURL string) (out struct {
 	return out
 }
 
+// webhookTestClient is the guarded HTTP client for validate/inventory
+// webhook-test POSTs. The webhook host is team-admin-controllable (per-receiver
+// --webhook-host or the global setting), so this is a server-side request to an
+// attacker-influenced URL — the same SSRF class the Alertmanager client defends
+// against. It reuses that posture: alertmanager.NewTransport() disables env
+// proxies (Proxy=nil) and installs the dial guard (CheckDestinationIP, post-DNS),
+// and RefuseRedirect stops a 302 → internal redirect. Without this the POST ran
+// on http.DefaultClient (proxy-honoring, redirect-following, no dial guard) and
+// could reach cloud metadata / loopback / internal services.
+var webhookTestClient = &http.Client{
+	Timeout:       5 * time.Second,
+	Transport:     alertmanager.NewTransport(),
+	CheckRedirect: alertmanager.RefuseRedirect,
+}
+
 // postValidateTestMessage POSTs a clearly-marked test message directly
 // to the receiver's webhook URL. Confirms (from the plugin's network
 // perspective) that the URL is valid and MM accepts the post.
 //
 // The message is visible in the channel — that's the cost of running
 // check (c). User opts in by passing --webhook-test.
-func postValidateTestMessage(webhookURL, receiverName string) error {
+func postValidateTestMessage(webhookURL, hookID, receiverName string) error {
 	payload := map[string]any{
 		"text":     fmt.Sprintf(":mag: Validate check: this is a test message confirming the `%s` receiver's webhook is reachable. Safe to delete.", receiverName),
 		"username": "alertmanagerbot",
@@ -522,13 +539,18 @@ func postValidateTestMessage(webhookURL, receiverName string) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("bad URL: %w", err)
+		// Scrub: a url/parse error can echo the webhook URL, whose /hooks/<id> is
+		// a bearer token (F-002). These errors surface in the command/inventory
+		// result, so the raw ID must not ride along.
+		return fmt.Errorf("bad URL: %s", scrubHookID(err.Error(), hookID))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := webhookTestClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST failed: %w", err)
+		// Do() returns a *url.Error containing the full webhook URL (with the raw
+		// hook ID) on transport failure — scrub it before it reaches the result.
+		return fmt.Errorf("POST failed: %s", scrubHookID(err.Error(), hookID))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -559,6 +581,19 @@ func postValidateTestMessage(webhookURL, receiverName string) error {
 // `alertname` or `severity` from the admin form, but not the
 // `test=validate` / `source=...` markers since those are appended
 // last to keep the synthetic-alert marker authoritative).
+// syntheticFiringTTL is how long a FIRING synthetic alert stays active before it
+// auto-resolves. It MUST comfortably exceed the receiving route's group_wait:
+// Alertmanager's dispatcher holds a new group for group_wait before its first
+// flush, so an alert that self-resolves at ~group_wait is dropped from the group
+// before it is ever notified (it shows as active in /api/v2/alerts with the right
+// receiver but never enters /api/v2/alerts/groups — no notify, no error, just
+// silence). The plugin's own generated routes set groupWait: 30s and AM's global
+// default is also 30s; the earlier value here was exactly 30s and self-defeated.
+// Five minutes clears any realistic group_wait while still auto-cleaning the test
+// alert. If a target route ever uses a group_wait longer than this, raise it (or
+// read the matched route's group_wait) — but that is far above AM's norms.
+const syntheticFiringTTL = 5 * time.Minute
+
 func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels map[string]string, resolved bool) (string, error) {
 	if severity == "" {
 		severity = "warning"
@@ -571,7 +606,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 	titleSeverity := strings.ToUpper(severity[:1]) + severity[1:]
 	alertname := "ValidateSyntheticTest" + titleSeverity
 	summary := fmt.Sprintf("Synthetic %s alert from /alertmanager validate", severity)
-	description := fmt.Sprintf("Validate diagnostic at %s severity — if you see this in the channel, AM → MM delivery works end-to-end. Auto-resolves in ~30 seconds.", severity)
+	description := fmt.Sprintf("Validate diagnostic at %s severity — if you see this in the channel, AM → MM delivery works end-to-end. Auto-resolves after ~5 minutes.", severity)
 	if resolved {
 		// Resolved gets its own alertname too, plus startsAt/endsAt
 		// in the past below — the combination makes AM route this as
@@ -602,7 +637,10 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 		endsAt = time.Now().Add(-1 * time.Second).UTC().Format(time.RFC3339)
 	} else {
 		startsAt = time.Now().UTC().Format(time.RFC3339)
-		endsAt = time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339)
+		// Pad well past group_wait so the dispatcher flushes and notifies BEFORE
+		// the alert self-resolves — see syntheticFiringTTL. A 30s value here (==
+		// group_wait) let the alert vanish from the dispatch group unnotified.
+		endsAt = time.Now().Add(syntheticFiringTTL).UTC().Format(time.RFC3339)
 	}
 
 	payload := []map[string]any{
@@ -627,7 +665,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := alertmanager.Client.Do(req)
+	resp, err := alertmanager.GetClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("POST to AM failed: %w", err)
 	}

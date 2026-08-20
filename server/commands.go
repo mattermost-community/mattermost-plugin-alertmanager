@@ -15,8 +15,8 @@ const (
 	helpMsg = "**Alertmanager bridge slash commands** _(channel-scoped — you only see receivers bound to this channel)_\n\n" +
 		"_All commands listed in alphabetical order to match the autocomplete dropdown._\n\n" +
 		"- `/alertmanager about` — plugin build info, configured settings, reconciler health, jump-off links\n" +
-		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=]` — create receivers for a group set OR an individual runbook slug. Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`).\n" +
-		"- `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]` — create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. Unlike `add`, it does NOT generate a `runbook=` route — you wire the matcher manually (the DM'd/exported config includes a commented stub). Use for custom alerts that don't map to a shipped runbook. See `/alertmanager docs configuration`.\n" +
+		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=] [--private]` — create receivers for a group set OR an individual runbook slug. `--private` creates the destination channel as PRIVATE when it doesn't already exist (you're added as a member). Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`).\n" +
+		"- `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>] [--private]` — create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. `--private` creates a private destination channel when new. Unlike `add`, it does NOT generate a `runbook=` route — you wire the matcher manually (the DM'd/exported config includes a commented stub). Use for custom alerts that don't map to a shipped runbook. See `/alertmanager docs configuration`.\n" +
 		"- `/alertmanager alerts` — list currently firing alerts (grouped by Alertmanager URL — one section per backend, not per receiver)\n" +
 		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
 		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: alerts, requirements, architecture, configuration, development, kubernetes, slash_commands)\n" +
@@ -24,8 +24,10 @@ const (
 		"- `/alertmanager export [--format=standard|crd] [--namespace=] [--diff-against-loaded]` — DM this channel's config. `--format=standard` (default) is alertmanager.yml receivers + routes; `--format=crd` is a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded` (sysadmin) diff against AM's currently-loaded config\n" +
 		"- `/alertmanager help` — this message\n" +
 		"- `/alertmanager list` — list receivers bound to this channel\n" +
+		"- `/alertmanager metrics-token [generate]` — Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The token is `secret:true` in System Console so it can't be read back — regenerate here if lost (sysadmin)\n" +
 		"- `/alertmanager reconcile` — prune receivers whose Mattermost webhook has been deleted out-of-band (sysadmin; runs automatically every 5 min)\n" +
 		"- `/alertmanager remove <name|set|all> [--force]` — delete a receiver, a runbook set, or everything in this channel\n" +
+		"- `/alertmanager repair [--force]` — diagnose the receiver-list KV store; `--force` rewrites a corrupt blob from the plugin's last-known in-memory list (sysadmin; recovery-only)\n" +
 		"- `/alertmanager rotate <name>` — delete + recreate the webhook (new hook-id, new URL)\n" +
 		"- `/alertmanager rules` — links to the shipped sample Prometheus alerting rules (browsable HTML + downloadable YAML) so you can wire up the Prometheus side without cloning the repo\n" +
 		"- `/alertmanager silences` — list active silences (grouped by Alertmanager URL)\n" +
@@ -83,8 +85,9 @@ func getAutocompleteData() *model.AutocompleteData {
 	// container, not the host) at the moment of typing.
 	add.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
 		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
-		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes — cluster-internal service DNS. Change 'monitoring' to the namespace your Alertmanager actually runs in."},
-		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash."},
+		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes (self-managed service) — cluster-internal service DNS when you named the Service `alertmanager`. Change 'monitoring' to its namespace."},
+		{Item: "http://alertmanager-operated.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes + Prometheus Operator — the operator exposes Alertmanager via the `alertmanager-operated` headless service (NOT `alertmanager`) on port 9093. Change `monitoring` to your namespace; kube-prometheus-stack also creates `<release>-kube-prometheus-alertmanager`. Confirm with `kubectl get svc -A | grep alertmanager`."},
+		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash, no query string or fragment."},
 	})
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
 		{Item: "all", HelpText: "Every embedded runbook (default — 30 receivers in one shared webhook)"},
@@ -105,6 +108,9 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "--format=standard", HelpText: "Default. alertmanager.yml receivers + routes to paste into a file-based Alertmanager."},
 		{Item: "--format=crd", HelpText: "Prometheus Operator: an AlertmanagerConfig (v1alpha1) + Secret to `kubectl apply`. Combine with --namespace= (default monitoring). See /alertmanager docs kubernetes."},
 	})
+	add.AddStaticListArgument("Optional: create the destination channel private if it does not yet exist", false, []model.AutocompleteListItem{
+		{Item: "--private", HelpText: "Create the destination channel as PRIVATE when it doesn't already exist (you're added as a member so your token can bind the webhook). Existing channels keep their type."},
+	})
 	root.AddCommand(add)
 
 	// add-custom: one generic (non-runbook) receiver with a user-chosen name.
@@ -115,10 +121,14 @@ func getAutocompleteData() *model.AutocompleteData {
 	addCustom.AddDynamicListArgument("Mattermost channel URL slug — public channels in the chosen team (or type a new name to auto-create)", channelFetchURL, true)
 	addCustom.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
 		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
-		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes — cluster-internal service DNS. Change 'monitoring' to the namespace your Alertmanager actually runs in."},
-		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash."},
+		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes (self-managed service) — cluster-internal service DNS when you named the Service `alertmanager`. Change 'monitoring' to its namespace."},
+		{Item: "http://alertmanager-operated.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes + Prometheus Operator — the operator exposes Alertmanager via the `alertmanager-operated` headless service (NOT `alertmanager`) on port 9093. Change `monitoring` to your namespace; kube-prometheus-stack also creates `<release>-kube-prometheus-alertmanager`. Confirm with `kubectl get svc -A | grep alertmanager`."},
+		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash, no query string or fragment."},
 	})
 	addCustom.AddTextArgument("Custom receiver name: lowercase [a-z0-9_-], no `--`, not a runbook slug or category set. Full name becomes `<name>--<team>-<channel>` (max 190 chars).", "[name]", "")
+	addCustom.AddStaticListArgument("Optional: create the destination channel private if it does not yet exist", false, []model.AutocompleteListItem{
+		{Item: "--private", HelpText: "Create the destination channel as PRIVATE when it doesn't already exist (you're added as a member)."},
+	})
 	root.AddCommand(addCustom)
 
 	root.AddCommand(model.NewAutocompleteData("alerts", "", "List currently firing alerts (grouped by Alertmanager URL)"))
@@ -157,6 +167,12 @@ func getAutocompleteData() *model.AutocompleteData {
 	list := model.NewAutocompleteData("list", "", "List receivers bound to this channel")
 	root.AddCommand(list)
 
+	metricsToken := model.NewAutocompleteData("metrics-token", "[generate]", "Show status of the Prometheus /metrics bearer token, or `generate` to mint+reveal a new one with a ready-to-paste scrape_config (sysadmin)")
+	metricsToken.AddStaticListArgument("Optional: `generate` rotates + reveals a new token; omit to just show status", false, []model.AutocompleteListItem{
+		{Item: "generate", HelpText: "Mint a new token (rotates the current one) and reveal it once with a Prometheus scrape_config"},
+	})
+	root.AddCommand(metricsToken)
+
 	root.AddCommand(model.NewAutocompleteData("reconcile", "", "Prune receivers whose Mattermost webhook was deleted out-of-band (sysadmin; also runs every 5 min)"))
 
 	// First arg is a static list (set names + `all`) for discoverability,
@@ -177,6 +193,12 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "--force", HelpText: "Confirms the bulk delete — without this, set/all targets do a dry-run preview"},
 	})
 	root.AddCommand(remove)
+
+	repair := model.NewAutocompleteData("repair", "[--force]", "Diagnose/repair the receiver-list KV store; --force rewrites a corrupt blob from the last-known in-memory list (sysadmin; recovery-only)")
+	repair.AddStaticListArgument("Optional: overwrite a corrupt KV value from the in-memory snapshot (destructive)", false, []model.AutocompleteListItem{
+		{Item: "--force", HelpText: "Rewrite the receiver-list KV value from the plugin's last-known in-memory list. Use only when `repair` reports the KV blob is unreadable."},
+	})
+	root.AddCommand(repair)
 
 	rotate := model.NewAutocompleteData("rotate", "[name|all --overdue]", "Recreate webhook with a new hook-id. `all --overdue` rotates everything past the threshold set by System Console → WebhookRotationDays.")
 	rotate.AddTextArgument("Receiver name to rotate, OR `all` followed by --overdue to rotate everything past the rotation threshold in this channel", "[name|all]", "")
@@ -275,11 +297,17 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 	case "list":
 		msg, err := p.handleList(args)
 		return joinErr(msg, err)
+	case "metrics-token":
+		msg, err := p.handleMetricsToken(args)
+		return joinErr(msg, err)
 	case "reconcile":
 		msg, err := p.handleReconcile(args)
 		return joinErr(msg, err)
 	case "remove":
 		msg, err := p.handleRemove(args)
+		return joinErr(msg, err)
+	case "repair":
+		msg, err := p.handleRepair(args)
 		return joinErr(msg, err)
 	case "rotate":
 		msg, err := p.handleRotate(args)

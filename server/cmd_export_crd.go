@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -65,6 +67,51 @@ func sanitizeK8sName(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// crdNameMaxLen is the Kubernetes cap on metadata.name (a DNS subdomain).
+const crdNameMaxLen = 253
+
+// crdNameReserve is the room left for the longest prefix + suffix a generated
+// object name can carry ("mattermost-alertmanager-" + base + "-<n>" +
+// "-fallback"), so crdBaseName's budget guarantees the final decorated name fits
+// crdNameMaxLen regardless of which of the three names uses it.
+const crdNameReserve = 48
+
+// crdBaseName builds the team-qualified base shared by every generated CRD object
+// name (Secret, AlertmanagerConfig, fallback receiver). Channel names are unique
+// only PER TEAM, so a channel-only base let two teams' `~alerts` exports produce
+// byte-identical metadata.name values that kubectl apply would silently merge —
+// one team's Secret/route overwriting the other's (CL-34). Qualifying with the
+// team mirrors receiverNameForChannel's <team>-<channel> identity.
+//
+// When the sanitized <team>-<channel> would push a decorated name past the DNS
+// cap, it is truncated with a stable hash of the FULL base rather than a plain
+// cut, so two long pairs sharing a prefix don't collapse to the same name — the
+// mapping stays injective (CL-35).
+func crdBaseName(team, channel string) string {
+	// Injectivity: the readable `<team>-<channel>` join alone is ambiguous —
+	// team="a-b"/channel="c" and team="a"/channel="b-c" both sanitize to
+	// "a-b-c", colliding two teams' Secret/AlertmanagerConfig names in one
+	// namespace even for short names (the old truncation-only hash didn't help;
+	// it hashed that already-ambiguous string). Always suffix a short hash of the
+	// UNAMBIGUOUS tuple — NUL-joined, and NUL can't appear in a slug, so distinct
+	// (team, channel) pairs always hash differently and never collide (CL-34/35).
+	readable := sanitizeK8sName(team) + "-" + sanitizeK8sName(channel)
+	sum := sha256.Sum256([]byte(team + "\x00" + channel))
+	h := hex.EncodeToString(sum[:4]) // 8 hex chars
+	base := readable + "-" + h
+	budget := crdNameMaxLen - crdNameReserve
+	if len(base) <= budget {
+		return base
+	}
+	// Over budget: truncate the readable part but ALWAYS keep the hash — it
+	// carries the injective identity that prevents the collision.
+	keep := budget - len(h) - 1 // -1 for the joining '-'
+	if keep < 1 {
+		return h
+	}
+	return strings.TrimRight(readable[:keep], "-") + "-" + h
+}
+
 // assembleCRDManifest builds the full multi-document manifest (Secret +
 // AlertmanagerConfig per shared-webhook group) for the given receivers, joined
 // with `---`. Returns the manifest and the number of AlertmanagerConfigs.
@@ -72,6 +119,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 	// Preserve first-seen order so output is deterministic across runs.
 	type group struct {
 		url     string
+		team    string
 		channel string
 		specs   []crdReceiverSpec
 	}
@@ -82,7 +130,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 		url := p.webhookURLForReceiver(ac)
 		g := groups[url]
 		if g == nil {
-			g = &group{url: url, channel: ac.Channel}
+			g = &group{url: url, team: ac.Team, channel: ac.Channel}
 			groups[url] = g
 			order = append(order, url)
 		}
@@ -106,10 +154,12 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 		if len(order) > 1 {
 			suffix = fmt.Sprintf("-%d", i+1)
 		}
-		chanName := sanitizeK8sName(g.channel)
-		secretName := "alertmanager-webhook-" + chanName + suffix
-		fallbackName := chanName + suffix + "-fallback"
-		crName := "mattermost-alertmanager-" + chanName + suffix
+		// Team-qualified base so two teams sharing a channel name can't produce
+		// colliding object names in the same namespace (CL-34/CL-35).
+		baseName := crdBaseName(g.team, g.channel)
+		secretName := "alertmanager-webhook-" + baseName + suffix
+		fallbackName := baseName + suffix + "-fallback"
+		crName := "mattermost-alertmanager-" + baseName + suffix
 
 		// Prepend the synthesized fallback receiver (the parent route's
 		// catch-all), then the group's receivers — all sharing one Secret.

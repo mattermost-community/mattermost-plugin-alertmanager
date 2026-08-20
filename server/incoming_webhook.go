@@ -2,12 +2,29 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
+
+// redactHookID returns a short, non-reversible fingerprint of a webhook ID for
+// log correlation (CL-13). A webhook ID is a durable bearer token — anyone
+// holding it can POST to /hooks/<id> unauthenticated — so the raw value must
+// never reach the logs, which flow to centralized aggregators readable far more
+// widely than the bound channel. The SHA-256 prefix is stable enough to
+// correlate log lines about the same webhook without disclosing the token.
+func redactHookID(id string) string {
+	if id == "" {
+		return "(none)"
+	}
+	sum := sha256.Sum256([]byte(id))
+	return "sha256:" + hex.EncodeToString(sum[:4])
+}
 
 // This file owns the "plugin programmatically creates Mattermost incoming
 // webhooks" subsystem. The plugin RPC API doesn't expose IncomingWebhook
@@ -74,8 +91,20 @@ func (p *Plugin) ephemeralClient4(userID string) (*model.Client4, func(), error)
 
 	c := model.NewAPIv4Client(p.localBaseURL())
 	c.SetToken(tok.Token)
+	// NewAPIv4Client hands back a zero-value http.Client (Timeout 0 = wait
+	// forever). These are loopback self-calls, so give them a real ceiling
+	// (CL-25): a single hung call must not stall the reconciler — which probes
+	// serially and, before CL-25's lock-scope narrowing, held the config write
+	// lock while doing so — and wedge every lifecycle command with no recovery
+	// short of a plugin restart.
+	c.HTTPClient = &http.Client{Timeout: ephemeralClientTimeout}
 	return c, cleanup, nil
 }
+
+// ephemeralClientTimeout bounds each self-directed Client4 call the reconciler
+// makes over loopback. Generous for a local call, short enough that a wedged
+// Mattermost can't hang the reconciler indefinitely.
+const ephemeralClientTimeout = 10 * time.Second
 
 // localBaseURL returns the URL the plugin should use to reach its own
 // Mattermost process via Client4. Reads ServiceSettings.ListenAddress
@@ -111,17 +140,51 @@ func (p *Plugin) localBaseURL() string {
 // failure mode is loud, not silent.
 const incomingWebhookDisplayNameMax = 64
 
+// webhookRollbackWarning is the admin-facing note appended when a rollback's
+// webhook deletion FAILS, so a live orphan bearer token isn't left silently with
+// the response still claiming "rolled back". It identifies the orphan by display
+// name (System Console → Integrations → Incoming Webhooks) rather than printing
+// the raw hook ID, which is itself a bearer credential we must not leak (CL-13).
+func webhookRollbackWarning(displayName string) string {
+	return fmt.Sprintf("\n\n:warning: Couldn't delete the webhook created for this operation — a live orphan may remain. Remove it manually in **System Console → Integrations → Incoming Webhooks** (look for `%s`).", displayName)
+}
+
+// truncateMiddle shortens s to at most max bytes by eliding the MIDDLE and
+// inserting "...", preserving both ends. Webhook display names are
+// <base>--<team>-<channel>; the base at the head and the channel at the tail are
+// the disambiguating parts, so a plain tail-chop (which drops the channel) can
+// make two long names collide visually. Inputs here are ASCII slugs, so byte
+// slicing can't split a multi-byte rune.
+func truncateMiddle(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	const ellipsis = "..."
+	if max <= len(ellipsis) {
+		return s[:max]
+	}
+	keep := max - len(ellipsis)
+	head := (keep + 1) / 2 // bias the extra byte to the head
+	tail := keep - head
+	return s[:head] + ellipsis + s[len(s)-tail:]
+}
+
 // createIncomingWebhook registers a Mattermost incoming webhook in the
 // destination channel. The hook is technically owned by the calling
 // admin (since the PAT we minted is theirs), but Username/IconURL
 // override fields ensure posts render as @alertmanagerbot.
 //
-// The displayName is truncated to the MM-server limit because
-// long receiver names (channel-suffixed slugs) plus the
-// "Alertmanager: " prefix overflow the 64-char cap. Truncation
-// keeps the create call from failing with "Invalid title"; the
-// receiver's full identity is preserved in plugin config and the
-// AM YAML, where the truncation doesn't apply.
+// The displayName is truncated to the MM-server limit because long
+// receiver-format names (<base>--<team>-<channel>, all three segments
+// can be long slugs) can overflow the 64-char cap. Truncation keeps the
+// create call from failing with "Invalid title"; the receiver's full
+// identity is preserved in plugin config and the AM YAML, where the
+// truncation doesn't apply. truncateMiddle keeps BOTH ends (the category/slug
+// head and the channel tail), since those are what distinguish two webhooks in
+// the System Console list — a plain tail-chop would drop the channel and make
+// long names look identical. The display name is cosmetic (nothing keys on it;
+// reconcile matches WebhookID), so a truncation collision would only be a
+// display nuisance, never a misroute — but keeping both ends avoids even that.
 //
 // Returns the hook ID — that's the public identifier going into the URL
 // path /hooks/<id>.
@@ -132,9 +195,7 @@ func (p *Plugin) createIncomingWebhook(callerUserID, channelID, displayName stri
 	}
 	defer cleanup()
 
-	if len(displayName) > incomingWebhookDisplayNameMax {
-		displayName = displayName[:incomingWebhookDisplayNameMax]
-	}
+	displayName = truncateMiddle(displayName, incomingWebhookDisplayNameMax)
 
 	hook := &model.IncomingWebhook{
 		ChannelId:   channelID,
@@ -166,9 +227,51 @@ func (p *Plugin) deleteIncomingWebhook(callerUserID, hookID string) error {
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
 			return nil
 		}
-		return fmt.Errorf("delete incoming webhook %q: %w", hookID, err)
+		return webhookDeleteError(hookID, err)
 	}
 	return nil
+}
+
+// scrubHookID replaces every raw occurrence of hookID in s with its redaction.
+// Client4 transport errors embed the failed request URL — for webhook ops that
+// path is /api/v4/hooks/incoming/<id>, so the raw hook ID (a durable bearer
+// token) can ride into logs/errors through err.Error() even when the dedicated
+// log field is redacted (CL-13). The static redaction guard can't see that
+// runtime value, so scrub it at the boundary. No-op for an empty ID.
+func scrubHookID(s, hookID string) string {
+	if hookID == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, hookID, redactHookID(hookID))
+}
+
+// redactedError carries a log-safe, redacted message while preserving the
+// original cause for errors.Is / errors.As / Unwrap. Used where the cause's text
+// can embed a bearer credential (see scrubHookID) — %w alone would copy that text
+// verbatim into Error().
+type redactedError struct {
+	msg   string
+	cause error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.cause }
+
+// webhookDeleteError wraps a webhook-delete failure WITHOUT the raw hook ID in
+// the message OR the wrapped cause's text. The returned error flows to the logs
+// via err.Error() at several call sites — a raw ID (in the message prefix OR in
+// the Client4 transport error's request URL) would undo the redaction those
+// sites apply to the dedicated log field (CL-13): a webhook ID is a durable
+// bearer token and logs reach a wider audience than the bound channel. The
+// original cause is preserved via Unwrap for errors.Is/As.
+func webhookDeleteError(hookID string, err error) error {
+	if err == nil {
+		return nil // no failure, no error — and avoids err.Error() on a nil cause
+	}
+	return &redactedError{
+		msg:   fmt.Sprintf("delete incoming webhook %s: %s", redactHookID(hookID), scrubHookID(err.Error(), hookID)),
+		cause: err,
+	}
 }
 
 // webhookURLForReceiver resolves the api_url with per-receiver

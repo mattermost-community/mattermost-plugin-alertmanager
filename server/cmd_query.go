@@ -14,6 +14,24 @@ import (
 	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
 
+// sanitizeInlineMarkdown strips the characters an attacker-controlled string
+// could use to break out of its context in a bot-rendered markdown post
+// (C-005): backtick (code-span breakout), CR/LF (heading/list injection), and
+// parens + angle brackets (disguised [x](y) links, ![x](y) images, <url>
+// autolinks). This is the Go-side counterpart to mdSanitizeDirective (CL-06):
+// /alertmanager alerts and /alertmanager silences render AM-supplied alert
+// summaries, silence comments, and createdBy values — controlled by anyone who
+// can post an alert or create a silence on the Alertmanager.
+func sanitizeInlineMarkdown(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '`', '\r', '\n', '(', ')', '<', '>':
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // derefStr returns *p, or "" if p is nil. Used throughout the silence
 // formatting code because the swagger-generated GettableSilence model
 // uses pointer fields for all required string properties (id, comment,
@@ -233,8 +251,10 @@ func formatAlertLine(a *alert.Alert) string {
 		summary = string(v)
 	}
 	resolved := strconv.FormatBool(a.Resolved())
+	// alertname, severity, and summary are all attacker-influenceable (whoever
+	// posts the alert sets them) and land in a bot-authored post — sanitize (C-005).
 	return fmt.Sprintf("- **%s** [%s] severity=`%s` resolved=`%s` — %s\n",
-		a.Name(), status, severity, resolved, summary)
+		sanitizeInlineMarkdown(a.Name()), status, sanitizeInlineMarkdown(severity), resolved, sanitizeInlineMarkdown(summary))
 }
 
 // handleListSilences lists active silences for receivers in the current
@@ -321,7 +341,7 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 		if m == nil {
 			continue
 		}
-		matchers = append(matchers, fmt.Sprintf("`%s=%q`", derefStr(m.Name), derefStr(m.Value)))
+		matchers = append(matchers, fmt.Sprintf("`%s=%q`", sanitizeInlineMarkdown(derefStr(m.Name)), sanitizeInlineMarkdown(derefStr(m.Value))))
 	}
 	var endsAt, startsAt time.Time
 	if s.EndsAt != nil {
@@ -331,14 +351,20 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 		startsAt = time.Time(*s.StartsAt)
 	}
 	endsIn := durafmt.Parse(time.Until(endsAt)).LimitFirstN(2).String()
-	id := derefStr(s.ID)
+	// Every AM-returned field here is attacker-influenceable (C-005) and must be
+	// sanitized before it lands in the bot post. That includes the silence ID:
+	// nothing validates it on THIS render path (silenceIDRegex only gates the
+	// request path in ExpireSilence), so a hostile/non-conformant AM could return
+	// an ID with backticks/newlines and break out of the code span. configName is
+	// plugin-owned (a validated receiver name), so it's safe as-is.
+	id := sanitizeInlineMarkdown(derefStr(s.ID))
 	return fmt.Sprintf(
 		"- **ID:** `%s`\n  **By:** %s • **Created:** %s ago • **Ends in:** %s\n  **Matchers:** %s\n  **Comment:** %s\n  **Expire:** `/alertmanager expire_silence %s %s`\n\n",
-		id, derefStr(s.CreatedBy),
+		id, sanitizeInlineMarkdown(derefStr(s.CreatedBy)),
 		durafmt.Parse(time.Since(startsAt)).LimitFirstN(2).String(),
 		endsIn,
 		strings.Join(matchers, " "),
-		derefStr(s.Comment),
+		sanitizeInlineMarkdown(derefStr(s.Comment)),
 		configName, id,
 	)
 }
@@ -352,6 +378,15 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 // associated with the receiver, or by using the unscoped form once we
 // add it (future v1.x).
 func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
+	// CL-07: expire_silence mutates external Alertmanager state (deletes a
+	// silence, re-firing every alert it suppressed). It was the ONLY mutating
+	// subcommand with no authorization gate — a guest could paste the ready-made
+	// command surfaced by `/alertmanager silences`. Require team_admin of this
+	// channel's team, matching remove/rotate/config, and audit the mutation.
+	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
+		return err.Error(), nil
+	}
+
 	fields := strings.Fields(args.Command)
 	if len(fields) != 4 {
 		return "Usage: `/alertmanager expire_silence <name> <silence-id>`", nil
@@ -374,7 +409,9 @@ func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 	}
 
 	if err := alertmanager.ExpireSilence(silenceID, match.AlertManagerURL, match.User, match.Password); err != nil {
+		p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "failure")
 		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %v", silenceID, name, err), nil
 	}
+	p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "success")
 	return fmt.Sprintf(":mute: Silence `%s` expired on `%s`.", silenceID, name), nil
 }

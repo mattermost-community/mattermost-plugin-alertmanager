@@ -12,14 +12,15 @@ In each Mattermost channel that has receivers, run:
 ```
 
 This deletes the Mattermost incoming webhooks the plugin created
-and removes the matching entries from plugin config. Use
+and removes the matching entries from the plugin's KV store. Use
 `/alertmanager list` first to see what's there.
 
-If you have receivers across many channels and don't want to
-visit each one, a sysadmin can iterate the System Console →
-Plugins → Alertmanager → `AlertConfigsJSON` field and clear
-it manually, then remove the matching webhooks from
-**System Console → Integrations → Incoming Webhooks**.
+The receiver list lives in the plugin's KV store (not System Console),
+so `/alertmanager remove all --force` is the supported way to clear it
+in bulk — there's no config field to hand-edit. Whatever path you use,
+also remove the underlying webhooks from **System Console →
+Integrations → Incoming Webhooks** so no orphaned `/hooks/<id>` bearer
+tokens are left live.
 
 ## 2. Strip the plugin's blocks from `alertmanager.yml`
 

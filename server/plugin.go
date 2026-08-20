@@ -45,10 +45,17 @@ type Plugin struct {
 	// instance, so no additional synchronization is needed.
 	stopReconciler func()
 
+	// stopConfigPoll halts the per-node periodic KV-reload poll started in
+	// OnActivate (the backstop that self-heals a node which missed a reload
+	// cluster event). nil if not started or already stopped. Same
+	// OnActivate/OnDeactivate serialization guarantee as stopReconciler.
+	stopConfigPoll func()
+
 	// configWriteMu serializes config read-modify-write cycles across
 	// concurrent callers (slash commands + background reconciler). The
-	// lock must be held from the initial getConfiguration read through
-	// the saveConfigs call to prevent lost updates. See saveConfigs.
+	// lock must be held across the whole updateConfigsAtomic call to keep
+	// intra-pod writers from needlessly losing compare-and-set races to
+	// each other. See updateConfigsAtomic.
 	configWriteMu sync.Mutex
 
 	// reconcilerStatusLock guards reconcilerLastRun and
@@ -105,6 +112,7 @@ func (p *Plugin) OnActivate() error {
 	// whose underlying Mattermost incoming webhook has been deleted
 	// out-of-band (System Console). See reconciler.go for details.
 	p.stopReconciler = p.startReconciler()
+	p.stopConfigPoll = p.startConfigReloadPoll()
 
 	return nil
 }
@@ -152,7 +160,105 @@ func (p *Plugin) OnDeactivate() error {
 		p.stopReconciler()
 		p.stopReconciler = nil
 	}
+	if p.stopConfigPoll != nil {
+		p.stopConfigPoll()
+		p.stopConfigPoll = nil
+	}
 	return nil
+}
+
+// configReloadPollInterval is how often each node re-reads the receiver list
+// from KV as a freshness backstop. Cluster events are the fast path; this poll
+// guarantees a node that missed one (process restart mid-broadcast, a transient
+// PublishPluginClusterEvent failure, or a node that was down) still converges
+// rather than serving a stale list until the next write.
+const configReloadPollInterval = 2 * time.Minute
+
+// startConfigReloadPoll runs the per-node reload poll and returns a stop func.
+// Runs on EVERY node (unlike the leader-only reconciler), so non-leaders converge
+// too. The reload keeps the previous in-memory list on a KV read error (F-005),
+// so a transient failure never blanks a good list.
+func (p *Plugin) startConfigReloadPoll() func() {
+	ticker := time.NewTicker(configReloadPollInterval)
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				// select picks randomly when both channels are ready, so a tick
+				// that fired concurrently with stop must not trigger a reload —
+				// re-check done first (F-007) so no KV/config work runs after
+				// OnDeactivate.
+				select {
+				case <-done:
+					return
+				default:
+				}
+				p.reloadConfigsFromKVLocked()
+			}
+		}
+	}()
+	// The stop func waits for the goroutine to actually exit (including any
+	// in-flight reload) so the old instance can't keep touching KV/config after
+	// OnDeactivate returns.
+	return func() {
+		ticker.Stop()
+		close(done)
+		<-stopped
+	}
+}
+
+// reloadConfigsFromKVLocked reloads the receiver list from KV under configWriteMu
+// (serialized with local writes and cluster-event reloads, same as
+// OnPluginClusterEvent). A read error is logged and the current in-memory list is
+// kept (F-005) — never blanked.
+func (p *Plugin) reloadConfigsFromKVLocked() {
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+	if err := p.reloadAlertConfigsFromKV(); err != nil {
+		p.API.LogWarn("periodic KV reload failed (keeping current in-memory list)", "err", err.Error())
+	}
+}
+
+// broadcastConfigReload tells peer nodes to reload the receiver list from KV
+// after a committed write. Best-effort: a failed broadcast is logged, not fatal —
+// the writing node is already fresh, and peers still converge on their next
+// reconcile cycle or config change. Called once per successful commit (outside
+// the CAS retry loop). Reliable send so a briefly-unreachable peer still gets it.
+func (p *Plugin) broadcastConfigReload() {
+	if err := p.API.PublishPluginClusterEvent(
+		model.PluginClusterEvent{Id: clusterEventReloadConfigs},
+		model.PluginClusterEventSendOptions{SendType: model.PluginClusterEventSendTypeReliable},
+	); err != nil {
+		p.API.LogWarn("could not broadcast receiver-list reload to peers (they converge on next reconcile/config change)", "err", err.Error())
+	}
+}
+
+// OnPluginClusterEvent handles intra-cluster plugin events. The only event is
+// clusterEventReloadConfigs: another node wrote the receiver list to KV (which
+// does NOT fire OnConfigurationChange on peers), so reload it here to stop this
+// node serving a stale in-memory list. Idempotent — it just syncs to whatever KV
+// currently holds, so duplicate or out-of-order events are harmless.
+func (p *Plugin) OnPluginClusterEvent(_ *plugin.Context, ev model.PluginClusterEvent) {
+	if ev.Id != clusterEventReloadConfigs {
+		return
+	}
+	// Serialize the reload with local writes. Without configWriteMu, a reload
+	// that read KV just before a concurrent local updateConfigsAtomic committed
+	// could setConfiguration the OLDER snapshot AFTER the local write set the
+	// newer one — leaving in-memory stale relative to KV, with no further event
+	// to correct it (the local write broadcasts to peers, not to this node). The
+	// per-swap configurationLock can't prevent that ordering clobber; holding the
+	// write lock across the KV read + swap makes reload and local RMW exclusive.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+	if err := p.reloadAlertConfigsFromKV(); err != nil {
+		p.API.LogWarn("failed to reload receiver list on cluster event", "err", err.Error())
+	}
 }
 
 // getConfiguration returns the current snapshot. Treat as immutable;

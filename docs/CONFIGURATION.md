@@ -66,6 +66,50 @@ Mattermost-side and use whatever TLS Mattermost is configured with.
 -----END CERTIFICATE-----
 ```
 
+### `AlertManagerAllowedCIDRs`
+
+SSRF destination allowlist for the plugin's outbound Alertmanager calls. A team
+admin supplies the Alertmanager URL and the Mattermost server then connects to it
+(inventory probes, `validate`, `alerts`/`silences`/`status`), so an unrestricted
+URL is an SSRF primitive. The guard runs at **connect time against the resolved
+IP**, so a hostname that resolves to a blocked address (incl. DNS rebinding) is
+caught, not just literal IPs.
+
+**Blocked by default** (no allowlist): loopback (`127.0.0.0/8`, `::1`), link-local
+incl. cloud metadata `169.254.169.254`, multicast, unspecified (`0.0.0.0`), **and
+all private/internal ranges** — RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT
+(`100.64/10`), and IPv6 ULA (`fc00::/7`). With an empty setting, only **public**
+destinations are reachable.
+
+**Requirement — Alertmanager must be directly reachable from the Mattermost
+server.** The plugin connects to Alertmanager directly and deliberately ignores
+`HTTP_PROXY` / `HTTPS_PROXY` on the Mattermost process: through a proxy the SSRF
+guard would only see the proxy's address while the proxy fetched the real
+(possibly blocked) destination. Routing Alertmanager API calls through a
+corporate/egress proxy is therefore not supported — if the Mattermost server has
+no direct network path to Alertmanager, `alerts`/`status`/`validate` and the
+inventory probes will fail. (In-cluster and same-network deployments are direct,
+so this only affects egress-restricted, proxy-only topologies.)
+
+**Because private is blocked by default, an in-cluster Alertmanager on a private
+IP or `*.svc.cluster.local` will NOT work until you list its CIDR here.** This is
+the deliberate "no internal SSRF by default" posture — set the allowlist to the
+network your Alertmanager runs in:
+
+```
+10.0.0.0/8
+```
+
+An explicit entry re-enables an otherwise-blocked address (e.g. `127.0.0.1/32`
+for a same-host Alertmanager), **except** link-local / cloud-metadata /
+multicast / unspecified addresses, which are never reachable even if an entry
+would match them. A catch-all `0.0.0.0/0` or `::/0` is rejected outright — it
+would defeat the guard, so name your actual networks instead. A malformed
+setting where **no** entry is usable (all invalid, or only `/0`) fails closed: if
+a previous good allowlist is live it is kept (a typo can't silently widen egress);
+if none is (e.g. first load / server start), **all** Alertmanager egress is denied
+until the setting is fixed — it never falls back to allowing public destinations.
+
 ### `MetricsToken`
 
 When set, exposes Prometheus-format metrics at
@@ -74,7 +118,18 @@ the endpoint using this token in the `Authorization: Bearer <token>`
 header. Leave empty to disable the endpoint entirely (returns 404
 when unset).
 
-Generate a random token:
+This field is `secret: true`, so once saved it shows blank in System
+Console and **can't be read back**. If you lose the value (or need to
+rotate it), don't guess — run the slash command below, which mints a
+new token, stores it, and reveals it once in an ephemeral reply along
+with a ready-to-paste `scrape_config`:
+
+```
+/alertmanager metrics-token generate   # sysadmin-only; rotates the token
+/alertmanager metrics-token            # status only — does not rotate or reveal
+```
+
+Or generate one yourself and paste it into the setting:
 
 ```bash
 openssl rand -hex 32
@@ -105,12 +160,26 @@ the auto-delete janitor removes them. Default `72`. Set to `0` to
 disable auto-delete (files persist forever — not recommended for
 production).
 
-### Internal: `AlertConfigsJSON`
+### Internal: receiver list storage
 
-System Console → Plugins → Alertmanager → Advanced shows
-`AlertConfigsJSON` — the JSON-serialized receiver list managed by
-slash commands. Don't hand-edit unless you're recovering from a bug
-or batch-importing from another tool. Schema:
+The receiver list is stored in the plugin **KV store** (key
+`alertconfigs:v1`), not in the plugin config. It holds webhook IDs
+and any Alertmanager basic-auth passwords, and the KV store — unlike
+plugin config — is not returned by `GET /api/v4/config`, so those
+secrets aren't exposed to delegated System Console roles
+(`sysconsole_read_plugins`). It is managed entirely by slash commands;
+there is no System Console field to hand-edit it.
+
+> **Breaking change / upgrade note.** Earlier builds stored this list in the
+> plugin config map (`alertconfigsjson`). The move to the KV store is a clean
+> break with **no automatic migration** — after upgrading, `/alertmanager list`
+> starts empty and you re-create receivers with `/alertmanager add`. The old
+> config value is ignored (and the underlying Mattermost webhooks it referenced
+> are orphaned — delete them under System Console → Integrations → Incoming
+> Webhooks if you're not re-adding). This is intentional; the plugin is not
+> deployed in long-lived installs that would need a data migration.
+
+The stored JSON shape is:
 
 ```json
 [
@@ -127,6 +196,30 @@ or batch-importing from another tool. Schema:
   }
 ]
 ```
+
+### Alertmanager URL format
+
+`alertManagerURL` is the Alertmanager **base** URL — the plugin appends
+`/api/v2/...` itself when it queries the backend. Consequences:
+
+- **A path prefix works.** Alertmanager behind a reverse proxy with
+  `--web.external-url=https://mon.example.com/alertmanager` is fine; the
+  appended path lands under the prefix.
+- **A query string or fragment is rejected** — including a bare trailing `?`
+  or `#`. Either terminates the base URL early and silently truncates the
+  appended API path onto a different endpoint, so `/alertmanager add` refuses
+  them.
+- **Scheme must be `http://` or `https://`**, a host is required, and the host
+  and any path are held to a strict character grammar (blocks shell/CSV
+  injection, since the URL renders into a copy-paste `curl` and an exported CSV).
+- **No embedded credentials** — set the basic-auth `user`/`password` fields on
+  the receiver entry instead.
+
+A value that bypasses these (a direct KV write, say) is **neutered on load**,
+not rejected: a hard failure would stop the whole plugin loading. The bad URL is
+blanked, disabling only that receiver's `alerts`/`status`/`silences` queries —
+alert *delivery* is unaffected (it runs through the Mattermost webhook, not this
+URL).
 
 ## What the plugin generates
 

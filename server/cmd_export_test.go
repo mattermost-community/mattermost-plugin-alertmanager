@@ -50,19 +50,68 @@ func TestRedactOtherChannelsInDiff(t *testing.T) {
 		}
 	})
 
-	t.Run("lines outside receivers block pass through", func(t *testing.T) {
+	t.Run("global-level secrets are redacted; non-secret global passes through (F-004)", func(t *testing.T) {
 		diff := `  global:
     smtp_from: alerts@example.com
-    smtp_password: 'global-pw-stays'
+    smtp_auth_password: 'global-pw-leak'
+    slack_api_url: 'https://hooks.slack.com/services/global-secret'
+    victorops_api_key: 'vo-key-leak'
+  receivers:
+    - name: webhook-other
+      webhook_configs:
+        - url: 'https://internal/hook-leak'
+      msteams_configs:
+        - authorization:
+            credentials: 'bearer-leak'
+      slack_configs:
+        - http_config:
+            oauth2:
+              client_secret: 'oauth-leak'
   route:
     receiver: default
 `
 		got := redactOtherChannelsInDiff(diff, nil)
-		// We only redact INSIDE receivers blocks. Global-level
-		// smtp_password is technically a secret but it's not in
-		// the redactor's scope today.
-		if !strings.Contains(got, "global-pw-stays") {
-			t.Fatalf("global-level content should pass through, got:\n%s", got)
+		for _, secret := range []string{"global-pw-leak", "global-secret", "vo-key-leak", "hook-leak", "bearer-leak", "oauth-leak"} {
+			if strings.Contains(got, secret) {
+				t.Fatalf("secret %q leaked through the diff (F-004):\n%s", secret, got)
+			}
+		}
+		// Non-secret global content and route structure still visible.
+		if !strings.Contains(got, "alerts@example.com") {
+			t.Fatalf("non-secret global content should pass through:\n%s", got)
+		}
+		if !strings.Contains(got, "receiver: default") {
+			t.Fatalf("route structure should pass through:\n%s", got)
+		}
+	})
+
+	t.Run("proxy_url credentials are redacted (F-004)", func(t *testing.T) {
+		diff := `  receivers:
+    - name: other-team
+      slack_configs:
+        - http_config:
+            proxy_url: 'http://proxyuser:proxypass@proxy.example.com:8080'
+`
+		got := redactOtherChannelsInDiff(diff, nil)
+		if strings.Contains(got, "proxypass") || strings.Contains(got, "proxyuser") {
+			t.Fatalf("proxy_url credentials leaked:\n%s", got)
+		}
+	})
+
+	t.Run("block-scalar secrets incl. continuation lines are redacted (F-003)", func(t *testing.T) {
+		diff := `  receivers:
+    - name: other-team
+      webhook_configs:
+        - url: |
+            https://mattermost.example.com/hooks/block-scalar-secret
+          send_resolved: true
+`
+		got := redactOtherChannelsInDiff(diff, nil)
+		if strings.Contains(got, "block-scalar-secret") {
+			t.Fatalf("block-scalar secret leaked on a continuation line:\n%s", got)
+		}
+		if !strings.Contains(got, "send_resolved") {
+			t.Fatalf("sibling key after the block scalar was over-redacted (block not bounded by key column):\n%s", got)
 		}
 	})
 
@@ -79,6 +128,40 @@ func TestRedactOtherChannelsInDiff(t *testing.T) {
 		}
 		if strings.Contains(got, "pd-routing-xyz") {
 			t.Fatalf("routing_key leaked, got:\n%s", got)
+		}
+	})
+
+	t.Run("flow-style YAML secrets are redacted", func(t *testing.T) {
+		// Alertmanager accepts flow-style ({ } / [ ]); the line-anchored block-style
+		// regex can't see keys that aren't at the start of the line. All three secrets
+		// below sit inside flow collections and must still be masked.
+		diff := `  receivers:
+    - name: other-team
+      webhook_configs: [{url: "https://mm.example/hooks/flow-secret", send_resolved: true}]
+      http_config: {proxy_url: "http://fuser:fpass@proxy.example:8080"}
+      pagerduty_configs: [{service_key: flow-pd-key}]
+`
+		got := redactOtherChannelsInDiff(diff, nil)
+		for _, secret := range []string{"flow-secret", "fuser", "fpass", "flow-pd-key"} {
+			if strings.Contains(got, secret) {
+				t.Fatalf("flow-style secret %q leaked through the diff:\n%s", secret, got)
+			}
+		}
+		// Non-secret flow keys on the same line stay visible (only the value is masked).
+		if !strings.Contains(got, "send_resolved") {
+			t.Fatalf("non-secret flow key over-redacted:\n%s", got)
+		}
+	})
+
+	t.Run("own-channel flow-style secrets are NOT redacted", func(t *testing.T) {
+		// The caller needs their own additions/context intact to paste.
+		diff := `  receivers:
+    - name: own-team
+      webhook_configs: [{url: "https://mm.example/hooks/keep-me"}]
+`
+		got := redactOtherChannelsInDiff(diff, map[string]bool{"own-team": true})
+		if !strings.Contains(got, "keep-me") {
+			t.Fatalf("own-channel flow-style URL should be preserved:\n%s", got)
 		}
 	})
 }
