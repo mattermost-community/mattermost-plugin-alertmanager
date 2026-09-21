@@ -9,10 +9,10 @@ boundaries, and trade-offs of each approach.
 
 ## TL;DR
 
-| Plugin | AM block type | Plugin runtime role | Authentication |
+| Approach | AM block type | Plugin runtime role | Authentication |
 |---|---|---|---|
-| `cpanato/mattermost-plugin-alertmanager` (upstream) | `webhook_configs` | Receives every alert payload, parses, formats, posts | Plugin-managed token per receiver |
-| This plugin  | `slack_configs` | None at runtime — only at bootstrap/lifecycle | Mattermost-managed hook-id (native incoming webhook) |
+| `webhook_configs` | `webhook_configs` | Receives every alert payload, parses, formats, posts | Plugin-managed token per receiver |
+| This plugin (`slack_configs`) | `slack_configs` | None at runtime — only at bootstrap/lifecycle | Mattermost-managed hook-id (native incoming webhook) |
 
 **The Alertmanager plugin moves alert delivery out of the plugin and into
 Mattermost's native incoming-webhook system, treating the plugin as a
@@ -47,7 +47,7 @@ determines who owns the post format.
 
 ---
 
-## Approach 1: `webhook_configs` (cpanato design)
+## Approach 1: `webhook_configs`
 
 ```
   ┌──────────────┐    POST /plugins/alertmanager/api/webhook?token=X
@@ -79,10 +79,10 @@ the user-as-bot identity; everything else runs in plugin code.
   like a "Expire silence" button on a silence-state post that calls
   back into the plugin.
 - **Plugin-layer dedup.** When Alertmanager runs in HA mode, every peer
-  fires every webhook. A plugin-internal dedup cache (the cpanato
-  plugin had a 60s TTL cache keyed on group_key + status hash) absorbs
-  the fan-out. Without the plugin in the receive path, you'd have to
-  dedup somewhere upstream of Mattermost or accept N copies.
+  fires every webhook. A plugin-internal dedup cache (e.g., a 60s TTL
+  cache keyed on group_key + status hash) absorbs the fan-out. Without
+  the plugin in the receive path, you'd have to dedup somewhere upstream
+  of Mattermost or accept N copies.
 - **Format flexibility.** Plugin can render anything: custom
   attachments, threaded replies, dynamically pick channels per alert,
   rewrite tags, etc.
@@ -99,9 +99,8 @@ the user-as-bot identity; everything else runs in plugin code.
   authentication, request parsing, deserialization). Bugs here are
   CVE-shaped.
 - The plugin owns the post format. Changes require a plugin rebuild +
-  redeploy. The cpanato plugin had a four-year-open `Custom Templates`
-  issue (#19) precisely because the format was hardcoded and adding
-  flexibility required substantial new code.
+  redeploy. Hardcoding the format makes adding templating flexibility
+  a substantial code change.
 - Plugin-managed tokens are an ops burden: rotation, distribution to
   Alertmanager config, secret leakage prevention. Mattermost has no
   visibility into them — they live in plugin settings under a custom
@@ -111,7 +110,7 @@ the user-as-bot identity; everything else runs in plugin code.
 
 ---
 
-## Approach 2: `slack_configs` (federal design)
+## Approach 2: `slack_configs` (this plugin)
 
 ```
   ┌──────────────┐    POST <site>/hooks/<hook-id>
@@ -176,9 +175,9 @@ with Mattermost handling auth and post creation.
   malfunctioning and alert delivery still works — only the slash
   commands stop. That's a strict reliability improvement for the
   primary use case.
-- **Code mass.** ~40% less code than the cpanato plugin (no receiver,
-  no payload parser, no per-config token machinery, no dedup cache).
-  Less to maintain, less to test, less to break.
+- **Code mass.** ~40% less code than a `webhook_configs` implementation
+  (no receiver, no payload parser, no per-config token machinery, no
+  dedup cache). Less to maintain, less to test, less to break.
 
 ### What it costs
 
@@ -188,7 +187,7 @@ with Mattermost handling auth and post creation.
   Mattermost's webhook receiver doesn't add them. So an "Expire
   Silence" button on a silence post isn't possible — users have to run
   `/alertmanager expire_silence <name> <silence-id>` instead. This is
-  the meaningful UX regression vs cpanato.
+  the meaningful UX cost of the `slack_configs` approach.
 - **No plugin-layer dedup.** HA Alertmanager peers will fan out posts.
   Mitigation lives on the Alertmanager side: matching `external_labels`
   across peers, careful inhibit_rules, etc. The plugin can't help here
@@ -204,7 +203,7 @@ with Mattermost handling auth and post creation.
 
 ## Comparison summary
 
-| Dimension | `webhook_configs` (cpanato) | `slack_configs` (federal) |
+| Dimension | `webhook_configs` approach | `slack_configs` (this plugin) |
 |---|---|---|
 | Plugin runtime path | Receives, parses, formats, posts | None at runtime |
 | Setup time path | Configure receiver token in plugin settings + AM YAML | `/alertmanager add` creates webhook + prints YAML |
@@ -231,8 +230,6 @@ We don't claim `slack_configs` is universally better. Pick
   requires non-standard payloads)
 - You want plugin-layer policy on every alert (dedup, suppression,
   enrichment, conditional routing)
-- You're already running the cpanato plugin and the migration cost
-  isn't worth it
 
 For a Mattermost-native deployment where alerts are read-only
 notifications that lead users into Mattermost-side actions (running
@@ -243,22 +240,22 @@ SRE/oncall workflows — `slack_configs` is the lower-overhead choice.
 
 ## Migration cost between the two
 
-Each direction has a one-time cost:
+Switching approaches has a one-time cost. Neither path requires
+Alertmanager downtime — the receiver swap can be staged: add the new
+receiver, route alerts to both temporarily, observe, then remove the old
+one.
 
-**cpanato → federal:** re-run `/alertmanager add` for each receiver,
-update `alertmanager.yml` to swap `webhook_configs:` blocks for
-`slack_configs:` blocks. Webhook URLs change; tokens are gone. Routing
-rules in the `route:` tree can keep the same `receiver:` names if you
-preserve them. Time: ~5 min per receiver.
+**Migrating to `slack_configs` (this plugin):** run `/alertmanager add`
+for each receiver, update `alertmanager.yml` to swap `webhook_configs:`
+blocks for `slack_configs:` blocks. Webhook URLs change; plugin-managed
+tokens are replaced by Mattermost-native hook IDs. Routing rules in the
+`route:` tree can keep the same `receiver:` names if you preserve them.
+Time: ~5 min per receiver.
 
-**federal → cpanato:** the reverse. Install cpanato, set up plugin
-config with per-receiver tokens, update `alertmanager.yml` to swap
-`slack_configs:` for `webhook_configs:`. Time: ~5 min per receiver
-plus token generation/rotation overhead.
-
-Neither path requires Alertmanager downtime — the receiver swap can
-be staged: add new receiver, route alerts to both temporarily, observe,
-remove old.
+**Migrating away from `slack_configs`:** install a `webhook_configs`
+plugin, set up per-receiver tokens, update `alertmanager.yml` to swap
+`slack_configs:` for `webhook_configs:`. Time: ~5 min per receiver plus
+token generation overhead.
 
 ---
 
@@ -278,14 +275,14 @@ at organizational scale:
   "the thing in the middle of all alert traffic."
 - **Disaster recovery.** If the plugin database state is lost (corruption,
   bad migration, plugin uninstall+reinstall) but Mattermost itself is
-  fine, the webhooks remain — alerts keep flowing. With cpanato, lost
-  plugin state means lost receiver configs and dead webhooks until
-  rebuilt.
+  fine, the webhooks remain — alerts keep flowing. With a
+  `webhook_configs` approach, lost plugin state means lost receiver
+  configs and dead webhooks until rebuilt.
 - **Permission model.** Native webhook permissions live in Mattermost's
   role system. Operators can grant fine-grained access to
-  manage_incoming_webhooks without granting plugin admin. With
-  cpanato, "edit plugin settings" was the only access lever, and it
-  was all-or-nothing.
+  `manage_incoming_webhooks` without granting plugin admin. A
+  `webhook_configs` design's only access lever is "edit plugin settings"
+  — all-or-nothing.
 
 ---
 
@@ -310,7 +307,7 @@ added three checks along that boundary:
   inventory page. Catches hand-edits of `alertmanager.yml` plus
   post-rotation gaps where the operator rotated a webhook via the
   plugin but didn't paste the new YAML into AM.
-- **Schema validation.** `/alertmanager export --diff-against-loaded`
+- **Schema validation.** `/alertmanager show diff`
   runs the merged YAML through `prometheus/alertmanager/config.Load`
   before the operator pastes. Surfaces undefined-receiver
   references, malformed matchers, and route-tree errors at

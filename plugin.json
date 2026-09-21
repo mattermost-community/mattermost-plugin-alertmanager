@@ -15,7 +15,7 @@
     },
     "settings_schema": {
         "header": "## Alertmanager Plugin\n\nPrometheus Alertmanager alerts in Mattermost, with the runbook attached.\n\n- 📚 [Documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📈 [Sample Prometheus rules](/plugins/com.mattermost.alertmanager/public/help/prometheus-rules.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nRun `/alertmanager help` in any channel for commands. Version `__PLUGIN_VERSION__` — [release notes](__PLUGIN_RELEASE_URL__).",
-        "footer": "### Most-used commands\n\n| Command | When |\n|---|---|\n| `/alertmanager add <team> <channel> <am-url>` | First-time setup — creates the 30 canonical receivers in a channel |\n| `/alertmanager rules` | Get the sample Prometheus rules (view or download) |\n| `/alertmanager list` | See receivers bound to this channel |\n\nRun `/alertmanager help` in chat for the full command list.",
+        "footer": "### Most-used commands\n\n| Command | When |\n|---|---|\n| `/alertmanager add <team> <channel> <am-url>` | First-time setup — creates the 36 canonical receivers in a channel |\n| `/alertmanager rules` | Get the sample Prometheus rules (view or download) |\n| `/alertmanager list` | See receivers bound to this channel |\n\nRun `/alertmanager help` in chat for the full command list.",
         "settings": [
             {
                 "key": "AssembledYAMLTTLHours",

@@ -66,9 +66,9 @@ The diagnostic content above is parsed from the embedded runbook file
 [`runbooks/high-cpu-usage.md`](runbooks/high-cpu-usage.md) at YAML-render
 time. Placeholders like `<namespace>` and `<pod>` are substituted by
 Alertmanager at alert delivery time using the alert's actual labels.
-Each of the 30 shipped runbooks (compute / application / database /
-storage / networking / observability / security) follows the same
-WHERE / WHAT / READ structure.
+Each of the 36 shipped runbooks (compute / application / database /
+mattermost / storage / networking / observability / security) follows
+the same WHERE / WHAT / READ structure.
 
 ## Two-minute setup
 
@@ -81,9 +81,9 @@ WHERE / WHAT / READ structure.
    /alertmanager add ops alerts http://alertmanager:9093 all
    ```
 
-   The plugin creates 30 Mattermost incoming webhooks (one per
-   runbook) bound to this channel and DMs you the assembled
-   `receivers.yml` + `routes.yml`.
+   The plugin creates receivers for all 36 runbooks bound to this
+   channel (one shared Mattermost webhook per group set) and DMs you
+   the assembled `receivers.yml` + `routes.yml`.
 
 3. **Paste into `alertmanager.yml`, reload Alertmanager.**
 
@@ -106,8 +106,8 @@ WHERE / WHAT / READ structure.
 |---|---|
 | `/alertmanager validate --simulate runbook=high-cpu-usage` | Confirm a Prometheus rule's labels will actually route to the expected receiver (no synthetic alert fired) |
 | `/alertmanager list` | See receivers bound to the current channel |
-| `/alertmanager config <name>` | Detail card + slack_configs YAML for one receiver |
-| `/alertmanager export [--diff-against-loaded]` | Re-render the channel's YAML, or diff against AM's loaded config with schema validation |
+| `/alertmanager show <name>` | Detail card + slack_configs YAML for one receiver |
+| `/alertmanager show --export [--diff-against-loaded]` | Re-render the channel's YAML, or diff against AM's loaded config with schema validation |
 | `/alertmanager rotate <name>` | Rotate a webhook (new hook-id, paste new YAML, reload AM) |
 | `/alertmanager rotate all --overdue` | Rotate every receiver past the configured threshold |
 | `/alertmanager about` | Plugin info, settings, reconciler health |
@@ -123,7 +123,7 @@ track), and a route simulator form.
 Everything is discoverable from chat and the repo:
 
 - **In chat:** `/alertmanager help` (command reference) and `/alertmanager docs <topic>` — embedded docs rendered inline. Topics: `alerts` (full alert catalog by group), `requirements` (per-alert metric / exporter / tooling), `slash_commands`, `architecture`, `configuration`, `kubernetes`, `rotation`.
-- **Runbook library:** [`runbooks/INDEX.md`](runbooks/INDEX.md) — all 30 runbooks by category; each renders to a page linked from its alert.
+- **Runbook library:** [`runbooks/INDEX.md`](runbooks/INDEX.md) — all 36 runbooks by category; each renders to a page linked from its alert.
 - **Setup & ops docs:** [`docs/QUICKSTART.md`](docs/QUICKSTART.md) (first alert end-to-end), [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (settings + Prometheus wiring), [`docs/KUBERNETES.md`](docs/KUBERNETES.md) (HA deploy), [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) (build/test/deploy), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Key features for daily use
@@ -155,7 +155,7 @@ Alertmanager templates the post body — including the inlined Quick
 diagnostics from the runbook — and POSTs to the Mattermost webhook
 URL. The plugin doesn't intercept alert payloads at runtime; it
 only owns the YAML generation, webhook lifecycle, and the inventory
-page. The 30 runbook markdown files ship embedded in the plugin
+page. The 36 runbook markdown files ship embedded in the plugin
 binary via Go's `embed.FS`.
 
 For deeper context: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)

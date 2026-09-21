@@ -959,6 +959,7 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	b.WriteString("\n**slack_configs YAML** (paste under `receivers:` in alertmanager.yml):\n\n```yaml\n")
 	b.WriteString(yaml)
 	b.WriteString("```\n\n")
+	b.WriteString(":information_source: _Template re-rendered at export time — may differ from what's currently loaded in Alertmanager if templates changed since this receiver was created. Run `/alertmanager validate` to confirm the live AM state._\n\n")
 	b.WriteString(fmt.Sprintf("**Reload Alertmanager:**\n```\ncurl -X POST %s/-/reload\n```\n\n", match.AlertManagerURL))
 	b.WriteString("**Actions:**\n")
 	b.WriteString(fmt.Sprintf("- `/alertmanager rotate %s` — rotate webhook URL (URL changes, paste the new YAML)\n", match.Name))

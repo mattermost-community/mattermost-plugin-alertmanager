@@ -59,7 +59,7 @@ channel:
 /alertmanager add <team-slug> smoke-test http://alertmanager:9093 compute
 ```
 
-**Pass:** ephemeral response shows "complete: 6 created, 0
+**Pass:** ephemeral response shows "complete: 9 created, 0
 skipped, 0 failed." and the bot DM's you with
 `alertmanager-receivers.yml` + `alertmanager-routes.yml`.
 **Fail:** any per-receiver errors. The most common cause is
@@ -140,7 +140,7 @@ should have:
 3. MM webhook integrations page — confirm the
    `high-cpu-usage--smoke-test` hook still exists
 4. AM's `slack_configs.api_url` matches the actual MM
-   webhook URL (compare `/alertmanager config
+   webhook URL (compare `/alertmanager show
    high-cpu-usage--smoke-test` output against
    `alertmanager.yml`)
 

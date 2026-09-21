@@ -90,11 +90,19 @@ func httpBackoff() *backoff.ExponentialBackOff {
 // makes Alertmanager instances behind an authenticating reverse proxy usable
 // from the plugin's slash commands.
 //
+// Returns (body, statusCode, error). Reading the full body inside this function
+// before returning is intentional: the internal context's defer cancel() fires
+// the moment this function returns, which would cancel the HTTP connection and
+// cause callers reading resp.Body to get intermittent "context canceled" errors
+// depending on whether the response was already in the TCP buffer. By reading
+// fully here while the context is still live, callers get plain []byte and the
+// cancel timing becomes irrelevant.
+//
 // Resolves the long-standing issue #7 (commands fail behind basic auth) and
 // pulls in the work from open PR #604 (author: lipaysamart).
-func httpRetry(method, url, user, password string) (*http.Response, error) {
-	var resp *http.Response
-	var err error
+func httpRetry(method, url, user, password string) ([]byte, int, error) {
+	var body []byte
+	var statusCode int
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -108,33 +116,40 @@ func httpRetry(method, url, user, password string) (*http.Response, error) {
 			req.SetBasicAuth(user, password)
 		}
 
-		resp, err = GetClient().Do(req) // nolint: bodyclose
+		resp, err := GetClient().Do(req)
 		if err != nil {
 			return err
 		}
+		defer func() { _ = resp.Body.Close() }()
 
-		// On a retryable status, close THIS attempt's body before returning the
-		// error — backoff will re-issue and overwrite resp, so an unclosed body
-		// here leaks the connection until GC.
+		statusCode = resp.StatusCode
+
+		// On a retryable status, return an error to trigger backoff.
+		// The deferred Body.Close above handles the connection for this attempt.
 		switch method {
 		case http.MethodGet:
 			if resp.StatusCode != http.StatusOK {
-				_ = resp.Body.Close()
 				return fmt.Errorf("status code is %d not 200", resp.StatusCode)
 			}
 		case http.MethodPost:
 			if resp.StatusCode == http.StatusBadRequest {
-				_ = resp.Body.Close()
 				return fmt.Errorf("status code is %d not 3xx", resp.StatusCode)
 			}
 		}
 
+		// Read the full body while the context is still live, decoupling callers
+		// from the context's lifetime entirely.
+		b, readErr := ReadAllLimited(resp.Body)
+		if readErr != nil {
+			return readErr
+		}
+		body = b
 		return nil
 	}
 
 	if errRetry := backoff.Retry(fn, httpBackoff()); errRetry != nil {
-		return nil, errRetry
+		return nil, 0, errRetry
 	}
 
-	return resp, err
+	return body, statusCode, nil
 }

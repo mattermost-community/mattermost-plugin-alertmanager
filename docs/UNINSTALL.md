@@ -25,7 +25,7 @@ tokens are left live.
 ## 2. Strip the plugin's blocks from `alertmanager.yml`
 
 The plugin renders receiver and route blocks into your
-`alertmanager.yml` via `/alertmanager export` and `/alertmanager
+`alertmanager.yml` via `/alertmanager show export` and `/alertmanager
 add`. Those blocks live on the AM side and won't be removed by
 uninstalling the plugin.
 

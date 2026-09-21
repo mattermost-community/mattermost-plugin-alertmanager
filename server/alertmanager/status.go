@@ -1,6 +1,7 @@
 package alertmanager
 
 import (
+	"bytes"
 	"net/http"
 	"time"
 )
@@ -22,13 +23,12 @@ type StatusResponse struct {
 func Status(alertmanagerURL, user, password string) (StatusResponse, error) {
 	var statusResponse StatusResponse
 
-	resp, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/status", user, password)
+	body, _, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/status", user, password)
 	if err != nil {
 		return statusResponse, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
-	if err := DecodeJSONLimited(resp.Body, &statusResponse); err != nil {
+	if err := DecodeJSONLimited(bytes.NewReader(body), &statusResponse); err != nil {
 		return statusResponse, err
 	}
 	return statusResponse, nil

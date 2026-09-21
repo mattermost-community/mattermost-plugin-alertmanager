@@ -285,7 +285,7 @@ site, so reading either form gets you to the same place.
 // runbookIndexBody is the landing page for the runbook library.
 const runbookIndexBody = `# SRE Runbooks
 
-30 runbooks covering the most common alert categories an SRE
+36 runbooks covering the most common alert categories an SRE
 encounters. Each follows the same structure: severity → what this
 means → diagnostic steps → common causes & fixes → escalation →
 post-incident.
@@ -320,6 +320,9 @@ Notification Failure.
 Spike, Privileged Container Started, Interactive Shell in Container,
 RBAC Privilege Escalation, Security Tooling Down.
 
+**Mattermost Application** — API High Latency, High Login Failures,
+WebSocket Drop, DB Slow Query, High Error Rate, License Expiring Soon.
+
 Use the sidebar on the left to navigate. Use the search box up top to
 jump straight to a runbook by name or by error string.
 
@@ -335,8 +338,10 @@ placeholders. The on-call wants to copy-paste.
 // rulesSrcPath / rulesOutYAML — the shipped sample rules and where the raw
 // copy lands in the help site. Relative to build/render-docs/'s working dir.
 const (
-	rulesSrcPath = "../../samples/prometheus-rules.yaml"
-	rulesOutYAML = "../../public/help/prometheus-rules.yaml"
+	rulesSrcPath  = "../../samples/prometheus-rules.yaml"
+	rulesOutYAML  = "../../public/help/prometheus-rules.yaml"
+	rulesCRDOut   = "../../public/help/mattermost-prometheus-rules-crd.yaml"
+	rulesCRDNS    = "monitoring" // default namespace baked into the static CRD file
 )
 
 func main() {
@@ -368,7 +373,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("rendered %d total pages across %d sites (+ raw prometheus-rules.yaml)\n", totalPages, len(sections))
+	// Pre-generate the PrometheusRule CRD manifest with the default namespace
+	// so the help page can offer a static download link alongside the plain YAML.
+	if err := writeCRDRules(); err != nil {
+		fmt.Fprintln(os.Stderr, "render-docs:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("rendered %d total pages across %d sites (+ raw prometheus-rules.yaml + CRD manifest)\n", totalPages, len(sections))
 }
 
 // buildRulesPage renders the shipped sample Prometheus rules into a help-site
@@ -380,8 +392,12 @@ func buildRulesPage() (page, error) {
 	if err != nil {
 		return page{}, fmt.Errorf("read %s: %w", rulesSrcPath, err)
 	}
-	intro := `<p>Sample Prometheus alerting rules shipped with the plugin — one working rule for every runbook (31 rules across 30 runbooks). Copy them into your Prometheus, tune the thresholds, and alerts route straight to the matching runbook in chat.</p>` +
-		`<p><a href="prometheus-rules.yaml" download><strong>⬇ Download prometheus-rules.yaml</strong></a> — add it to your Prometheus <code>rule_files:</code> glob, or wrap the <code>groups:</code> block in a <code>PrometheusRule</code> CRD if you run the Prometheus Operator.</p>` +
+	intro := `<p>Sample Prometheus alerting rules shipped with the plugin — one working rule for every runbook (37 rules across 36 runbooks). Copy them into your Prometheus, tune the thresholds, and alerts route straight to the matching runbook in chat.</p>` +
+		`<p>` +
+		`<a href="prometheus-rules.yaml" download><strong>⬇ Download prometheus-rules.yaml</strong></a> — plain format, add to your Prometheus <code>rule_files:</code> glob.` +
+		`&nbsp;&nbsp;|&nbsp;&nbsp;` +
+		`<a href="mattermost-prometheus-rules-crd.yaml" download><strong>⬇ Download PrometheusRule CRD</strong></a> — <code>monitoring.coreos.com/v1</code>, ready for <code>kubectl apply</code> (namespace: <code>monitoring</code>; adjust the <code>release</code> label to your Helm release name). For a different namespace run <code>/alertmanager rules --format=operator --namespace=&lt;ns&gt;</code> in chat.` +
+		`</p>` +
 		`<blockquote>Every threshold and <code>for:</code> duration below is a demo-cluster placeholder — tune to your traffic and SLOs before trusting them in production. The <code>runbook:</code> label on each rule is the join key that routes it to a runbook.</blockquote>`
 	body := intro + "<pre><code>" + template.HTMLEscapeString(string(raw)) + "</code></pre>"
 	return page{
@@ -404,6 +420,62 @@ func copyRawRules() error {
 		return fmt.Errorf("write %s: %w", rulesOutYAML, err)
 	}
 	return nil
+}
+
+// writeCRDRules generates a PrometheusRule CRD manifest from the sample rules
+// and writes it into the help site as a static download. Uses the default
+// namespace (monitoring). Users who need a different namespace can run
+// `/alertmanager rules --format=operator --namespace=<ns>` in chat instead.
+func writeCRDRules() error {
+	raw, err := os.ReadFile(rulesSrcPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", rulesSrcPath, err)
+	}
+	manifest := buildPrometheusRuleManifest(string(raw), rulesCRDNS)
+	if err := os.WriteFile(rulesCRDOut, []byte(manifest), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", rulesCRDOut, err)
+	}
+	return nil
+}
+
+// buildPrometheusRuleManifest wraps the raw prometheus-rules.yaml content into
+// a PrometheusRule CRD (monitoring.coreos.com/v1). Mirrors the same function
+// in server/cmd_rules.go — kept in sync manually; the source file format is
+// stable so drift risk is low.
+func buildPrometheusRuleManifest(rawYAML, namespace string) string {
+	const apiVersion = "monitoring.coreos.com/v1"
+	var b strings.Builder
+	b.WriteString("# PrometheusRule CRD — " + apiVersion + "\n")
+	b.WriteString("# Generated by mattermost-plugin-alertmanager build/render-docs\n")
+	b.WriteString("# Namespace: " + namespace + " (default; use /alertmanager rules --format=operator --namespace=<ns> for a different namespace)\n")
+	b.WriteString("# Adjust the 'release' label to match your Helm release name, then apply:\n")
+	b.WriteString("#   kubectl apply -n " + namespace + " -f mattermost-prometheus-rules-crd.yaml\n")
+	b.WriteString("---\n")
+	b.WriteString("apiVersion: " + apiVersion + "\n")
+	b.WriteString("kind: PrometheusRule\n")
+	b.WriteString("metadata:\n")
+	b.WriteString("  name: mattermost-alertmanager-rules\n")
+	b.WriteString("  namespace: " + namespace + "\n")
+	b.WriteString("  labels:\n")
+	b.WriteString("    release: kube-prometheus-stack\n")
+	b.WriteString("spec:\n")
+
+	inGroups := false
+	for line := range strings.SplitSeq(rawYAML, "\n") {
+		if !inGroups {
+			if strings.HasPrefix(line, "groups:") {
+				inGroups = true
+				b.WriteString("  groups:\n")
+			}
+			continue
+		}
+		if line == "" {
+			b.WriteByte('\n')
+		} else {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+	return b.String()
 }
 
 // renderSection processes one site's markdown → HTML transform. Reads

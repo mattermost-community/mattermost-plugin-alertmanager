@@ -111,8 +111,8 @@ In the channel where you want alerts, run:
 /alertmanager add <team> <channel> <alertmanager-url> <target>
 ```
 - `<target>` is a **runbook set** (`all`, `compute`, `application`, `database`,
-  `storage`, `networking`, `observability`, `security`) or a **single runbook slug**
-  (e.g. `pod-crashloopbackoff`).
+  `mattermost`, `storage`, `networking`, `observability`, `security`) or a **single
+  runbook slug** (e.g. `pod-crashloopbackoff`).
 - Add a trailing `on` to opt these receivers into rotation reminders.
 
 Example:
@@ -130,7 +130,7 @@ This creates the Mattermost incoming webhook and registers the receivers.
 ## Step 4 — Get the Alertmanager config  **[Mattermost]**
 
 ```
-/alertmanager export
+/alertmanager show export
 ```
 The bot DMs you `alertmanager-receivers.yml` and `alertmanager-routes.yml` for
 this channel. Inside you'll find the receiver (with the webhook URL) and its

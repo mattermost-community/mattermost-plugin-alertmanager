@@ -75,6 +75,17 @@ Legend for "Extra tooling":
 | `rbac-privilege-escalation` | `falco_events{rule=~"...RoleBinding..."}` | Falco k8s-audit plugin | ⚠ **audit logs + Falco** |
 | `security-tooling-down` | `up{job=~"falco\|kyverno.*"}` | the sensors' scrape targets | ⚠ sensors must expose `/metrics` |
 
+## Mattermost Application
+
+| Slug | Primary metric | Source | Notes |
+|---|---|---|---|
+| `mattermost-api-high-latency` | `mattermost_api_time_elapsed_seconds_bucket` | Mattermost `/metrics` | ⚠ **Requires `ServiceSettings.EnableMetrics: true`** |
+| `mattermost-high-login-failures` | `mattermost_login_10sec_users_with_failed_logins` | Mattermost `/metrics` | ⚠ EE only on some versions |
+| `mattermost-websocket-drop` | `mattermost_http_websockets_total` | Mattermost `/metrics` | Metric name may vary — verify from `/metrics` |
+| `mattermost-db-slow-query` | `mattermost_db_store_time_elapsed_seconds_bucket` | Mattermost `/metrics` | Covers all DB store operations |
+| `mattermost-high-error-rate` | `mattermost_api_calls_total{status_code=~"5.."}` | Mattermost `/metrics` | |
+| `mattermost-license-expiring-soon` | `mattermost_license_expire_date` | Mattermost `/metrics` | ⚠ **Enterprise Edition only** — absent on Team Edition |
+
 ## Bootstrapping checklist
 
 To light up the **—** rows (most of the catalog) you need, at minimum:

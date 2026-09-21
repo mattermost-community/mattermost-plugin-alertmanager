@@ -327,7 +327,7 @@ differ from `add`:
 
 ### Wiring the route (the one manual step)
 
-Run `/alertmanager export`. The DM'd config includes the receiver block plus a
+Run `/alertmanager show export`. The DM'd config includes the receiver block plus a
 commented route stub:
 
 ```yaml
@@ -354,7 +354,7 @@ route composes cleanly with the others.
 
 ### Prometheus Operator (`--format=crd`)
 
-`/alertmanager export --format=crd` emits the custom receiver into the
+`/alertmanager show export --format=crd` emits the custom receiver into the
 `AlertmanagerConfig` (so its Secret + receiver exist), but — like the file
 format — generates **no** route for it. The plugin's generated CR gates entry on
 the `runbook` label a custom alert doesn't carry, so a custom receiver can't be
@@ -418,7 +418,7 @@ That walks AM's route tree against your label set without firing a
 real alert.
 
 `samples/prometheus-rules.yaml` ships a complete rule set covering
-all 30 runbooks with the correct label patterns. Use it as a
+all 36 runbooks with the correct label patterns. Use it as a
 starting point.
 
 ## Receiver naming convention
@@ -454,14 +454,14 @@ once per destination:
 /alertmanager add testing oncall-critical http://alertmanager:9093 compute
 ```
 
-The plugin creates 6 receivers in each channel, all
+The plugin creates 9 receivers in each channel, all
 channel-suffixed:
 
 - `high-cpu-usage--alert-slo-channel`
 - `high-cpu-usage--oncall-critical`
 - (and the rest of the compute set, in both)
 
-`/alertmanager export` (or the next `/alertmanager add` DM)
+`/alertmanager show export` (or the next `/alertmanager add` DM)
 produces a routes block like:
 
 ```yaml
@@ -545,7 +545,7 @@ Three commands cover the common verification paths:
 
 # Diff your channel's assembled YAML against what AM has loaded,
 # with schema validation via prometheus/alertmanager/config.Load
-/alertmanager export --diff-against-loaded
+/alertmanager show diff
 ```
 
 The `--diff-against-loaded` mode catches undefined-receiver
