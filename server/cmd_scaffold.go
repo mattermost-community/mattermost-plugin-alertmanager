@@ -64,6 +64,14 @@ var scaffoldSets = map[string][]string{
 		"rbac-privilege-escalation",
 		"security-tooling-down",
 	},
+	"mattermost": {
+		"mattermost-api-high-latency",
+		"mattermost-high-login-failures",
+		"mattermost-websocket-drop",
+		"mattermost-db-slow-query",
+		"mattermost-high-error-rate",
+		"mattermost-license-expiring-soon",
+	},
 }
 
 // handleAdd creates Mattermost incoming webhooks for the chosen target
@@ -153,6 +161,21 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// (CL-03/CL-21). IsValid re-checks it at persist time for the KV-import path.
 	if err := validateAlertManagerURL(amURL); err != nil {
 		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+	}
+
+	// Cross-team guard: refuse an add targeting a different team than the one
+	// the command was invoked from. Sysadmins bypass — they manage across teams.
+	// This prevents silent misrouting when a team slug is mistyped or when a
+	// sysadmin forgets which team context they're in. The error message tells the
+	// user exactly which team to switch to rather than giving a generic failure.
+	if !p.API.HasPermissionTo(args.UserId, model.PermissionManageSystem) && args.TeamId != "" {
+		currentTeam, appErr := p.API.GetTeam(args.TeamId)
+		if appErr != nil {
+			return fmt.Sprintf("Could not look up your current team: %v", appErr.Error()), nil
+		}
+		if currentTeam.Name != team {
+			return fmt.Sprintf("Channel `%s` is in team `%s` — switch to that team and run this command there.", channel, team), nil
+		}
 	}
 
 	// Authorize the DESTINATION team, not the invocation channel — a team_admin
@@ -387,6 +410,14 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 				b.WriteString("/-/reload\n```\n")
 			}
 		}
+	}
+
+	// Warn about the postgres_exporter dependency for the database group.
+	// The plugin has no Prometheus access to probe for it, so a static
+	// warning at scaffold time is the best signal we can give.
+	if groupName == "database" {
+		b.WriteString("\n\n⚠ **Database receivers require `postgres_exporter`** — the rules for this group use `pg_replication_lag_seconds`, `pg_stat_activity_count`, and `pg_stat_statements_*` metrics that only exist when a postgres_exporter is running and scraped by Prometheus. Without it, these receivers will never fire.\n\n")
+		b.WriteString("Deploy: `helm install postgres-exporter prometheus-community/prometheus-postgres-exporter` and configure a ServiceMonitor pointing at your Postgres instance. Also enable `shared_preload_libraries = 'pg_stat_statements'` in PostgreSQL for the DatabaseHighLatency rule.")
 	}
 
 	return b.String(), nil
@@ -703,6 +734,17 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	// Reject a dangerous AM URL up front (CL-03/CL-21) — see handleAdd.
 	if err := validateAlertManagerURL(amURL); err != nil {
 		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+	}
+
+	// Cross-team guard — same rationale as handleAdd.
+	if !p.API.HasPermissionTo(args.UserId, model.PermissionManageSystem) && args.TeamId != "" {
+		currentTeam, appErr := p.API.GetTeam(args.TeamId)
+		if appErr != nil {
+			return fmt.Sprintf("Could not look up your current team: %v", appErr.Error()), nil
+		}
+		if currentTeam.Name != team {
+			return fmt.Sprintf("Channel `%s` is in team `%s` — switch to that team and run this command there.", channel, team), nil
+		}
 	}
 
 	// Authorize the DESTINATION team, not the invocation channel — otherwise a

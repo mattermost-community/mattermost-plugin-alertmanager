@@ -8,6 +8,7 @@
 package alertmanager
 
 import (
+	"bytes"
 	"net/http"
 
 	"github.com/prometheus/alertmanager/alert"
@@ -22,14 +23,13 @@ import (
 // canonical path here silences the SA1019 lint and stays current as
 // the alias eventually gets removed upstream.
 func ListAlerts(alertmanagerURL, user, password string) ([]*alert.Alert, error) {
-	resp, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/alerts", user, password)
+	body, _, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/alerts", user, password)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	var alertResponse []*alert.Alert
-	if errDec := DecodeJSONLimited(resp.Body, &alertResponse); errDec != nil {
+	if errDec := DecodeJSONLimited(bytes.NewReader(body), &alertResponse); errDec != nil {
 		return nil, errDec
 	}
 	return alertResponse, nil

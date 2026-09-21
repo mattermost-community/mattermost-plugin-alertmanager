@@ -51,7 +51,7 @@ nothing without it. Pass `on` as the final arg to `/alertmanager add`:
 /alertmanager add testing alert-slo-channel http://alertmanager:9093 compute on
 ```
 
-The 6 compute receivers created by that call get
+The 9 compute receivers created by that call get
 `RotationRemindersEnabled: true`. Any receivers created without `on`
 are silently skipped by the reminder scheduler regardless of how
 long ago they were rotated.
@@ -107,7 +107,7 @@ Three things happen:
 2. `LastRotatedAt` is stamped, `LastReminderAt` cleared.
 3. The plugin DMs you a merged YAML bundle containing the rotated
    `slack_configs:` and the `routes:` block — same shape
-   `/alertmanager export` produces, scoped to just the rotated set.
+   `/alertmanager show export` produces, scoped to just the rotated set.
 
 Paste the YAML into `alertmanager.yml`, then reload AM:
 
@@ -138,7 +138,7 @@ rotates the **shared webhook used by every receiver in that group**.
 The response message lists every affected receiver and DMs the
 merged YAML bundle — same shape `rotate all --overdue` produces.
 Example: `/alertmanager rotate high-cpu-usage` on a receiver from
-a compute group rotates the webhook serving all 6 compute receivers.
+a compute group rotates the webhook serving all 9 compute receivers.
 This is the trade-off of webhook consolidation: rotation isolation
 is per-group, not per-receiver.
 

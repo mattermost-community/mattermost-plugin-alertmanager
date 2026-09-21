@@ -15,13 +15,11 @@ const (
 	helpMsg = "**Alertmanager bridge slash commands** _(channel-scoped — you only see receivers bound to this channel)_\n\n" +
 		"_All commands listed in alphabetical order to match the autocomplete dropdown._\n\n" +
 		"- `/alertmanager about` — plugin build info, configured settings, reconciler health, jump-off links\n" +
-		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=] [--private]` — create receivers for a group set OR an individual runbook slug. `--private` creates the destination channel as PRIVATE when it doesn't already exist (you're added as a member). Group sets: `all` (default), `application`, `compute`, `database`, `networking`, `observability`, `security`, `storage`. Each group share ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`).\n" +
+		"- `/alertmanager add <team> <channel> <am-url> [target] [on] [--format=standard|crd] [--namespace=] [--private]` — create receivers for a group set OR an individual runbook slug. `--private` creates the destination channel as PRIVATE when it doesn't already exist (you're added as a member). Group sets: `all` (default), `application`, `compute`, `database`, `mattermost`, `networking`, `observability`, `security`, `storage`. Each group shares ONE Mattermost webhook; individual-slug adds get their own webhook. Trailing `on` opts these receivers INTO rotation reminders (configured via System Console → WebhookRotationDays). `--format=crd` DMs a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret instead of alertmanager.yml (`--namespace=` default `monitoring`). Must be run from the destination team.\n" +
 		"- `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>] [--private]` — create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. `--private` creates a private destination channel when new. Unlike `add`, it does NOT generate a `runbook=` route — you wire the matcher manually (the DM'd/exported config includes a commented stub). Use for custom alerts that don't map to a shipped runbook. See `/alertmanager docs configuration`.\n" +
-		"- `/alertmanager alerts` — list currently firing alerts (grouped by Alertmanager URL — one section per backend, not per receiver)\n" +
-		"- `/alertmanager config <name>` — show full detail card + slack_configs YAML for one receiver\n" +
+		"- `/alertmanager alerts [all]` — list currently firing alerts. Default: channel-scoped — only alerts whose `runbook=` label matches a receiver in this channel. `all` shows every alert from this channel's AM backends regardless of label.\n" +
 		"- `/alertmanager docs [topic]` — embedded documentation (tab through topics: alerts, requirements, architecture, configuration, development, kubernetes, slash_commands)\n" +
 		"- `/alertmanager expire_silence <name> <silence-id>` — expire a silence\n" +
-		"- `/alertmanager export [--format=standard|crd] [--namespace=] [--diff-against-loaded]` — DM this channel's config. `--format=standard` (default) is alertmanager.yml receivers + routes; `--format=crd` is a Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded` (sysadmin) diff against AM's currently-loaded config\n" +
 		"- `/alertmanager help` — this message\n" +
 		"- `/alertmanager list` — list receivers bound to this channel\n" +
 		"- `/alertmanager metrics-token [generate]` — Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The token is `secret:true` in System Console so it can't be read back — regenerate here if lost (sysadmin)\n" +
@@ -29,7 +27,8 @@ const (
 		"- `/alertmanager remove <name|set|all> [--force]` — delete a receiver, a runbook set, or everything in this channel\n" +
 		"- `/alertmanager repair [--force]` — diagnose the receiver-list KV store; `--force` rewrites a corrupt blob from the plugin's last-known in-memory list (sysadmin; recovery-only)\n" +
 		"- `/alertmanager rotate <name>` — delete + recreate the webhook (new hook-id, new URL)\n" +
-		"- `/alertmanager rules` — links to the shipped sample Prometheus alerting rules (browsable HTML + downloadable YAML) so you can wire up the Prometheus side without cloning the repo\n" +
+		"- `/alertmanager rules [--format=operator] [--namespace=monitoring]` — links to the shipped sample Prometheus alerting rules (browsable HTML + downloadable YAML). With `--format=operator`: DMs a ready-to-apply PrometheusRule CRD (monitoring.coreos.com/v1) wrapping all 37 rules for Prometheus Operator deployments.\n" +
+		"- `/alertmanager show [export|diff|<name>] [--format=standard|crd] [--namespace=]` — unified receiver inspector. No args → list of channel receivers; `<name>` → detail card with slack_configs YAML; `export` → DM this channel's full config (alertmanager.yml or `--format=crd` for Prometheus Operator AlertmanagerConfig); `diff` → diff the channel config against AM's currently-loaded config (sysadmin).\n" +
 		"- `/alertmanager silences` — list active silences (grouped by Alertmanager URL)\n" +
 		"- `/alertmanager status` — Alertmanager version + uptime per backend (grouped by Alertmanager URL)\n" +
 		"- `/alertmanager validate [name|set] [--webhook-test|--end-to-end|--simulate <labels>] [--severity=<value>]` — validate pipeline configuration. Without flags: AM reach + receiver-loaded-in-AM. `--webhook-test` / `--end-to-end` fire side-effect tests. `--simulate runbook=<slug> severity=<level>` walks AM's loaded route tree against the labels and reports which receiver(s) an alert with those labels would dispatch to (read-only, no synthetic alert). `--severity=<warning|critical|info|all>` controls which severities `--end-to-end` fires; `all` fires four alerts per receiver (warning + critical + info + resolved) so you can visually verify every render path in one shot."
@@ -86,14 +85,15 @@ func getAutocompleteData() *model.AutocompleteData {
 	add.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
 		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
 		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes (self-managed service) — cluster-internal service DNS when you named the Service `alertmanager`. Change 'monitoring' to its namespace."},
-		{Item: "http://alertmanager-operated.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes + Prometheus Operator — the operator exposes Alertmanager via the `alertmanager-operated` headless service (NOT `alertmanager`) on port 9093. Change `monitoring` to your namespace; kube-prometheus-stack also creates `<release>-kube-prometheus-alertmanager`. Confirm with `kubectl get svc -A | grep alertmanager`."},
+		{Item: "http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093", HelpText: "kube-prometheus-stack default (most common). Replace `kube-prometheus-stack` with your Helm release name. Change `monitoring` to your namespace. Confirm: `kubectl get svc -A | grep alertmanager`"},
 		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash, no query string or fragment."},
 	})
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
-		{Item: "all", HelpText: "Every embedded runbook (default — 30 receivers in one shared webhook)"},
+		{Item: "all", HelpText: "Every embedded runbook (default — 36 receivers in one shared webhook)"},
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
 		{Item: "compute", HelpText: "CPU, memory, throttling, pod, deployment, node, image-pull, scheduling alerts (9) — one shared webhook"},
 		{Item: "database", HelpText: "Connectivity, replication lag, query latency, connection saturation (4) — one shared webhook"},
+		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate, license expiry (6) — one shared webhook. Requires Mattermost metrics enabled."},
 		{Item: "networking", HelpText: "Ingress 5xx, cert expiry, DNS failure (3) — one shared webhook"},
 		{Item: "observability", HelpText: "Prometheus scrape down, Alertmanager notify fail (2) — one shared webhook"},
 		{Item: "security", HelpText: "Unexpected image, API auth spike, privileged container, shell-in-container, RBAC escalation, security tooling down (6) — one shared webhook"},
@@ -122,7 +122,7 @@ func getAutocompleteData() *model.AutocompleteData {
 	addCustom.AddStaticListArgument("Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own.", false, []model.AutocompleteListItem{
 		{Item: "http://host.docker.internal:9093", HelpText: "Docker Desktop / Compose — MM runs in a container and reaches Alertmanager via the host gateway. Use this, NOT localhost (localhost is the MM container itself)."},
 		{Item: "http://alertmanager.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes (self-managed service) — cluster-internal service DNS when you named the Service `alertmanager`. Change 'monitoring' to its namespace."},
-		{Item: "http://alertmanager-operated.monitoring.svc.cluster.local:9093", HelpText: "Kubernetes + Prometheus Operator — the operator exposes Alertmanager via the `alertmanager-operated` headless service (NOT `alertmanager`) on port 9093. Change `monitoring` to your namespace; kube-prometheus-stack also creates `<release>-kube-prometheus-alertmanager`. Confirm with `kubectl get svc -A | grep alertmanager`."},
+		{Item: "http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093", HelpText: "kube-prometheus-stack default (most common). Replace `kube-prometheus-stack` with your Helm release name. Change `monitoring` to your namespace. Confirm: `kubectl get svc -A | grep alertmanager`"},
 		{Item: "https://alertmanager.example.com", HelpText: "Custom / anything else — your Alertmanager base URL as reachable from the MM server. Replace the host; keep it scheme://host[:port], no trailing slash, no query string or fragment."},
 	})
 	addCustom.AddTextArgument("Custom receiver name: lowercase [a-z0-9_-], no `--`, not a runbook slug or category set. Full name becomes `<name>--<team>-<channel>` (max 190 chars).", "[name]", "")
@@ -131,11 +131,11 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	root.AddCommand(addCustom)
 
-	root.AddCommand(model.NewAutocompleteData("alerts", "", "List currently firing alerts (grouped by Alertmanager URL)"))
-
-	cfg := model.NewAutocompleteData("config", "[name]", "Show full detail card + slack_configs YAML for one receiver (sysadmin/team_admin)")
-	cfg.AddTextArgument("Receiver name (run `/alertmanager list` first to see what's here)", "[name]", "")
-	root.AddCommand(cfg)
+	alerts := model.NewAutocompleteData("alerts", "[all]", "List currently firing alerts. Default: channel-scoped (runbook= label matches this channel's receivers). `all` shows every alert from this channel's AM backends.")
+	alerts.AddStaticListArgument("Optional: show all AM alerts instead of channel-scoped", false, []model.AutocompleteListItem{
+		{Item: "all", HelpText: "Show every alert from this channel's Alertmanager backends, not just those matching this channel's runbook slugs"},
+	})
+	root.AddCommand(alerts)
 
 	docs := model.NewAutocompleteData("docs", "[topic]", "Show embedded documentation in chat")
 	docs.AddStaticListArgument("Pick a topic", false, []model.AutocompleteListItem{
@@ -151,16 +151,6 @@ func getAutocompleteData() *model.AutocompleteData {
 	root.AddCommand(docs)
 
 	root.AddCommand(model.NewAutocompleteData("expire_silence", "[name] [silence-id]", "Expire an active Alertmanager silence"))
-
-	exportCmd := model.NewAutocompleteData("export", "[--format=standard|crd] [--namespace=] [--diff-against-loaded]", "DM this channel's config as alertmanager.yml or a Prometheus Operator AlertmanagerConfig (sysadmin/team_admin)")
-	exportCmd.AddStaticListArgument("Optional: output format (default standard)", false, []model.AutocompleteListItem{
-		{Item: "--format=standard", HelpText: "Default. alertmanager.yml receivers + routes to paste into a file-based Alertmanager."},
-		{Item: "--format=crd", HelpText: "Prometheus Operator: AlertmanagerConfig (v1alpha1) + Secret to `kubectl apply`. Combine with --namespace= (default monitoring). See /alertmanager docs kubernetes."},
-	})
-	exportCmd.AddStaticListArgument("Optional flag: diff against AM's currently-loaded config (sysadmin only)", false, []model.AutocompleteListItem{
-		{Item: "--diff-against-loaded", HelpText: "Output a side-by-side diff between AM's loaded YAML and what this export would add (sysadmin only)"},
-	})
-	root.AddCommand(exportCmd)
 
 	root.AddCommand(model.NewAutocompleteData("help", "", "Show slash-command help"))
 
@@ -184,6 +174,7 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "application", HelpText: "All application receivers in this channel (requires --force)"},
 		{Item: "compute", HelpText: "All compute receivers in this channel (requires --force)"},
 		{Item: "database", HelpText: "All database receivers in this channel (requires --force)"},
+		{Item: "mattermost", HelpText: "All Mattermost-application receivers in this channel (requires --force)"},
 		{Item: "networking", HelpText: "All networking receivers in this channel (requires --force)"},
 		{Item: "observability", HelpText: "All observability receivers in this channel (requires --force)"},
 		{Item: "security", HelpText: "All security receivers in this channel (requires --force)"},
@@ -207,7 +198,25 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	root.AddCommand(rotate)
 
-	root.AddCommand(model.NewAutocompleteData("rules", "", "Links to the shipped sample Prometheus alerting rules (view or download)"))
+	rules := model.NewAutocompleteData("rules", "[--format=operator] [--namespace=]", "Links to the shipped sample Prometheus alerting rules (view or download). `--format=operator` DMs a ready-to-apply PrometheusRule CRD.")
+	rules.AddStaticListArgument("Optional: output format (default: links to HTML + YAML)", false, []model.AutocompleteListItem{
+		{Item: "--format=operator", HelpText: "DM a ready-to-apply PrometheusRule CRD manifest (monitoring.coreos.com/v1) wrapping all 37 alert rules. Add --namespace= to set the target namespace (default: monitoring)."},
+	})
+	root.AddCommand(rules)
+
+	show := model.NewAutocompleteData("show", "[export|diff|<name>] [--format=standard|crd] [--namespace=]", "Unified inspection: no args → channel list, <name> → detail card, export → DM full config, diff → compare against loaded.")
+	show.AddStaticListArgument("Mode: export, diff, or type a receiver name. Omit for the channel receiver list.", false, []model.AutocompleteListItem{
+		{Item: "export", HelpText: "DM this channel's full config (alertmanager.yml or CRD). Add --format=crd for Prometheus Operator output."},
+		{Item: "diff", HelpText: "Diff this channel's config against what's currently loaded in Alertmanager (sysadmin)."},
+	})
+	show.AddStaticListArgument("Optional: output format when using export (default standard)", false, []model.AutocompleteListItem{
+		{Item: "--format=standard", HelpText: "Default. alertmanager.yml receivers + routes."},
+		{Item: "--format=crd", HelpText: "Prometheus Operator AlertmanagerConfig (v1alpha1) + Secret. Add --namespace= (default monitoring)."},
+	})
+	show.AddStaticListArgument("Only for export --format=crd: Kubernetes namespace in the generated manifest (default: monitoring). Ignored for standard alertmanager.yml export.", false, []model.AutocompleteListItem{
+		{Item: "--namespace=monitoring", HelpText: "Only applies with --format=crd. Sets metadata.namespace in the AlertmanagerConfig manifest so kubectl apply goes to the right namespace. Ignored if you are not using Prometheus Operator."},
+	})
+	root.AddCommand(show)
 
 	root.AddCommand(model.NewAutocompleteData("silences", "", "List active Alertmanager silences (grouped by Alertmanager URL)"))
 
@@ -219,6 +228,7 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "application", HelpText: "Application receivers only"},
 		{Item: "compute", HelpText: "Compute receivers only"},
 		{Item: "database", HelpText: "Database receivers only"},
+		{Item: "mattermost", HelpText: "Mattermost-application receivers only"},
 		{Item: "networking", HelpText: "Networking receivers only"},
 		{Item: "observability", HelpText: "Observability receivers only"},
 		{Item: "security", HelpText: "Security receivers only"},
@@ -314,6 +324,9 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 		return joinErr(msg, err)
 	case "rules":
 		msg, err := p.handleRules(args)
+		return joinErr(msg, err)
+	case "show":
+		msg, err := p.handleShow(args)
 		return joinErr(msg, err)
 	case "silences":
 		msg, err := p.handleListSilences(args)

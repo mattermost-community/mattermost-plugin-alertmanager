@@ -109,7 +109,7 @@ func emptyScopeMessage(verb string) string {
 // each URL in the input so output is deterministic across calls.
 //
 // Why this matters: in the common case where one channel hosts N
-// receivers all pointing at the same Alertmanager (e.g. all 30 canonical
+// receivers all pointing at the same Alertmanager (e.g. all 36 canonical
 // runbook receivers in #alerts), the older per-receiver loop hit AM N
 // times and printed N copies of the same "firing alerts" or "loaded
 // silences" block. Querying once per distinct AM URL collapses that to
@@ -190,20 +190,47 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 }
 
 // handleAlerts lists currently-firing alerts grouped by AM URL. Queries
-// each distinct AM once — without the dedup, 20 receivers pointing at
-// the same AM would render 20 copies of the same alert list.
+// each distinct AM once — without the dedup, N receivers pointing at the
+// same AM would render N copies of the same alert list.
+//
+// Default (no flags): channel-scoped — only alerts whose `runbook` label
+// matches a receiver slug bound to this channel. This keeps output focused
+// in channels with many receivers (e.g. all 36 runbook receivers) where a
+// full AM dump would be overwhelming.
+//
+// With `all`: shows every alert from this channel's AM backends regardless
+// of runbook label — useful for seeing alerts that aren't runbook-driven.
 func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
+	fields := strings.Fields(args.Command)
+	rest := fields[2:]
+	showAll := containsFlag(rest, "all")
+
 	scoped := p.configsForCurrentChannel(args)
 	if len(scoped) == 0 {
 		return emptyScopeMessage("alerts"), nil
 	}
 
+	// Build the set of runbook slugs bound to this channel so we can filter
+	// alerts to only those relevant here. Used in the default (non-all) path.
+	channelSlugs := make(map[string]bool, len(scoped))
+	for _, ac := range scoped {
+		channelSlugs[receiverBaseSlug(ac.Name)] = true
+	}
+
 	groups := groupByAMURL(scoped)
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf(
-		"**Firing alerts — %d receiver(s) across %d backend(s):**\n\n",
-		len(scoped), len(groups),
-	))
+	if showAll {
+		b.WriteString(fmt.Sprintf(
+			"**Firing alerts (all) — %d receiver(s) across %d backend(s):**\n\n",
+			len(scoped), len(groups),
+		))
+	} else {
+		b.WriteString(fmt.Sprintf(
+			"**Firing alerts (channel-scoped) — %d receiver(s) across %d backend(s):**\n\n",
+			len(scoped), len(groups),
+		))
+	}
+
 	totalCount := 0
 	for _, g := range groups {
 		alerts, err := alertmanager.ListAlerts(g.URL, g.User, g.Password)
@@ -214,26 +241,49 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 			))
 			continue
 		}
-		if len(alerts) == 0 {
-			b.WriteString(fmt.Sprintf(
-				"**Alertmanager %s** — :tada: no active alerts\n  Bound receivers (%d): %s\n\n",
-				g.URL, len(g.Receivers), g.receiverNames(),
-			))
+
+		// In channel-scoped mode, filter to alerts whose runbook= label matches
+		// one of this channel's receiver slugs. Alerts without a runbook label
+		// (custom alerts, or alerts with no routing configured yet) are hidden —
+		// use `all` to see them.
+		visible := alerts
+		if !showAll {
+			visible = make([]*alert.Alert, 0, len(alerts))
+			for _, a := range alerts {
+				if channelSlugs[string(a.Labels["runbook"])] {
+					visible = append(visible, a)
+				}
+			}
+		}
+
+		if len(visible) == 0 {
+			if !showAll && len(alerts) > 0 {
+				b.WriteString(fmt.Sprintf(
+					"**Alertmanager %s** — :tada: no active alerts for this channel's runbooks (%d total in AM — `/alertmanager alerts all` to see everything)\n  Bound receivers (%d): %s\n\n",
+					g.URL, len(alerts), len(g.Receivers), g.receiverNames(),
+				))
+			} else {
+				b.WriteString(fmt.Sprintf(
+					"**Alertmanager %s** — :tada: no active alerts\n  Bound receivers (%d): %s\n\n",
+					g.URL, len(g.Receivers), g.receiverNames(),
+				))
+			}
 			continue
 		}
-		totalCount += len(alerts)
+
+		totalCount += len(visible)
 		b.WriteString(fmt.Sprintf(
 			"**Alertmanager %s — %d alert(s)**\n  Bound receivers (%d): %s\n\n",
-			g.URL, len(alerts), len(g.Receivers), g.receiverNames(),
+			g.URL, len(visible), len(g.Receivers), g.receiverNames(),
 		))
-		for _, a := range alerts {
+		for _, a := range visible {
 			b.WriteString(formatAlertLine(a))
 		}
 		b.WriteString("\n")
 	}
 
 	if totalCount == 0 {
-		return b.String() + "_No active alerts across this channel's Alertmanagers._", nil
+		return b.String() + "_No active alerts for this channel's runbooks._", nil
 	}
 	return b.String(), nil
 }

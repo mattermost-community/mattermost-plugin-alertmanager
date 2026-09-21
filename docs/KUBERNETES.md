@@ -81,7 +81,7 @@ route:
     - matchers: [runbook="pod-crashloopbackoff"]
       receiver: pod-crashloopbackoff--sre-alert-slo-channel
       continue: true
-    # ... one route per receiver, 30 total for the standard set
+    # ... one route per receiver, 36 total for the standard set
 ```
 
 `continue: true` on every plugin-generated route is what makes fan-out
@@ -140,7 +140,7 @@ DMs you.
 
 > **Generated object names carry a short hash suffix.** The examples below use
 > readable names like `alertmanager-webhook-sre-alert-slo-channel`, but
-> `/alertmanager export --format=crd` appends a short hash (e.g.
+> `/alertmanager show export --format=crd` appends a short hash (e.g.
 > `…-slo-channel-1a2b3c4d`) to every generated Secret / `AlertmanagerConfig` /
 > fallback-receiver name. That keeps two teams sharing a channel name from
 > colliding on identical object names in one namespace. Use whatever names the

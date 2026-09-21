@@ -9,13 +9,11 @@ the channel where you ran the command.
 | Subcommand | Args | Purpose | Sysadmin? |
 |---|---|---|---|
 | `about` | _(none)_ | Plugin build info, this channel's receiver count, links (any user). Org-wide counts, reconciler health, and configured-setting presence are shown to sysadmins only. | any user |
-| `add` | `<team> <channel> <am-url> [target] [on] [--format=standard\|crd] [--namespace=]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`--format=standard`, default), or an `AlertmanagerConfig` v1alpha1 + Secret (`--format=crd`; `--namespace=` default `monitoring`). Trailing `on` opts in to rotation reminders. | sysadmin / team_admin |
-| `add-custom` | `<team> <channel> <am-url> <name> [--webhook-host=<url>]` | Create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. No `runbook=` route is generated — you wire the matcher manually (`export` includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
-| `alerts` | _(none)_ | Currently firing alerts, grouped by Alertmanager URL | any user |
-| `config` | `<name>` | Detail card + `slack_configs` YAML for one receiver | sysadmin / team_admin |
+| `add` | `<team> <channel> <am-url> [target] [on] [--format=standard\|crd] [--namespace=]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`--format=standard`, default), or an `AlertmanagerConfig` v1alpha1 + Secret (`--format=crd`; `--namespace=` default `monitoring`). Trailing `on` opts in to rotation reminders. Non-sysadmin team_admins can only target the team they are currently in. | sysadmin / team_admin |
+| `add-custom` | `<team> <channel> <am-url> <name> [--webhook-host=<url>]` | Create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. No `runbook=` route is generated — you wire the matcher manually (`show export` includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
+| `alerts` | `[all]` | Currently firing alerts. Default: channel-scoped — only alerts whose `runbook=` label matches a receiver in this channel. `all` shows every alert from this channel's AM backends regardless of label. | any user |
 | `docs` | `[topic]` | List or print embedded docs (alerts / architecture / compatibility / configuration / development / kubernetes / requirements / rotation / slash_commands) | any user |
 | `expire_silence` | `<name> <silence-id>` | Expire an active Alertmanager silence | any user |
-| `export` | `[--format=standard\|crd] [--namespace=] [--diff-against-loaded]` | DM this channel's config: `--format=standard` (default) is a fresh `receivers.yml` + `routes.yml`; `--format=crd` is a Prometheus Operator `AlertmanagerConfig` (v1alpha1) + Secret (`--namespace=` default `monitoring`). With `--diff-against-loaded`, diff against AM's loaded config + schema-validate. | sysadmin / team_admin |
 | `help` | _(none)_ | Slash-command reference | any user |
 | `list` | _(none)_ | Receivers bound to this channel (table with Rotated column) | any user |
 | `metrics-token` | `[generate]` | Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The `MetricsToken` setting is `secret:true` and can't be read back from System Console — regenerate here if lost. | sysadmin |
@@ -23,6 +21,8 @@ the channel where you ran the command.
 | `remove` | `<name>` \| `<set> --force` \| `all --force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
 | `repair` | `[--force]` | Diagnose the receiver-list KV store; `--force` rewrites a corrupt blob from the plugin's last-known in-memory list. Recovery-only — normal operation never needs it. | sysadmin |
 | `rotate` | `<name>` \| `all --overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
+| `rules` | `[--format=operator] [--namespace=]` | Links to the shipped sample Prometheus alerting rules (37 rules, HTML + YAML). With `--format=operator`: DMs a ready-to-apply `PrometheusRule` CRD (`monitoring.coreos.com/v1`) wrapping all 37 rules for Prometheus Operator deployments. | any user |
+| `show` | `[export\|diff\|<name>] [--format=standard\|crd] [--namespace=]` | Unified receiver inspector: no args → list of channel receivers; `<name>` → detail card + `slack_configs` YAML; `export` → DM this channel's full config as `alertmanager.yml` (or `--format=crd` for Prometheus Operator); `diff` → channel-scoped diff against AM's loaded config; auto-detects Prometheus Operator CRD mode (sysadmin). | sysadmin / team_admin (list/detail open to any user) |
 | `silences` | _(none)_ | Active Alertmanager silences, grouped by AM URL | any user |
 | `status` | _(none)_ | Alertmanager version + uptime per backend | any user |
 | `validate` | `[name\|set] [--webhook-test\|--end-to-end\|--simulate <labels>]` | Pipeline diagnostics or read-only route simulation | sysadmin / team_admin |
@@ -44,8 +44,8 @@ team), so it's needed to keep receiver names globally unique.
 When invoking commands from chat, you can use either form:
 
 ```
-/alertmanager config high-cpu-usage--alert-slo-channel    # full name
-/alertmanager config high-cpu-usage                       # short form
+/alertmanager show high-cpu-usage--alert-slo-channel    # full name
+/alertmanager show high-cpu-usage                       # short form
 ```
 
 The short form resolves to a receiver bound to the current channel.
@@ -77,13 +77,13 @@ routes with `continue: true` so AM doesn't stop at the first match.
 
 ## Worked examples
 
-### First-time setup — all 30 canonical receivers in one channel
+### First-time setup — all 36 canonical receivers in one channel
 
 ```
 /alertmanager add testing alert-slo-channel http://alertmanager:9093
 ```
 
-Creates every embedded runbook (the `all` set — 30 receivers) bound
+Creates every embedded runbook (the `all` set — 36 receivers) bound
 to `~alert-slo-channel` **behind one shared Mattermost webhook**.
 The summary lands in the channel; the assembled
 `alertmanager-receivers.yml` + `alertmanager-routes.yml` land in
@@ -98,11 +98,11 @@ To create just one category:
 ```
 
 Available group sets: `all` (default), `application`, `compute`,
-`database`, `networking`, `observability`, `security`, `storage`. Each
-set add creates one shared webhook named `<set>--<team>-<channel>`, mirroring
-the receiver-name format so the System Console webhook list lines up with the
-receiver names (and the team segment disambiguates channels that repeat across
-teams).
+`database`, `mattermost`, `networking`, `observability`, `security`,
+`storage`. Each set add creates one shared webhook named
+`<set>--<team>-<channel>`, mirroring the receiver-name format so the
+System Console webhook list lines up with the receiver names (and the
+team segment disambiguates channels that repeat across teams).
 
 ### Add one specific runbook (individual)
 
@@ -136,7 +136,7 @@ create a generic receiver with a name you choose:
 Creates one receiver named `slo-burn-rate--testing-sre-alerts`
 and its own webhook. Because there's no runbook, the plugin does **not**
 generate a `runbook=` route — the post is the raw alert, and **you must
-wire the route yourself**. Run `/alertmanager export` and you'll get the
+wire the route yourself**. Run `/alertmanager show export` and you'll get the
 receiver block plus a commented stub to fill in:
 
 ```yaml
@@ -209,10 +209,10 @@ The Rotated column shows `today`, `yesterday`, `N days ago`, or
 `never`. Receivers opted-in to rotation reminders that are past the
 global threshold get a `⚠️` prefix.
 
-### Show one receiver's YAML
+### Inspect a receiver
 
 ```
-/alertmanager config high-cpu-usage
+/alertmanager show high-cpu-usage
 ```
 
 (Short form — resolves to `high-cpu-usage--<current-channel>`.)
@@ -220,6 +220,12 @@ global threshold get a `⚠️` prefix.
 Output: metadata card (team, channel, AM URL, webhook ID, runbook
 default URL), the `slack_configs` YAML block, the AM reload command,
 and quick-action links to rotate / remove.
+
+Run without a name to see the full channel receiver list:
+
+```
+/alertmanager show
+```
 
 ### Validate the pipeline
 
@@ -290,7 +296,7 @@ group, rotating it rotates the **shared webhook** — every receiver
 in that group gets the new URL. The response message lists every
 affected receiver and DMs you the merged YAML bundle for paste-once
 update. Example: `/alertmanager rotate high-cpu-usage` on a receiver
-created via `add ... compute` rotates the webhook for all 6 compute
+created via `add ... compute` rotates the webhook for all 9 compute
 receivers.
 
 Batch all overdue (only opted-in receivers past the global
@@ -304,14 +310,13 @@ DMs you a merged YAML bundle with just the rotated receivers'
 `slack_configs` + matching `routes:` block. Paste once, reload AM
 once. See [`ROTATION.md`](ROTATION.md).
 
-### Update existing receivers after a plugin upgrade
+### Export this channel's config
 
-Plugin templates can change between releases. To re-render every
-receiver in this channel with the latest template without rotating
-webhooks:
+Re-render every receiver in this channel with the latest template
+without rotating webhooks:
 
 ```
-/alertmanager export
+/alertmanager show export
 ```
 
 DMs you a freshly-rendered `receivers.yml` + `routes.yml`. Replace
@@ -319,30 +324,37 @@ the corresponding blocks in your `alertmanager.yml` with the file
 contents. Hook IDs are preserved — existing api_url values stay
 valid.
 
+For Prometheus Operator deployments:
+
+```
+/alertmanager show export --format=crd --namespace=monitoring
+```
+
 ### Diff your YAML against what AM has loaded
 
 Catches drift between what the plugin would produce and what AM
 actually has in memory right now:
 
 ```
-/alertmanager export --diff-against-loaded
+/alertmanager show diff
 ```
 
 Output includes:
-- Side-by-side diff between AM's loaded config and the plugin's
-  current channel-scoped output
+- A channel-scoped diff: context lines show what AM currently has
+  for **this channel only**, `+` lines show what would be added.
+  Other channels' receivers are never shown — no noise, no redaction
+  gymnastics.
 - Schema validation result from running the merged config through
   `prometheus/alertmanager/config.Load` — the same parser AM uses
-  at reload time
+  at reload time.
 
-Catches undefined-receiver references, malformed matchers, and
-route-tree errors before the operator pastes new YAML and triggers
-a reload that AM would reject.
-
-Secrets in other channels' receivers are masked in the diff display
-(operator-context info only; their secrets are not yours to see).
-Own-channel additions stay un-redacted — the operator needs them to
-paste.
+**Prometheus Operator auto-detect:** if AM's loaded config shows
+this channel's receivers under CRD-namespaced names
+(`<namespace>/mattermost-alertmanager-<hash>/<receiver-name>`), the
+diff automatically switches to CRD mode — "already loaded" detection
+matches on the short receiver name rather than the full namespaced
+path. Use `/alertmanager show export --format=crd` to get the
+`AlertmanagerConfig` YAML to apply via `kubectl apply`.
 
 ### Bulk cleanup
 
@@ -359,8 +371,8 @@ dry-run preview of what would be deleted, then re-run with `--force`
 to confirm. Single-receiver remove doesn't require `--force` because
 the name is explicit (low blast radius).
 
-The `remove` autocomplete dropdown shows `all` plus the seven category
-sets (compute, application, database, storage, networking,
+The `remove` autocomplete dropdown shows `all` plus the eight category
+sets (compute, application, database, mattermost, storage, networking,
 observability, security) — pick one or type a receiver name freely.
 
 ### Find orphaned receivers
@@ -383,9 +395,9 @@ Reports how many orphans (if any) it removed.
 /alertmanager docs rotation
 ```
 
-Available topics: `alerts`, `architecture`, `configuration`,
-`development`, `kubernetes`, `requirements`, `rotation`,
-`slash_commands`. Content is rendered
+Available topics: `alerts`, `architecture`, `compatibility`,
+`configuration`, `development`, `kubernetes`, `requirements`,
+`rotation`, `slash_commands`. Content is rendered
 inline in chat — for the full version, hit
 `/plugins/com.mattermost.alertmanager/public/help/home.html` in a
 browser.

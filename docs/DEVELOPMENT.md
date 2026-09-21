@@ -88,10 +88,10 @@ Useful surrounding targets: `make disable`, `make enable`, `make reset`, `make c
 Once the plugin is loaded:
 
 1. **Plugin alive:** `/alertmanager about` returns version info.
-2. **Add the canonical set:** `/alertmanager add testing alerts-smoke http://localhost:9093`. Plugin creates 30 receivers, DMs you the assembled YAML files.
+2. **Add the canonical set:** `/alertmanager add testing alerts-smoke http://localhost:9093`. Plugin creates 36 receivers, DMs you the assembled YAML files.
 3. **Verify webhooks created:** Open System Console → Integrations → Incoming Webhooks → see entries named `<category>--testing-alerts-smoke` (the webhook name mirrors the receiver format `<base>--<team>-<channel>`).
-4. **List receivers in the channel:** `/alertmanager list` from `~alerts-smoke`. Should show all 30 in a table.
-5. **Detail card for one:** `/alertmanager config high-cpu-usage` from `~alerts-smoke`. Should show metadata + slack_configs YAML.
+4. **List receivers in the channel:** `/alertmanager list` from `~alerts-smoke`. Should show all 36 in a table.
+5. **Detail card for one:** `/alertmanager show high-cpu-usage` from `~alerts-smoke`. Should show metadata + slack_configs YAML.
 6. **Test the post path:**
    ```bash
    # Use any api_url from the DM'd alertmanager-receivers.yml.
@@ -100,8 +100,8 @@ Once the plugin is loaded:
      -d '{"text": "Smoke test from curl", "channel": "alerts-smoke"}'
    ```
    Post lands in `~alerts-smoke` as `@alertmanagerbot`.
-7. **Re-export:** `/alertmanager export` should produce the same receivers + routes YAML as the original add.
-8. **Bulk cleanup:** `/alertmanager remove all --force` deletes all 30 receivers and their webhooks.
+7. **Re-export:** `/alertmanager show export` should produce the same receivers + routes YAML as the original add.
+8. **Bulk cleanup:** `/alertmanager remove all --force` deletes all 36 receivers and their webhooks.
 
 ## Verifying persisted state
 
@@ -150,7 +150,7 @@ The webhook already has the bot username and icon URL stored on its database row
 
 The same issue applies in reverse: the `slack_configs.api_url` value in your `alertmanager.yml` must use `host.docker.internal:8065` (Docker) or the cluster-internal MM service URL (K8s) to reach Mattermost from inside the Alertmanager container.
 
-**Fix for the api_url side:** set the `WebhookHost` plugin setting (System Console → Plugins → Alertmanager) to the cross-container or cluster-internal MM URL, then re-run `/alertmanager export` to get fresh YAML with corrected URLs. Paste into alertmanager.yml, reload AM.
+**Fix for the api_url side:** set the `WebhookHost` plugin setting (System Console → Plugins → Alertmanager) to the cross-container or cluster-internal MM URL, then re-run `/alertmanager show export` to get fresh YAML with corrected URLs. Paste into alertmanager.yml, reload AM.
 
 **Fix for the alertManagerURL side:** re-add the receiver with the correct AM URL:
 

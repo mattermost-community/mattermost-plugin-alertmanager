@@ -1,6 +1,7 @@
 package alertmanager
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -36,14 +37,13 @@ func silenceEndsAt(s *models.GettableSilence) time.Time {
 // the GET response in prometheus/alertmanager >= v0.31, which replaced the
 // removed types.Silence struct.
 func ListSilences(alertmanagerURL, user, password string) ([]*models.GettableSilence, error) {
-	resp, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/silences", user, password)
+	body, _, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/silences", user, password)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	var silences []*models.GettableSilence
-	if errDec := DecodeJSONLimited(resp.Body, &silences); errDec != nil {
+	if errDec := DecodeJSONLimited(bytes.NewReader(body), &silences); errDec != nil {
 		return nil, errDec
 	}
 
@@ -63,17 +63,16 @@ func ExpireSilence(silenceID, alertmanagerURL, user, password string) error {
 	}
 
 	expireURL := fmt.Sprintf("%s/api/v2/silence/%s", alertmanagerURL, silenceID)
-	resp, err := httpRetry(http.MethodDelete, expireURL, user, password)
+	_, statusCode, err := httpRetry(http.MethodDelete, expireURL, user, password)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	// Do NOT reflect the response body: on a path that reaches a proxied backend,
 	// echoing the body would turn a non-200 into a content-disclosure oracle.
 	// Return a generic, status-only error instead (CL-08).
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("expiring silence: Alertmanager returned status %d", resp.StatusCode)
+	if statusCode != http.StatusOK {
+		return fmt.Errorf("expiring silence: Alertmanager returned status %d", statusCode)
 	}
 	return nil
 }

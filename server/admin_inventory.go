@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -303,6 +304,31 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 			// renamed to "<ns>/<config>/<name>" isn't mistaken for a hand-edited
 			// AM-only receiver. Display the original (prefixed) name either way.
 			canonical, _ := canonicalReceiverName(n)
+			// Skip Alertmanager built-in receivers — these are always present in
+			// every AM deployment and are never created by the plugin. Flagging
+			// them as AM-only trains operators to ignore the warning entirely, which
+			// destroys its signal value for real drift (feedback item 10, gap 3).
+			if canonical == "null" || canonical == "blackhole" {
+				continue
+			}
+			// Skip plugin-generated fallback receivers — created as a side
+			// effect of CRD export but not stored as individual alertConfig
+			// entries. Their base name (without -fallback) is plugin-tracked,
+			// so we know they're plugin-owned. Flagging them as AM-only
+			// destroys the warning's signal value for real drift.
+			if strings.HasSuffix(canonical, "-fallback") {
+				base := strings.TrimSuffix(canonical, "-fallback")
+				// Handle the "-N-fallback" disambiguation suffix form:
+				// "my-channel-2-fallback" → "my-channel".
+				if dashIdx := strings.LastIndex(base, "-"); dashIdx != -1 {
+					if _, err := strconv.Atoi(base[dashIdx+1:]); err == nil {
+						base = base[:dashIdx]
+					}
+				}
+				if pluginSet[base] {
+					continue
+				}
+			}
 			if !pluginSet[canonical] {
 				driftNames = append(driftNames, n)
 			}
