@@ -316,8 +316,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 			// entries. Their base name (without -fallback) is plugin-tracked,
 			// so we know they're plugin-owned. Flagging them as AM-only
 			// destroys the warning's signal value for real drift.
-			if strings.HasSuffix(canonical, "-fallback") {
-				base := strings.TrimSuffix(canonical, "-fallback")
+			if base, ok := strings.CutSuffix(canonical, "-fallback"); ok {
 				// Handle the "-N-fallback" disambiguation suffix form:
 				// "my-channel-2-fallback" → "my-channel".
 				if dashIdx := strings.LastIndex(base, "-"); dashIdx != -1 {

@@ -112,14 +112,20 @@ func IsBlockedIP(ip net.IP) bool {
 }
 
 // suggestedAllowlistCIDR returns a ready-to-paste CIDR the operator should add
-// to AlertManagerAllowedCIDRs to permit ip. For IPv4 addresses it returns the
-// /16 block (e.g. 10.43.5.164 → 10.43.0.0/16) — wide enough to cover a typical
-// Kubernetes service CIDR without requiring the exact ClusterIP, which changes
-// on re-deploy. For IPv6 it returns the exact /128 host since the v6 address
-// space is too large for a /16 heuristic to be helpful.
+// to AlertManagerAllowedCIDRs to permit ip.
+//
+// RFC1918 IPv4 gets a /16 (10.43.5.164 → 10.43.0.0/16). In-cluster Alertmanager
+// addresses are almost always a service ClusterIP, and that IP changes on
+// recreate; a /16 covers a typical service CIDR without asking the operator to
+// re-paste after every redeploy. Every other address gets the exact host
+// (/32 or /128): a public /16 or 127.0.0.0/16 would open far more than the
+// one destination that was blocked. Widening those is a deliberate edit.
 func suggestedAllowlistCIDR(ip net.IP) string {
 	if v4 := ip.To4(); v4 != nil {
-		return fmt.Sprintf("%d.%d.0.0/16", v4[0], v4[1])
+		if v4.IsPrivate() {
+			return fmt.Sprintf("%d.%d.0.0/16", v4[0], v4[1])
+		}
+		return v4.String() + "/32"
 	}
 	return ip.String() + "/128"
 }

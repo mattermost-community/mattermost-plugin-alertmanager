@@ -92,6 +92,18 @@ func TestReceiverLoadedInAM(t *testing.T) {
 			t.Fatal("flat mode should not match via CRD path segment")
 		}
 	})
+
+	t.Run("shorter channel name does not match a longer receiver", func(t *testing.T) {
+		// Substring matching used to treat x--sre-alerts as already loaded
+		// when AM only had x--sre-alerts-prod, and the diff dropped the add.
+		prefixLoaded := "receivers:\n- name: plain-receiver--team-channel-prod\n"
+		if receiverLoadedInAM(prefixLoaded, "plain-receiver--team-channel", false) {
+			t.Fatal("prefix of a longer receiver name must not count as loaded")
+		}
+		if receiverLoadedInAM(prefixLoaded, "plain-receiver--team-channel", true) {
+			t.Fatal("CRD mode must not prefix-match a flat longer name")
+		}
+	})
 }
 
 // TestExtractReceiverBlocks verifies that extractReceiverBlocks correctly
@@ -191,8 +203,8 @@ receivers:
 `
 
 	own := map[string]bool{
-		"database-connectivity-loss--team-channel":  true,
-		"connection-pool-saturation--team-channel":  true,
+		"database-connectivity-loss--team-channel": true,
+		"connection-pool-saturation--team-channel": true,
 	}
 
 	t.Run("extracts routes matching channel receivers", func(t *testing.T) {

@@ -154,6 +154,28 @@ func TestDenyAll(t *testing.T) {
 	}
 }
 
+func TestSuggestedAllowlistCIDR(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want string
+	}{
+		{"10.43.5.164", "10.43.0.0/16"},
+		{"192.168.1.9", "192.168.0.0/16"},
+		{"172.16.3.4", "172.16.0.0/16"},
+		{"8.8.8.8", "8.8.8.8/32"},
+		{"127.0.0.1", "127.0.0.1/32"},
+		{"100.64.1.2", "100.64.1.2/32"},
+		{"::1", "::1/128"},
+		{"2001:db8::1", "2001:db8::1/128"},
+	}
+	for _, tc := range cases {
+		got := suggestedAllowlistCIDR(net.ParseIP(tc.ip))
+		if got != tc.want {
+			t.Errorf("suggestedAllowlistCIDR(%s) = %s, want %s", tc.ip, got, tc.want)
+		}
+	}
+}
+
 // TestNewTransportDisablesProxy is the F-001 regression: the Alertmanager
 // transport must not use an environment proxy, or a proxied request would make
 // the dial guard validate the PROXY's IP while the proxy fetches the real

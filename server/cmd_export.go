@@ -53,11 +53,11 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 
 	diffMode := containsFlag(rest, "--diff-against-loaded")
 
-	// --diff-against-loaded is sysadmin-only because it surfaces the
-	// AM-loaded YAML verbatim, which includes every receiver's
-	// webhook URL and any basic-auth creds across the org. Plain
-	// export stays channel-team-admin since it only emits the
-	// channel-scoped receivers we already manage.
+	// --diff-against-loaded stays sysadmin-only. Output is channel-scoped,
+	// but it still prints this channel's webhook URLs (bearer tokens)
+	// taken from Alertmanager's loaded config. Plain export stays
+	// team_admin: it only emits the channel-scoped receivers the caller
+	// already manages.
 	if diffMode {
 		if err := p.requireSystemAdmin(args.UserId); err != nil {
 			return err.Error(), nil
@@ -271,7 +271,7 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 // <namespace>/<alertmanagerconfig-name>/<receiver-name> where the third
 // path segment matches a receiver name owned by this channel.
 func detectCRDMode(loadedYAML string, ownNames map[string]bool) bool {
-	for _, line := range strings.Split(loadedYAML, "\n") {
+	for line := range strings.SplitSeq(loadedYAML, "\n") {
 		m := receiverNameLineRegex.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -286,22 +286,25 @@ func detectCRDMode(loadedYAML string, ownNames map[string]bool) bool {
 }
 
 // receiverLoadedInAM checks whether a receiver name is present in AM's loaded
-// config. In CRD mode it also matches the namespaced form by comparing only
-// the third slash-delimited segment (<ns>/<config-name>/<receiver-name>).
+// config. Match the full name on each `- name:` line. A substring check treats
+// a shorter channel as already loaded when a longer one exists
+// (x--sre-alerts vs x--sre-alerts-prod), and the diff then drops the addition.
+// In CRD mode it also matches the namespaced form by comparing only the third
+// slash-delimited segment (<ns>/<config-name>/<receiver-name>).
 func receiverLoadedInAM(loadedYAML, name string, crdMode bool) bool {
-	if strings.Contains(loadedYAML, "name: "+name) || strings.Contains(loadedYAML, `name: "`+name+`"`) {
-		return true
-	}
-	if !crdMode {
-		return false
-	}
-	for _, line := range strings.Split(loadedYAML, "\n") {
+	for line := range strings.SplitSeq(loadedYAML, "\n") {
 		m := receiverNameLineRegex.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
-		crdName := strings.Trim(m[1], `"'`)
-		parts := strings.SplitN(crdName, "/", 3)
+		loadedName := strings.Trim(m[1], `"'`)
+		if loadedName == name {
+			return true
+		}
+		if !crdMode {
+			continue
+		}
+		parts := strings.SplitN(loadedName, "/", 3)
 		if len(parts) == 3 && parts[2] == name {
 			return true
 		}
@@ -444,8 +447,6 @@ func extractRouteItems(loadedYAML string, ownNames map[string]bool, crdMode bool
 		// Exit routes block at a non-sequence, non-comment sibling of routes:.
 		if len(trimmed) > 0 && indent <= routesIndent && !strings.HasPrefix(body, "- ") && !strings.HasPrefix(body, "#") {
 			flush()
-			inRoutes = false
-			inRoute = false
 			break
 		}
 
@@ -493,7 +494,7 @@ func buildChannelScopedDiff(loadedYAML string, ownNames map[string]bool, crdMode
 
 	b.WriteString("--- receivers (this channel) ---\n")
 	if loadedRecv != "" {
-		for _, line := range strings.Split(strings.TrimRight(loadedRecv, "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(loadedRecv, "\n"), "\n") {
 			b.WriteString("  ")
 			b.WriteString(line)
 			b.WriteString("\n")

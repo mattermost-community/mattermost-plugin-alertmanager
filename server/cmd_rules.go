@@ -123,7 +123,7 @@ func buildPrometheusRuleManifest(rawYAML, namespace string) string {
 	// under spec:. Inline comments (lines starting with spaces then #) are
 	// preserved unchanged — they just get the same 2-space indent.
 	inGroups := false
-	for _, line := range strings.Split(rawYAML, "\n") {
+	for line := range strings.SplitSeq(rawYAML, "\n") {
 		if !inGroups {
 			if strings.HasPrefix(line, "groups:") {
 				inGroups = true
