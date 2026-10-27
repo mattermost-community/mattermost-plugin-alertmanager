@@ -8,15 +8,15 @@ leaves the system in a half-state that's hard to debug later.
 In each Mattermost channel that has receivers, run:
 
 ```
-/alertmanager remove all --force
+/alertmanager config remove all force
 ```
 
 This deletes the Mattermost incoming webhooks the plugin created
 and removes the matching entries from the plugin's KV store. Use
-`/alertmanager list` first to see what's there.
+`/alertmanager config list` first to see what's there.
 
 The receiver list lives in the plugin's KV store (not System Console),
-so `/alertmanager remove all --force` is the supported way to clear it
+so `/alertmanager config remove all force` is the supported way to clear it
 in bulk — there's no config field to hand-edit. Whatever path you use,
 also remove the underlying webhooks from **System Console →
 Integrations → Incoming Webhooks** so no orphaned `/hooks/<id>` bearer
@@ -25,7 +25,7 @@ tokens are left live.
 ## 2. Strip the plugin's blocks from `alertmanager.yml`
 
 The plugin renders receiver and route blocks into your
-`alertmanager.yml` via `/alertmanager show export` and `/alertmanager
+`alertmanager.yml` via `/alertmanager format export` and `/alertmanager
 add`. Those blocks live on the AM side and won't be removed by
 uninstalling the plugin.
 
@@ -82,7 +82,7 @@ grep -c 'mattermost' alertmanager.yml
 # (admin SQL or via the Integrations page)
 ```
 
-If `/alertmanager list` returns "command not found" or similar,
+If `/alertmanager config list` returns "command not found" or similar,
 the plugin is gone. If it returns the old help text, the plugin
 is still installed — re-check step 4.
 

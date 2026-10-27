@@ -78,7 +78,7 @@ the same WHERE / WHAT / READ structure.
 2. **Wire one channel.** In the channel you want alerts to land:
 
    ```
-   /alertmanager add ops alerts http://alertmanager:9093 all
+   /alertmanager config add http://alertmanager:9093 all
    ```
 
    The plugin creates receivers for all 36 runbooks bound to this
@@ -94,7 +94,7 @@ the same WHERE / WHAT / READ structure.
 4. **Verify end-to-end.** Fire a synthetic alert through Alertmanager:
 
    ```
-   /alertmanager validate high-cpu-usage --end-to-end
+   /alertmanager config validate high-cpu-usage end-to-end
    ```
 
    Watch the channel for delivery. Once you see the alert post with
@@ -104,15 +104,18 @@ the same WHERE / WHAT / READ structure.
 
 | Command | Use it when |
 |---|---|
-| `/alertmanager validate --simulate runbook=high-cpu-usage` | Confirm a Prometheus rule's labels will actually route to the expected receiver (no synthetic alert fired) |
-| `/alertmanager list` | See receivers bound to the current channel |
-| `/alertmanager show <name>` | Detail card + slack_configs YAML for one receiver |
-| `/alertmanager show --export [--diff-against-loaded]` | Re-render the channel's YAML, or diff against AM's loaded config with schema validation |
-| `/alertmanager rotate <name>` | Rotate a webhook (new hook-id, paste new YAML, reload AM) |
-| `/alertmanager rotate all --overdue` | Rotate every receiver past the configured threshold |
+| `/alertmanager config validate simulate runbook=high-cpu-usage` | Confirm a Prometheus rule's labels will actually route to the expected receiver (no synthetic alert fired) |
+| `/alertmanager config list` | See receivers bound to the current channel |
+| `/alertmanager config <name>` | Detail card + slack_configs YAML for one receiver |
+| `/alertmanager format export` | DM this channel's receivers and routes. Add `crd` for an AlertmanagerConfig |
+| `/alertmanager format diff` | Sysadmin. Compare this channel with what Alertmanager has loaded |
+| `/alertmanager admin acknowledge add <name>` | Sysadmin. Hide a receiver another system created from the orange AM-only warning. Does not mute alerts |
+| `/alertmanager silence create <TTL> <alert\|group\|all>` | Mute in Alertmanager. An alert or a group is team admin, up to 72h. `all` is sysadmin and capped at 1h |
+| `/alertmanager config rotate <name>` | Rotate a webhook (new hook-id, paste new YAML, reload AM) |
+| `/alertmanager config rotate all overdue` | Rotate every receiver past the configured threshold |
 | `/alertmanager about` | Plugin info, settings, reconciler health |
 
-Run `/alertmanager help` for the full reference. The
+Run `/alertmanager help` for the command list. Type `help` after any command (`/alertmanager config add help`) for options and examples. The
 `/plugins/com.mattermost.alertmanager/admin/inventory` page (sysadmin
 only) provides an org-wide view including AM reachability badges,
 inverse drift detection (receivers in AM that the plugin doesn't
@@ -122,7 +125,7 @@ track), and a route simulator form.
 
 Everything is discoverable from chat and the repo:
 
-- **In chat:** `/alertmanager help` (command reference) and `/alertmanager docs <topic>` — embedded docs rendered inline. Topics: `alerts` (full alert catalog by group), `requirements` (per-alert metric / exporter / tooling), `slash_commands`, `architecture`, `configuration`, `kubernetes`, `rotation`.
+- **In chat:** `/alertmanager help` (command reference) and `/alertmanager docs` (links to the documentation site, runbook library, and sample rules). Browse topics from the site sidebar.
 - **Runbook library:** [`runbooks/INDEX.md`](runbooks/INDEX.md) — all 36 runbooks by category; each renders to a page linked from its alert.
 - **Setup & ops docs:** [`docs/QUICKSTART.md`](docs/QUICKSTART.md) (first alert end-to-end), [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (settings + Prometheus wiring), [`docs/KUBERNETES.md`](docs/KUBERNETES.md) (HA deploy), [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) (build/test/deploy), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -131,20 +134,22 @@ Everything is discoverable from chat and the repo:
 - **Inline diagnostics** — every alert post includes 3 runbook-specific
   commands with WHERE / WHAT / READ context. Pre-filled with failing
   host, pod, namespace via per-alert label substitution.
-- **Route simulation** — `validate --simulate` walks AM's loaded route
+- **Route simulation** — `validate simulate` walks AM's loaded route
   tree against a label set you supply, no synthetic alert needed. Find
   dead routes and unexpected dispatches before they cost you an
   incident.
-- **Schema validation in diffs** — `export --diff-against-loaded` runs
+- **Schema validation in diffs** — `format diff` runs
   the merged config through Alertmanager's own parser. Catches
   undefined-receiver references and malformed matchers before you
   paste.
 - **Webhook rotation reminders** — set `WebhookRotationDays` in System
-  Console, opt receivers in with `/alertmanager add ... on`. Sysadmins
+  Console, opt receivers in with `/alertmanager config add ... on`. Sysadmins
   get DM'd when a receiver hasn't been rotated within the window. See
   [`docs/ROTATION.md`](docs/ROTATION.md).
 - **Drift detection** — inventory page flags receivers in AM YAML that
   the plugin doesn't track (hand-edits + post-rotation gaps).
+  `/alertmanager admin acknowledge add <name>` hides one you meant to keep.
+  That does not mute the alerts.
 
 ## Architecture (one paragraph)
 

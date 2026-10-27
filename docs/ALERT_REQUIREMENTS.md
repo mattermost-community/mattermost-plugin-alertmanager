@@ -2,7 +2,7 @@
 
 What each runbook's alert needs in order to **fire**. If the metric source
 in the "Provided by" column isn't being scraped, the rule is valid but
-never triggers. Read in chat with `/alertmanager docs requirements`.
+never triggers.
 
 Legend for "Extra tooling":
 - **—** works with metrics a standard cluster already scrapes
@@ -95,4 +95,4 @@ scraped by Prometheus. Everything else is opt-in per the ⚠ column.
 The three ⚠ **Falco/Kyverno** security rows are the highest-lift — they
 need runtime/policy/audit tooling deployed. Until then those alerts (and
 `security-tooling-down` watching them) stay dark. See
-`/alertmanager docs alerts` for the plain catalog.
+[Alert catalog](ALERT_CATALOG.md) for the plain list.

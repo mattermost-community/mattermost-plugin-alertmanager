@@ -4,33 +4,107 @@ All commands dispatch through `/alertmanager <subcommand>`. Every
 read command is channel-scoped — you only see receivers bound to
 the channel where you ran the command.
 
+## Command map
+
+Eight top-level commands. Five of them are groups with their own subcommands. Typeahead lists every level alphabetically. Commands take plain words and `key=value` pairs, never `--flags`.
+
+```
+/alertmanager
+├─ alerts [firing|status]            bare = firing
+├─ silence create <ttl> <target> | list | expire <name> <id>
+├─ config                            bare = list this channel's receivers
+│   ├─ <name>                        detail card for one receiver
+│   ├─ add | add-custom | validate
+│   └─ rotate | remove
+├─ format
+│   ├─ export [standard|crd]         config + rules for this channel
+│   ├─ diff [standard|crd]           Alertmanager config only
+│   └─ rules [standard|crd]          sample Prometheus rules only
+├─ admin                             sysadmin only
+│   └─ repair [prune] [force] | acknowledge | allowlist | metrics-token
+├─ docs
+├─ about
+└─ help
+```
+
+The old top-level names (`list`, `show`, `status`, `silences`, `expire_silence`,
+`add`, `add-custom`, `remove`, `rotate`, `validate`, `export`, `acknowledge`,
+`allowlist`, `metrics-token`, `reconcile`, `repair`) were removed and now reply
+`Unknown subcommand`. `rules`, `config export` and `config diff` moved under `format` and reply with
+the new command. Any `--flag` is rejected with the plain-word spelling: `--force` is `force`,
+`--namespace=ops` is `namespace=ops`, `--format=crd` is `crd`.
+
+## Getting help
+
+Type `help` after any command. The detail grows as you go deeper: the top level is
+a short list, a group lists its subcommands with examples, and a single command
+shows its options, who can run it, and examples.
+
+```
+/alertmanager help                    # every top-level command, one line each
+/alertmanager config help             # the subcommands of config
+/alertmanager config add help         # options, permissions, examples for one command
+/alertmanager help config add         # same as: config add help
+```
+
+A group typed with no subcommand (`/alertmanager admin`) or with an unknown one
+shows that group's help. A trailing `help` only counts when the words before it are
+a real command, so a custom receiver named `help` still works as an argument.
+
 ## Quick reference
 
-| Subcommand | Args | Purpose | Sysadmin? |
+| Command | Args | Purpose | Who can run it |
 |---|---|---|---|
+| `alerts` | `[firing]` | Firing alerts whose `runbook=` label matches a receiver in this channel. | any user |
+| `alerts status` | _(none)_ | Alertmanager version + uptime per backend | any user |
+| `silence create` | `<TTL> <alert\|group\|all>` | Mute matching alerts in Alertmanager. TTL is required: `30m`, or whole hours `1h`–`72h`. An alert name or a group can use the full range. `all` is every runbook in this channel, is capped at `1h`, and requires system_admin. The silence lives in Alertmanager, so other channels that receive the same alert go quiet too. A custom receiver has no `runbook` label, so a group or `all` does not match it. `silence <TTL> <target>` without `create` also works. | alert or group: team_admin. `all`: sysadmin |
+| `silence list` | _(none)_ | Active Alertmanager silences, grouped by AM URL | any user |
+| `silence expire` | `<name> <silence-id>` | Expire a silence created from this channel with `silence create` | team admin |
+| `config` / `config list` | _(none)_ | Receivers bound to this channel (table with Rotated column) | any user |
+| `config <name>` | `<name>` | Detail card for one receiver. Not offered in typeahead, because Mattermost cannot mix subcommands and free text at one level. | team_admin or sysadmin |
+| `config add` | `<am-url> [target] [standard\|crd] [on] [namespace=]` | Create receivers in the channel you run it in, for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`standard`, the default), or an `AlertmanagerConfig` v1alpha1 + Secret (`crd`; `namespace=` default `monitoring`). The rules for the runbooks in that add are attached to the same DM. Trailing `on` opts in to rotation reminders. The channel must already exist, and DMs and group messages are rejected. | team_admin of this channel's team, or sysadmin |
+| `config add-custom` | `<am-url> <name> [standard\|crd] [on] [namespace=<ns>] [webhook-host=<url>]` | In the channel you run it in, create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. `standard` (default) DMs plain `alertmanager.yml`; `crd` DMs Prometheus Operator objects; `on` opts into rotation reminders. No `runbook=` route is generated — you wire the matcher manually (the DM includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
+| `config validate` | `[all\|group\|name] [webhook-test\|end-to-end\|simulate <labels>]` | Pipeline diagnostics or read-only route simulation | sysadmin / team_admin |
+| `format export` | `[standard\|crd] [namespace=<ns>]` | DMs every receiver and route in this channel, with the Prometheus rules for the runbooks those receivers cover attached to the same message. `standard` (default): `alertmanager.yml` pieces plus a plain rules file. `crd`: AlertmanagerConfig + Secret plus a PrometheusRule named `mattermost-alertmanager-rules-<team>-<channel>` (`namespace=` defaults to `monitoring`). | team_admin or sysadmin |
+| `format diff` | `[standard\|crd]` | Alertmanager config only, no rules. Compares this channel to Alertmanager's loaded config. With no format, detects standard or CRD from the loaded config. | sysadmin |
+| `format rules` | `[standard\|crd] [namespace=<ns>]` | Rules only, all 37, not limited to this channel. `standard` (default): links to view or download the plain rules file. `crd`: DMs a ready-to-apply `PrometheusRule` (`monitoring.coreos.com/v1`). | any user |
+| `config rotate` | `<name>` \| `all overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
+| `config remove` | `<name>` \| `<set> force` \| `all force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
+| `admin repair` | `[prune] [force]` | Bare is read-only: checks the receiver-list KV store and lists receivers whose webhook was deleted out of band. `prune` removes those receivers (the background job does the same every 5 minutes). `force` rewrites a corrupt KV blob from the plugin's last-known in-memory list. `force` is recovery-only. | sysadmin |
+| `admin acknowledge` | `[add\|remove <name>]` | Hide a receiver from the orange AM-only inventory warning. Bare lists the hidden names. Use this when GitOps or another tool created the receiver on purpose. Alerts that receiver sends still fire. | sysadmin |
+| `admin allowlist` | `[add\|remove <prefix>]` | Extra registry prefixes for `UnexpectedContainerImage`. Bare lists the shipped prefixes and yours. `add` and `remove` change the list baked into the next `/alertmanager format rules crd` file. The plugin does not patch a running PrometheusRule. | sysadmin |
+| `admin metrics-token` | `[generate]` | Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The `MetricsToken` setting is `secret:true` and can't be read back from System Console — regenerate here if lost. | sysadmin |
+| `docs` | _(none)_ | Links to the documentation site, runbook library, and sample Prometheus rules. A topic argument is deprecated and only links to that page. | any user |
 | `about` | _(none)_ | Plugin build info, this channel's receiver count, links (any user). Org-wide counts, reconciler health, and configured-setting presence are shown to sysadmins only. | any user |
-| `add` | `<team> <channel> <am-url> [target] [on] [--format=standard\|crd] [--namespace=]` | Create receivers for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`--format=standard`, default), or an `AlertmanagerConfig` v1alpha1 + Secret (`--format=crd`; `--namespace=` default `monitoring`). Trailing `on` opts in to rotation reminders. Non-sysadmin team_admins can only target the team they are currently in. | sysadmin / team_admin |
-| `add-custom` | `<team> <channel> <am-url> <name> [--webhook-host=<url>]` | Create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. No `runbook=` route is generated — you wire the matcher manually (`show export` includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
-| `alerts` | `[all]` | Currently firing alerts. Default: channel-scoped — only alerts whose `runbook=` label matches a receiver in this channel. `all` shows every alert from this channel's AM backends regardless of label. | any user |
-| `docs` | `[topic]` | List or print embedded docs (alerts / architecture / compatibility / configuration / development / kubernetes / requirements / rotation / slash_commands) | any user |
-| `expire_silence` | `<name> <silence-id>` | Expire an active Alertmanager silence | any user |
 | `help` | _(none)_ | Slash-command reference | any user |
-| `list` | _(none)_ | Receivers bound to this channel (table with Rotated column) | any user |
-| `metrics-token` | `[generate]` | Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The `MetricsToken` setting is `secret:true` and can't be read back from System Console — regenerate here if lost. | sysadmin |
-| `reconcile` | _(none)_ | Prune entries whose Mattermost webhook was deleted out-of-band | sysadmin |
-| `remove` | `<name>` \| `<set> --force` \| `all --force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
-| `repair` | `[--force]` | Diagnose the receiver-list KV store; `--force` rewrites a corrupt blob from the plugin's last-known in-memory list. Recovery-only — normal operation never needs it. | sysadmin |
-| `rotate` | `<name>` \| `all --overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
-| `rules` | `[--format=operator] [--namespace=]` | Links to the shipped sample Prometheus alerting rules (37 rules, HTML + YAML). With `--format=operator`: DMs a ready-to-apply `PrometheusRule` CRD (`monitoring.coreos.com/v1`) wrapping all 37 rules for Prometheus Operator deployments. | any user |
-| `show` | `[export\|diff\|<name>] [--format=standard\|crd] [--namespace=]` | Unified receiver inspector: no args → list of channel receivers; `<name>` → detail card + `slack_configs` YAML; `export` → DM this channel's full config as `alertmanager.yml` (or `--format=crd` for Prometheus Operator); `diff` → channel-scoped diff against AM's loaded config; auto-detects Prometheus Operator CRD mode. | list: any user. `<name>` and `export`: team_admin or sysadmin. `diff`: sysadmin only |
-| `silences` | _(none)_ | Active Alertmanager silences, grouped by AM URL | any user |
-| `status` | _(none)_ | Alertmanager version + uptime per backend | any user |
-| `validate` | `[name\|set] [--webhook-test\|--end-to-end\|--simulate <labels>]` | Pipeline diagnostics or read-only route simulation | sysadmin / team_admin |
 
 Sysadmin / team_admin gating applies to commands that reveal webhook
 URLs (channel-bound bearer tokens) or change durable state. Pure-read
-commands (`list`, `alerts`, `status`, `about`) are open to any user
+commands (`config list`, `alerts`, `alerts status`, `about`) are open to any user
 in the channel.
+
+## What `silence` matches
+
+`/alertmanager silence create` writes a silence in Alertmanager. It does not
+change `slack_configs`.
+
+* An **alert** (`HighCPUUsage`) matches `alertname` exactly. A team
+  admin can set the TTL from `30m` through `72h`.
+* A **group** (`compute`, `database`, `mattermost`, and the other
+  scaffold sets) matches the `runbook` labels of that group's
+  receivers in this channel. Same TTL range as one alert. `compute`
+  does not include `database`. `all` is not a group here: the scaffold
+  map also has an `all` key, and the command treats the word `all` as
+  the channel-wide mute instead.
+* **`all`** matches every runbook receiver in this channel. The TTL
+  cannot be longer than `1h` (`30m` or `1h`). Only a system admin can
+  run it, because it quiets every channel that receives those alerts
+  on the same Alertmanager.
+* A **custom receiver** (`add-custom`) has no `runbook` label. A group
+  silence and `all` both skip it, so that alert keeps firing. Mute it
+  by typing its alert name. This is the uncommon path: a custom
+  receiver exists because the alert does not belong to a shipped
+  runbook.
 
 ## How receiver names work
 
@@ -44,8 +118,8 @@ team), so it's needed to keep receiver names globally unique.
 When invoking commands from chat, you can use either form:
 
 ```
-/alertmanager show high-cpu-usage--alert-slo-channel    # full name
-/alertmanager show high-cpu-usage                       # short form
+/alertmanager config high-cpu-usage--alert-slo-channel    # full name
+/alertmanager config high-cpu-usage                       # short form
 ```
 
 The short form resolves to a receiver bound to the current channel.
@@ -71,7 +145,7 @@ routes:
     continue: true
 ```
 
-To set this up: run `/alertmanager add` once per destination
+To set this up: run `/alertmanager config add` once in each destination
 channel. The plugin auto-suffixes the receiver names and emits
 routes with `continue: true` so AM doesn't stop at the first match.
 
@@ -79,8 +153,10 @@ routes with `continue: true` so AM doesn't stop at the first match.
 
 ### First-time setup — all 36 canonical receivers in one channel
 
+Create the channel if it doesn't exist, then run this in it:
+
 ```
-/alertmanager add testing alert-slo-channel http://alertmanager:9093
+/alertmanager config add http://alertmanager:9093
 ```
 
 Creates every embedded runbook (the `all` set — 36 receivers) bound
@@ -94,7 +170,7 @@ the `api_url` is shared.
 To create just one category:
 
 ```
-/alertmanager add testing alert-slo-channel http://alertmanager:9093 database
+/alertmanager config add http://alertmanager:9093 database
 ```
 
 Available group sets: `all` (default), `application`, `compute`,
@@ -109,19 +185,19 @@ team segment disambiguates channels that repeat across teams).
 For a single receiver with its own dedicated webhook:
 
 ```
-/alertmanager add testing alert-slo-channel http://alertmanager:9093 high-cpu-usage
+/alertmanager config add http://alertmanager:9093 high-cpu-usage
 ```
 
 Creates one receiver named `high-cpu-usage--testing-alert-slo-channel` and
 one Mattermost webhook with the identical name
 `high-cpu-usage--testing-alert-slo-channel` (individual adds make the webhook
 name match the receiver name exactly). Any runbook slug works — see
-`/alertmanager docs` for the full list.
+the Runbook library link from `/alertmanager docs` for the full list.
 
 If you try to add an individual slug that's already part of an
 existing group in this channel, the add is skipped with a clear
 "already exists" message. Remove the receiver first
-(`/alertmanager remove high-cpu-usage`) if you want to detach it
+(`/alertmanager config remove high-cpu-usage`) if you want to detach it
 from the group and re-add individually.
 
 ### Custom (non-runbook) receiver
@@ -130,17 +206,17 @@ For an alert that has no shipped runbook — a bespoke rule you wrote —
 create a generic receiver with a name you choose:
 
 ```
-/alertmanager add-custom testing sre-alerts http://alertmanager:9093 slo-burn-rate
+/alertmanager config add-custom http://alertmanager:9093 slo-burn-rate
 ```
 
 Creates one receiver named `slo-burn-rate--testing-sre-alerts`
 and its own webhook. Because there's no runbook, the plugin does **not**
 generate a `runbook=` route — the post is the raw alert, and **you must
-wire the route yourself**. Run `/alertmanager show export` and you'll get the
+wire the route yourself**. Run `/alertmanager format export` and you'll get the
 receiver block plus a commented stub to fill in:
 
 ```yaml
-# Custom (non-runbook) receivers — created via /alertmanager add-custom.
+# Custom (non-runbook) receivers — created via /alertmanager config add-custom.
 #  - matchers: [ <your labels, e.g. alertname="ErrorBudgetBurn", severity="critical"> ]
 #    receiver: slo-burn-rate--testing-sre-alerts
 #    continue: true
@@ -160,7 +236,7 @@ Pass `on` as the final argument to opt the receivers in to the
 rotation reminder system:
 
 ```
-/alertmanager add testing alert-slo-channel http://alertmanager:9093 compute on
+/alertmanager config add http://alertmanager:9093 compute on
 ```
 
 Two-tier opt-in: the global threshold lives at System Console →
@@ -172,10 +248,10 @@ receivers. Both required. See [`ROTATION.md`](ROTATION.md).
 ### Fan out an alert to a second channel
 
 Already have `~alert-slo-channel` receiving the `compute` set. Want
-CPU alerts to also go to `~oncall-critical`:
+CPU alerts to also go to `~oncall-critical`? Switch to that channel and run:
 
 ```
-/alertmanager add testing oncall-critical http://alertmanager:9093 compute
+/alertmanager config add http://alertmanager:9093 compute
 ```
 
 Same set, second channel → plugin creates `high-cpu-usage--oncall-critical`
@@ -185,11 +261,11 @@ fan-out, reload AM.
 
 ### Multi-cluster — same Mattermost, different AMs
 
-Use `--webhook-host=<url>` for per-receiver override:
+Use `webhook-host=<url>` for per-receiver override. Run each command in its own channel (`~east-alerts`, `~west-alerts`):
 
 ```
-/alertmanager add testing east-alerts http://am.east:9093 compute --webhook-host=http://mattermost.east.svc:8065
-/alertmanager add testing west-alerts http://am.west:9093 compute --webhook-host=http://mattermost.west.svc:8065
+/alertmanager config add http://am.east:9093 compute webhook-host=http://mattermost.east.svc:8065
+/alertmanager config add http://am.west:9093 compute webhook-host=http://mattermost.west.svc:8065
 ```
 
 The override takes precedence over the global `WebhookHost` setting
@@ -199,7 +275,7 @@ multiple Alertmanagers reachable via different network paths.
 ### See what's bound to this channel
 
 ```
-/alertmanager list
+/alertmanager config list
 ```
 
 Prints a table — receiver name, team, channel, Alertmanager URL,
@@ -212,7 +288,7 @@ global threshold get a `⚠️` prefix.
 ### Inspect a receiver
 
 ```
-/alertmanager show high-cpu-usage
+/alertmanager config high-cpu-usage
 ```
 
 (Short form — resolves to `high-cpu-usage--<current-channel>`.)
@@ -224,7 +300,7 @@ and quick-action links to rotate / remove.
 Run without a name to see the full channel receiver list:
 
 ```
-/alertmanager show
+/alertmanager config
 ```
 
 ### Validate the pipeline
@@ -233,49 +309,50 @@ Three modes covering increasingly intrusive checks:
 
 ```
 # Cheap, no side effects — checks AM reachable + receivers loaded in AM
-/alertmanager validate
+/alertmanager config validate
 
 # Read-only route simulation — walks AM's loaded route tree against
 # supplied labels, reports which receivers would catch the alert
-/alertmanager validate --simulate runbook=high-cpu-usage severity=critical
+/alertmanager config validate simulate runbook=high-cpu-usage severity=critical
 
 # Side-effect: POSTs a visible test message to each webhook
-/alertmanager validate --webhook-test
+/alertmanager config validate webhook-test
 
 # Side-effect: fires a synthetic alert through AM, watch the channel
-/alertmanager validate --end-to-end
+/alertmanager config validate end-to-end
 
-# Combine set filter + flag
-/alertmanager validate compute --end-to-end
+# Combine a group filter with a mode
+/alertmanager config validate compute end-to-end
 ```
 
-The `--simulate` mode is the answer to "would my Prometheus rule's
-labels actually route to the receiver I expect?" Empty `--simulate`
+The typeahead after `validate` lists `all` plus only the groups that have a
+receiver in the channel you are in. The `simulate` mode is the answer to "would my Prometheus rule's
+labels actually route to the receiver I expect?" Empty `simulate`
 (no labels supplied) prints a preset list of runbook-slug starter
 expressions for copy-paste discoverability.
 
 ### Test every severity at once
 
-`--severity=<value>` controls which severity the `--end-to-end` flag
-fires. Values: `warning` (default), `critical`, `info`, or `all`.
+`severity=<value>` controls which severity `end-to-end` fires. It is
+typed by hand and does not appear in typeahead. Values: `warning` (default), `critical`, `info`, or `all`.
 
 ```
 # Fire one synthetic at critical severity instead of the default warning
-/alertmanager validate high-cpu-usage --end-to-end --severity=critical
+/alertmanager config validate high-cpu-usage end-to-end severity=critical
 
 # Fire four synthetics per receiver: warning + critical + info + resolved
 # Use this to visually verify every render path in one shot —
 # sidebar colors (yellow/red/blue/green), the new [SEVERITY:Alertname]
 # title format, and the [✓ RESOLVED:...] resolved variant.
-/alertmanager validate high-cpu-usage --end-to-end --severity=all
+/alertmanager config validate high-cpu-usage end-to-end severity=all
 ```
 
-`--severity=all` is per-receiver. A whole-channel test
-(`/alertmanager validate all --end-to-end --severity=all`) fires
+`severity=all` is per-receiver. A whole-channel test
+(`/alertmanager config validate all end-to-end severity=all`) fires
 4 × N alerts where N is the number of receivers — scope to one or
 two receivers when running a visual smoke test, not the full set.
 
-The `--severity` flag has no effect without `--end-to-end` (the
+`severity=` has no effect without `end-to-end` (the
 read-only modes don't fire alerts).
 
 ### Rotate a webhook URL
@@ -283,7 +360,7 @@ read-only modes don't fire alerts).
 Single receiver (individual or legacy pre-v1.0.3):
 
 ```
-/alertmanager rotate high-cpu-usage
+/alertmanager config rotate high-cpu-usage
 ```
 
 Plugin creates a new Mattermost webhook in the same channel, deletes
@@ -295,7 +372,7 @@ Mattermost immediately.
 group, rotating it rotates the **shared webhook** — every receiver
 in that group gets the new URL. The response message lists every
 affected receiver and DMs you the merged YAML bundle for paste-once
-update. Example: `/alertmanager rotate high-cpu-usage` on a receiver
+update. Example: `/alertmanager config rotate high-cpu-usage` on a receiver
 created via `add ... compute` rotates the webhook for all 9 compute
 receivers.
 
@@ -303,7 +380,7 @@ Batch all overdue (only opted-in receivers past the global
 threshold):
 
 ```
-/alertmanager rotate all --overdue
+/alertmanager config rotate all overdue
 ```
 
 DMs you a merged YAML bundle with just the rotated receivers'
@@ -316,7 +393,7 @@ Re-render every receiver in this channel with the latest template
 without rotating webhooks:
 
 ```
-/alertmanager show export
+/alertmanager format export
 ```
 
 DMs you a freshly-rendered `receivers.yml` + `routes.yml`. Replace
@@ -327,7 +404,7 @@ valid.
 For Prometheus Operator deployments:
 
 ```
-/alertmanager show export --format=crd --namespace=monitoring
+/alertmanager format export crd namespace=monitoring
 ```
 
 ### Diff your YAML against what AM has loaded
@@ -336,7 +413,7 @@ Catches drift between what the plugin would produce and what AM
 actually has in memory right now:
 
 ```
-/alertmanager show diff
+/alertmanager format diff
 ```
 
 Output includes:
@@ -353,7 +430,8 @@ this channel's receivers under CRD-namespaced names
 (`<namespace>/mattermost-alertmanager-<hash>/<receiver-name>`), the
 diff automatically switches to CRD mode — "already loaded" detection
 matches on the short receiver name rather than the full namespaced
-path. Use `/alertmanager show export --format=crd` to get the
+path. To skip detection, add a format: `format diff crd` compares against the
+namespaced form, `format diff standard` against plain receiver names. Use `/alertmanager format export crd` to get the
 `AlertmanagerConfig` YAML to apply via `kubectl apply`.
 
 ### Bulk cleanup
@@ -361,14 +439,14 @@ path. Use `/alertmanager show export --format=crd` to get the
 Three patterns, all channel-scoped:
 
 ```
-/alertmanager remove <name>                  # one receiver, no --force needed
-/alertmanager remove compute --force         # one set in this channel
-/alertmanager remove all --force             # every receiver in this channel
+/alertmanager config remove <name>                  # one receiver, no force needed
+/alertmanager config remove compute force         # one set in this channel
+/alertmanager config remove all force             # every receiver in this channel
 ```
 
-For set or `all` targets, run without `--force` first to see a
-dry-run preview of what would be deleted, then re-run with `--force`
-to confirm. Single-receiver remove doesn't require `--force` because
+For set or `all` targets, run without `force` first to see a
+dry-run preview of what would be deleted, then re-run with `force`
+to confirm. Single-receiver remove doesn't require `force` because
 the name is explicit (low blast radius).
 
 The `remove` autocomplete dropdown shows `all` plus the eight category
@@ -382,25 +460,25 @@ config entry becomes an orphan. The reconciler runs every 5 minutes
 to prune these automatically, but to trigger immediately:
 
 ```
-/alertmanager reconcile
+/alertmanager admin repair prune
 ```
 
 Reports how many orphans (if any) it removed.
 
-### Embedded docs
+### Documentation site
 
 ```
 /alertmanager docs
-/alertmanager docs configuration
-/alertmanager docs rotation
 ```
 
-Available topics: `alerts`, `architecture`, `compatibility`,
-`configuration`, `development`, `kubernetes`, `requirements`,
-`rotation`, `slash_commands`. Content is rendered
-inline in chat — for the full version, hit
-`/plugins/com.mattermost.alertmanager/public/help/home.html` in a
-browser.
+Replies with links to the documentation site, the runbook library, and the
+sample Prometheus rules. Open the site and use the sidebar to browse
+topics. The same site lives at
+`/plugins/com.mattermost.alertmanager/public/help/home.html`.
+
+`/alertmanager docs <topic>` (for example `docs kubernetes`) is deprecated.
+It no longer prints the document in chat. It links to that page and the
+site home.
 
 ### Plugin info
 

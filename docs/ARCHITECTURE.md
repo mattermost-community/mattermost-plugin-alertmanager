@@ -128,7 +128,7 @@ the user-as-bot identity; everything else runs in plugin code.
                                                    Channel post
 
 
-  ┌──────────┐      /alertmanager add <name> ...
+  ┌──────────┐      /alertmanager config add <name> ...
   │ Sysadmin │ ─────────────────────────────────────▶
   └──────────┘                                       │
                                                      ▼
@@ -186,7 +186,7 @@ with Mattermost handling auth and post creation.
   Slack's incoming webhook format doesn't have an equivalent concept.
   Mattermost's webhook receiver doesn't add them. So an "Expire
   Silence" button on a silence post isn't possible — users have to run
-  `/alertmanager expire_silence <name> <silence-id>` instead. This is
+  `/alertmanager silence expire <name> <silence-id>` instead. This is
   the meaningful UX cost of the `slack_configs` approach.
 - **No plugin-layer dedup.** HA Alertmanager peers will fan out posts.
   Mitigation lives on the Alertmanager side: matching `external_labels`
@@ -206,7 +206,7 @@ with Mattermost handling auth and post creation.
 | Dimension | `webhook_configs` approach | `slack_configs` (this plugin) |
 |---|---|---|
 | Plugin runtime path | Receives, parses, formats, posts | None at runtime |
-| Setup time path | Configure receiver token in plugin settings + AM YAML | `/alertmanager add` creates webhook + prints YAML |
+| Setup time path | Configure receiver token in plugin settings + AM YAML | `/alertmanager config add` creates webhook + prints YAML |
 | Authentication | Plugin-managed token in URL | Mattermost-managed hook-id in URL |
 | Post format owner | Plugin code (hardcoded, change requires rebuild) | Alertmanager template (per-receiver, GitOps-friendly) |
 | Interactive buttons on alert posts | Yes (`model.PostAction`) | No (slack_configs has no equivalent) |
@@ -245,7 +245,7 @@ Alertmanager downtime — the receiver swap can be staged: add the new
 receiver, route alerts to both temporarily, observe, then remove the old
 one.
 
-**Migrating to `slack_configs` (this plugin):** run `/alertmanager add`
+**Migrating to `slack_configs` (this plugin):** run `/alertmanager config add`
 for each receiver, update `alertmanager.yml` to swap `webhook_configs:`
 blocks for `slack_configs:` blocks. Webhook URLs change; plugin-managed
 tokens are replaced by Mattermost-native hook IDs. Routing rules in the
@@ -288,16 +288,16 @@ at organizational scale:
 
 ## Validation and drift detection (v1.0.1+)
 
-The federal design moves alert delivery out of the plugin, but
+This design moves alert delivery out of the plugin, but
 leaves the plugin in the best position to validate the operator's
 hand-pasted YAML matches what was generated. v1.0.1 and v1.0.2
 added three checks along that boundary:
 
-- **Forward drift detection.** `/alertmanager validate` queries AM's
+- **Forward drift detection.** `/alertmanager config validate` queries AM's
   `/api/v2/status` for each unique AM URL and confirms the
   receivers in plugin config are actually present in AM's loaded
   YAML. Catches the silent-failure mode where an operator added
-  receivers via `/alertmanager add` but forgot to paste the YAML
+  receivers via `/alertmanager config add` but forgot to paste the YAML
   into `alertmanager.yml`. Surfaces per-receiver in the slash
   command output and as colored badges on the `/admin/inventory`
   page.
@@ -306,8 +306,12 @@ added three checks along that boundary:
   config surface as an orange "AM-only receivers" section on the
   inventory page. Catches hand-edits of `alertmanager.yml` plus
   post-rotation gaps where the operator rotated a webhook via the
-  plugin but didn't paste the new YAML into AM.
-- **Schema validation.** `/alertmanager show diff`
+  plugin but didn't paste the new YAML into AM. A receiver another
+  system created on purpose is hidden with
+  `/alertmanager admin acknowledge add <name>` (sysadmin). The inventory
+  stores the short name and skips it. The alerts that receiver sends
+  still fire. `null` and `blackhole` are already skipped.
+- **Schema validation.** `/alertmanager format diff`
   runs the merged YAML through `prometheus/alertmanager/config.Load`
   before the operator pastes. Surfaces undefined-receiver
   references, malformed matchers, and route-tree errors at
@@ -317,7 +321,7 @@ added three checks along that boundary:
 
 ## Route simulation (v1.0.2+)
 
-`/alertmanager validate --simulate <labels>` and the route tester
+`/alertmanager config validate simulate <labels>` and the route tester
 form on `/admin/inventory` walk Alertmanager's loaded route tree
 against a user-supplied label set and report which receiver(s) an
 alert with those labels would dispatch to. Mirrors `amtool config
@@ -341,7 +345,7 @@ computed server-side, applied via client-side JS.
 Per-receiver `LastRotatedAt` + `LastReminderAt` timestamps drive a
 reminder-only rotation system. Global threshold via
 `WebhookRotationDays` System Console setting (default `0` = off),
-per-receiver opt-in via `on` flag on `/alertmanager add`. Both
+per-receiver opt-in via `on` flag on `/alertmanager config add`. Both
 required — the global threshold alone fires nothing without the
 per-receiver opt-in.
 
@@ -349,7 +353,7 @@ Background reconciler runs the reminder pass alongside orphan
 pruning every 5 minutes. When threshold > 0 AND receiver has opted
 in AND age > threshold AND no reminder sent in the last 7 days,
 DMs the calling sysadmin with the per-channel summary and the exact
-`/alertmanager rotate all --overdue` command.
+`/alertmanager config rotate all overdue` command.
 
 No auto-rotation by design. AM has no write API; an auto-rotation
 feature would either silently break delivery (rotate without
@@ -371,10 +375,10 @@ Known gaps that haven't shipped:
   Alertmanager peers correctly." Worth a documented playbook in a
   future release.
 - **Interactive expire-silence flow.** v1.0 falls back to
-  `/alertmanager expire_silence <name> <silence-id>` typed by hand.
+  `/alertmanager silence expire <name> <silence-id>` typed by hand.
   A v1.x enhancement might bring back something button-shaped via
   Mattermost's interactive dialogs, but it'll be triggered from
-  `/alertmanager silences` rather than inline on alert posts —
+  `/alertmanager silence list` rather than inline on alert posts —
   those are owned by Mattermost's webhook pipeline now, not the
   plugin.
 - **Per-channel rotation threshold.** A single global

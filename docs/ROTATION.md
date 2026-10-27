@@ -15,7 +15,7 @@ Three pieces, each independent:
 | Piece | Where | What it does |
 |---|---|---|
 | `WebhookRotationDays` | System Console → Plugins → Alertmanager | Global threshold in days. `0` (default) disables the whole system. |
-| `on` flag on `/alertmanager add` | Slash command | Per-channel opt-in. Without it, the receivers created by that `add` invocation are **never** flagged as overdue. |
+| `on` flag on `/alertmanager config add` | Slash command | Per-channel opt-in. Without it, the receivers created by that `add` invocation are **never** flagged as overdue. |
 | Background reconciler | Plugin internals | Runs every 5 min. When threshold > 0 AND a receiver has opted in AND age > threshold, DMs the calling sysadmin with the list and the exact rotate command. |
 
 Two-tier design on purpose: sysadmin sets the policy globally, channel
@@ -45,10 +45,10 @@ than "epoch zero."
 ### 2. Opt receivers in
 
 Per-channel opt-in is mandatory. The global threshold alone does
-nothing without it. Pass `on` as the final arg to `/alertmanager add`:
+nothing without it. Pass `on` as the final arg to `/alertmanager config add`:
 
 ```
-/alertmanager add testing alert-slo-channel http://alertmanager:9093 compute on
+/alertmanager config add http://alertmanager:9093 compute on
 ```
 
 The 9 compute receivers created by that call get
@@ -79,7 +79,7 @@ in over 90 days:
 
 Rotate them when convenient. In #alert-slo-channel, run:
 
-  /alertmanager rotate all --overdue
+  /alertmanager config rotate all overdue
 
 You'll receive a DM with the updated YAML. Paste it into your
 alertmanager.yml and reload AM (`curl -X POST http://<am>/-/reload`).
@@ -97,7 +97,7 @@ from re-paging the same sysadmin every 5 minutes.
 Run the suggested command from inside the affected channel:
 
 ```
-/alertmanager rotate all --overdue
+/alertmanager config rotate all overdue
 ```
 
 Three things happen:
@@ -107,7 +107,7 @@ Three things happen:
 2. `LastRotatedAt` is stamped, `LastReminderAt` cleared.
 3. The plugin DMs you a merged YAML bundle containing the rotated
    `slack_configs:` and the `routes:` block — same shape
-   `/alertmanager show export` produces, scoped to just the rotated set.
+   `/alertmanager format export` produces, scoped to just the rotated set.
 
 Paste the YAML into `alertmanager.yml`, then reload AM:
 
@@ -124,10 +124,10 @@ window short — minutes, not hours.
 To rotate one receiver without batching:
 
 ```
-/alertmanager rotate high-cpu-usage
+/alertmanager config rotate high-cpu-usage
 ```
 
-For an **individual receiver** (created via `/alertmanager add ...
+For an **individual receiver** (created via `/alertmanager config add ...
 high-cpu-usage` or pre-v1.0.3): new webhook, old URL invalidated,
 YAML re-rendered inline in the chat response. Paste into
 `alertmanager.yml` and reload.
@@ -136,8 +136,8 @@ For a **grouped receiver** (created as part of `add ... compute`,
 `add ... all`, etc.): rotating any one receiver in the group
 rotates the **shared webhook used by every receiver in that group**.
 The response message lists every affected receiver and DMs the
-merged YAML bundle — same shape `rotate all --overdue` produces.
-Example: `/alertmanager rotate high-cpu-usage` on a receiver from
+merged YAML bundle — same shape `rotate all overdue` produces.
+Example: `/alertmanager config rotate high-cpu-usage` on a receiver from
 a compute group rotates the webhook serving all 9 compute receivers.
 This is the trade-off of webhook consolidation: rotation isolation
 is per-group, not per-receiver.
@@ -146,7 +146,7 @@ is per-group, not per-receiver.
 
 | Condition | Effect |
 |---|---|
-| Receiver rotated via `/alertmanager rotate <name>` | `LastRotatedAt` reset to now; clock restarts. |
+| Receiver rotated via `/alertmanager config rotate <name>` | `LastRotatedAt` reset to now; clock restarts. |
 | Receiver removed entirely | Reminder will never fire again for that name. |
 | `RotationRemindersEnabled` set to false | The next cycle skips this receiver. Set at add time via the `on` argument; the receiver list itself lives in the plugin KV store and isn't hand-editable from System Console. |
 | Global `WebhookRotationDays` set to 0 | Feature off; reconciler skips the rotation pass entirely. |
@@ -180,7 +180,7 @@ fast iteration):
 
 1. Add receivers with `on`:
    ```
-   /alertmanager add testing test-rotation http://alertmanager:9093 compute on
+   /alertmanager config add http://alertmanager:9093 compute on
    ```
 2. Force one entry overdue. The receiver list lives in the plugin KV
    store (key `alertconfigs:v1`), not System Console, so there's no UI
@@ -190,7 +190,7 @@ fast iteration):
 
    > **A raw KV write does not refresh the running plugin.** The reconciler
    > reads the in-memory config (`getConfiguration()`). The plugin's own writes
-   > (`/alertmanager add`/`remove`/`rotate`) refresh in-memory on the writing
+   > (`/alertmanager config add`/`remove`/`rotate`) refresh in-memory on the writing
    > node AND broadcast a cluster event so peer nodes reload from KV — but a
    > *direct* KV edit that bypasses the plugin fires neither. After editing KV
    > out-of-band, trigger a config reload (toggle any plugin setting in System
@@ -199,7 +199,7 @@ fast iteration):
 3. Wait up to 5 minutes for the next reconciler cycle.
 4. Check the bot DM channel — should have a per-channel reminder
    listing that one overdue receiver.
-5. Run `/alertmanager rotate all --overdue` from the channel.
+5. Run `/alertmanager config rotate all overdue` from the channel.
 6. Confirm the DM with the merged YAML lands.
 7. Next reconciler cycle should NOT re-send the reminder for that
    receiver (it's now rotated).

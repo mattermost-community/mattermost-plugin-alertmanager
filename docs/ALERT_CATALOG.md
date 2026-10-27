@@ -1,8 +1,8 @@
 # Alert Catalog
 
 Every alert type the runbook library covers, grouped the same way as the
-`/alertmanager add <set>` group sets and the `groups:` in your Prometheus
-rules. Read it in chat with `/alertmanager docs alerts`.
+`/alertmanager config add <set>` group sets and the `groups:` in your Prometheus
+rules.
 
 Each runbook slug maps to a rendered page at
 `/plugins/com.mattermost.alertmanager/public/runbooks/<slug>.html` and,
@@ -115,11 +115,11 @@ Rules for the Mattermost server itself. Requires `ServiceSettings.EnableMetrics:
 ## Wiring a set into a channel
 
 ```
-/alertmanager add <team> <channel> <am-url> mattermost
-/alertmanager add <team> <channel> <am-url> security
-/alertmanager add <team> <channel> <am-url> storage
-/alertmanager validate security --simulate runbook=unexpected-container-image severity=warning
+/alertmanager config add <am-url> mattermost
+/alertmanager config add <am-url> security
+/alertmanager config add <am-url> storage
+/alertmanager config validate security simulate runbook=unexpected-container-image severity=warning
 ```
 
 `all` wires every slug above (36) behind one shared webhook. See
-`/alertmanager docs slash_commands` for the full command reference.
+[Slash commands](SLASH_COMMANDS.md) for the full command reference.
