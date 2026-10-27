@@ -272,14 +272,8 @@ the plugin is installed.
 
 ## In-chat help
 
-Most of this content is also accessible from inside Mattermost via slash
-commands:
-
-- ` + "`/alertmanager docs`" + ` — list topics
-- ` + "`/alertmanager docs <topic>`" + ` — print a specific topic
-
-The chat output is the same source markdown that's rendered into this
-site, so reading either form gets you to the same place.
+Run ` + "`/alertmanager docs`" + ` in any channel for a link to this site.
+Run ` + "`/alertmanager help`" + ` for the command reference.
 `
 
 // runbookIndexBody is the landing page for the runbook library.
@@ -338,10 +332,10 @@ placeholders. The on-call wants to copy-paste.
 // rulesSrcPath / rulesOutYAML — the shipped sample rules and where the raw
 // copy lands in the help site. Relative to build/render-docs/'s working dir.
 const (
-	rulesSrcPath  = "../../samples/prometheus-rules.yaml"
-	rulesOutYAML  = "../../public/help/prometheus-rules.yaml"
-	rulesCRDOut   = "../../public/help/mattermost-prometheus-rules-crd.yaml"
-	rulesCRDNS    = "monitoring" // default namespace baked into the static CRD file
+	rulesSrcPath = "../../samples/prometheus-rules.yaml"
+	rulesOutYAML = "../../public/help/prometheus-rules.yaml"
+	rulesCRDOut  = "../../public/help/mattermost-prometheus-rules-crd.yaml"
+	rulesCRDNS   = "monitoring" // default namespace baked into the static CRD file
 )
 
 func main() {
@@ -396,7 +390,7 @@ func buildRulesPage() (page, error) {
 		`<p>` +
 		`<a href="prometheus-rules.yaml" download><strong>⬇ Download prometheus-rules.yaml</strong></a> — plain format, add to your Prometheus <code>rule_files:</code> glob.` +
 		`&nbsp;&nbsp;|&nbsp;&nbsp;` +
-		`<a href="mattermost-prometheus-rules-crd.yaml" download><strong>⬇ Download PrometheusRule CRD</strong></a> — <code>monitoring.coreos.com/v1</code>, ready for <code>kubectl apply</code> (namespace: <code>monitoring</code>; adjust the <code>release</code> label to your Helm release name). For a different namespace run <code>/alertmanager rules --format=operator --namespace=&lt;ns&gt;</code> in chat.` +
+		`<a href="mattermost-prometheus-rules-crd.yaml" download><strong>⬇ Download PrometheusRule CRD</strong></a> — <code>monitoring.coreos.com/v1</code> (the only PrometheusRule version this plugin ships). The file contains every group: compute, application, database, storage, networking, observability, security, and mattermost. Namespace <code>monitoring</code>; adjust the <code>release</code> label to your Helm release name. For a different namespace run <code>/alertmanager rules --format=operator --namespace=&lt;ns&gt;</code> in chat. <code>/alertmanager config add</code> also DMs the PrometheusRule for the group you just created, under its own object name, so you do not have to apply this full file as well.` +
 		`</p>` +
 		`<blockquote>Every threshold and <code>for:</code> duration below is a demo-cluster placeholder — tune to your traffic and SLOs before trusting them in production. The <code>runbook:</code> label on each rule is the join key that routes it to a runbook.</blockquote>`
 	body := intro + "<pre><code>" + template.HTMLEscapeString(string(raw)) + "</code></pre>"
