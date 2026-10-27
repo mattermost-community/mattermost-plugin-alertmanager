@@ -14,9 +14,12 @@
         }
     },
     "settings_schema": {
-        "header": "## Alertmanager Plugin\n\nPrometheus Alertmanager alerts in Mattermost, with the runbook attached.\n\n- 📚 [Documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📈 [Sample Prometheus rules](/plugins/com.mattermost.alertmanager/public/help/prometheus-rules.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nRun `/alertmanager help` in any channel for commands. Version `__PLUGIN_VERSION__` — [release notes](__PLUGIN_RELEASE_URL__).",
-        "footer": "### Most-used commands\n\n| Command | When |\n|---|---|\n| `/alertmanager add <team> <channel> <am-url>` | First-time setup — creates the 36 canonical receivers in a channel |\n| `/alertmanager rules` | Get the sample Prometheus rules (view or download) |\n| `/alertmanager list` | See receivers bound to this channel |\n\nRun `/alertmanager help` in chat for the full command list.",
-        "settings": [
+        "sections": [
+            {
+                "key": "AlertmanagerSettings",
+                "header": "## Alertmanager Plugin\n\nPrometheus Alertmanager alerts in Mattermost, with the runbook attached.\n\n- 📚 [Documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📈 [Sample Prometheus rules](/plugins/com.mattermost.alertmanager/public/help/prometheus-rules.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nRun `/alertmanager help` in any channel for commands. Version `__PLUGIN_VERSION__` — [release notes](__PLUGIN_RELEASE_URL__).",
+                "footer": "### Most-used commands\n\n| Command | When |\n|---|---|\n| `/alertmanager config add <am-url>` | First-time setup — creates the 36 canonical receivers in a channel |\n| `/alertmanager format rules` | Get the sample Prometheus rules (view or download) |\n| `/alertmanager config` | See receivers bound to this channel |\n\nRun `/alertmanager help` in chat for the full command list.",
+                "settings": [
             {
                 "key": "AssembledYAMLTTLHours",
                 "display_name": "Auto-delete DM'd YAML files after (hours)",
@@ -80,12 +83,22 @@
                 "default": ""
             },
             {
+                "key": "ImageRegistryAllowlist",
+                "display_name": "Extra container-image registry prefixes",
+                "type": "longtext",
+                "help_text": "Registry prefixes to add to the UnexpectedContainerImage allowlist, one per line (for example `ghcr.io/myorg/`). Included the next time someone runs `/alertmanager format rules crd`. The plugin does not patch a running PrometheusRule. Apply the DM'd file, or the stock rule keeps firing. A missing trailing `/` is added so the prefix cannot match a longer name.",
+                "placeholder": "ghcr.io/myorg/\nregistry.example.com:5000/team/",
+                "default": ""
+            },
+            {
                 "key": "WebhookRotationDays",
                 "display_name": "Webhook rotation reminder period (days)",
                 "type": "number",
                 "help_text": "Days before the plugin DMs sysadmins to rotate a receiver's webhook (reminder only — no auto-rotation); 0 disables, 90 is a good baseline.",
                 "placeholder": "0",
                 "default": 0
+            }
+                ]
             }
         ]
     }

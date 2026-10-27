@@ -14,7 +14,7 @@
 #     curl -X POST http://prometheus:9090/-/reload
 #
 # Prometheus Operator (PrometheusRule CRD):
-#   Run `/alertmanager rules --format=operator [--namespace=monitoring]`
+#   Run `/alertmanager format rules crd [namespace=monitoring]`
 #   in any Mattermost channel where the plugin is installed. The plugin
 #   DMs you a ready-to-apply PrometheusRule CRD (monitoring.coreos.com/v1)
 #   wrapping these same groups. Apply with:
@@ -26,7 +26,7 @@
 # -------------------------------------------------
 # 1. Syntax: `promtool check rules prometheus-rules.yaml`
 # 2. Routing: in any Mattermost channel with plugin receivers, run
-#    `/alertmanager validate --simulate runbook=high-cpu-usage` (or
+#    `/alertmanager validate simulate runbook=high-cpu-usage` (or
 #    any other slug). The plugin walks Alertmanager's loaded route
 #    tree against those labels and reports which receiver an alert
 #    with that label set would actually dispatch to. Useful for

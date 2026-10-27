@@ -564,7 +564,7 @@ receivers:
 }
 
 // TestBuildDiffAgainstLoaded covers the unified-diff-style merger
-// for /alertmanager export --diff-against-loaded. The function does
+// for /alertmanager format diff. The function does
 // textual insertion of additions into a captured AM YAML body —
 // these tests pin the insertion points so a future regression
 // doesn't silently start emitting the additions in the wrong block.

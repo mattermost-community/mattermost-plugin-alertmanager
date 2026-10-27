@@ -78,9 +78,10 @@ func (p *Plugin) handleAbout(args *model.CommandArgs) string {
 	if siteURL != "" {
 		b.WriteString(fmt.Sprintf("- Admin inventory page: %s/plugins/%s/admin/inventory\n", siteURL, Manifest.Id))
 	}
-	b.WriteString("- Docs in chat: `/alertmanager docs` (tab through topics)\n")
-	b.WriteString("- Runbooks in chat: `/alertmanager docs slash_commands` for the full reference\n")
-	b.WriteString("- Validate a receiver: `/alertmanager validate all`\n")
+	b.WriteString(fmt.Sprintf("- [Documentation](%s)\n", p.docsHomeURL()))
+	b.WriteString(fmt.Sprintf("- [Runbook library](%s)\n", p.runbookLibraryURL()))
+	b.WriteString("- Command reference: `/alertmanager help`\n")
+	b.WriteString("- Validate a receiver: `/alertmanager config validate all`\n")
 
 	return b.String()
 }

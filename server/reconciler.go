@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,7 +34,7 @@ const reconcilerJobKey = "alertmanager-orphan-reconciler"
 // Returns a stop function the caller (OnDeactivate) invokes to halt
 // the scheduled job. If scheduling fails (KV mutex unavailable etc.),
 // the plugin logs and returns a no-op stop — the plugin keeps working,
-// just without automatic orphan pruning. Manual /alertmanager reconcile
+// just without automatic orphan pruning. Manual /alertmanager admin repair prune
 // remains available.
 //
 // On each cycle the leader resolves an active system admin and mints
@@ -50,7 +51,7 @@ func (p *Plugin) startReconciler() func() {
 		p.runBackgroundReconcile,
 	)
 	if err != nil {
-		p.API.LogWarn("reconciler: failed to schedule cluster job; automatic orphan pruning disabled (manual /alertmanager reconcile still works)",
+		p.API.LogWarn("reconciler: failed to schedule cluster job; automatic orphan pruning disabled (manual /alertmanager admin repair prune still works)",
 			"err", err.Error())
 		return func() {}
 	}
@@ -171,7 +172,7 @@ func (p *Plugin) checkRotationReminders(sysadminID string) error {
 	channelToTeam := make(map[string]string)
 	for _, c := range updated {
 		// Per-receiver opt-in: skip receivers that weren't created
-		// with the `on` flag at /alertmanager add time. The global
+		// with the `on` flag at /alertmanager config add time. The global
 		// WebhookRotationDays threshold only fires reminders for
 		// receivers that explicitly opted in.
 		if !c.RotationRemindersEnabled {
@@ -263,7 +264,7 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 			e.DaysOverdue,
 		))
 	}
-	b.WriteString(fmt.Sprintf("\nRotate them when convenient. In #%s, run:\n\n```\n/alertmanager rotate all --overdue\n```\n\n", channel))
+	b.WriteString(fmt.Sprintf("\nRotate them when convenient. In #%s, run:\n\n```\n/alertmanager config rotate all overdue\n```\n\n", channel))
 	b.WriteString("You'll receive a DM with the updated YAML. Paste it into your `alertmanager.yml` and reload AM (`curl -X POST http://<am>/-/reload`). Old URLs deactivate immediately on rotation.\n\n")
 	b.WriteString(fmt.Sprintf("See the [rotation playbook](%s/plugins/%s/public/help/rotation.html) for the full procedure.\n",
 		p.siteURL(), Manifest.Id))
@@ -290,11 +291,21 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 // cycle will revisit.
 //
 // reconcileOrphans prunes receivers whose underlying Mattermost incoming
-// webhook was deleted out-of-band, so /alertmanager list stays truthful.
+// webhook was deleted out-of-band, so /alertmanager config list stays truthful.
 // The whole read-modify-write runs under configWriteMu (acquired below), so
 // it can no longer clobber a concurrent admin add/rotate — the old
 // small-window race is closed by the lock, not tolerated.
 func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
+	return p.probeOrphans(actingUserID, true)
+}
+
+// findOrphanedReceivers is reconcileOrphans without the write. It lists the
+// receivers whose webhook is gone so an admin can preview what a prune removes.
+func (p *Plugin) findOrphanedReceivers(actingUserID string) ([]string, error) {
+	return p.probeOrphans(actingUserID, false)
+}
+
+func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error) {
 	// The webhook probing below makes serial loopback Client4 calls; it runs
 	// WITHOUT configWriteMu so a slow probe can't stall lifecycle commands
 	// (CL-25). Correctness doesn't need the lock here: updateConfigsAtomic
@@ -353,6 +364,15 @@ func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
 
 	if len(orphanSet) == 0 {
 		return nil, nil
+	}
+
+	if !prune {
+		found := make([]string, 0, len(orphanSet))
+		for name := range orphanSet {
+			found = append(found, name)
+		}
+		slices.Sort(found)
+		return found, nil
 	}
 
 	// Prune the orphaned names from the freshly-read KV list under compare-and-set
@@ -438,31 +458,4 @@ func (p *Plugin) findActiveSysadmin() (string, error) {
 		return u.Id, nil
 	}
 	return "", errors.New("no active human system admin found")
-}
-
-// handleReconcile is the manual trigger for the orphan-prune logic
-// (`/alertmanager reconcile`). Sysadmin-only — the operation mutates
-// plugin config, and only sysadmins can read webhook state anyway.
-//
-// The slash command exists alongside the background goroutine for two
-// reasons: (1) impatient cleanup after a known System Console webhook
-// delete, and (2) verifying the reconciler works during development.
-func (p *Plugin) handleReconcile(args *model.CommandArgs) (string, error) {
-	if err := p.requireSystemAdmin(args.UserId); err != nil {
-		return err.Error(), nil
-	}
-
-	pruned, err := p.reconcileOrphans(args.UserId)
-	if err != nil {
-		return fmt.Sprintf(":warning: Reconcile failed: %v", err), nil
-	}
-	if len(pruned) == 0 {
-		return ":white_check_mark: Reconcile complete — no orphan receivers found. All registered webhooks are still alive in Mattermost.", nil
-	}
-	return fmt.Sprintf(
-		":wastebasket: Reconcile complete — pruned %d orphan receiver(s) whose webhooks were deleted out-of-band:\n\n- `%s`\n\n"+
-			"_Don't forget to delete the corresponding `slack_configs` blocks from your `alertmanager.yml` if you haven't already, then reload Alertmanager._",
-		len(pruned),
-		strings.Join(pruned, "`\n- `"),
-	), nil
 }

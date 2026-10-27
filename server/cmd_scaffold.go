@@ -74,6 +74,27 @@ var scaffoldSets = map[string][]string{
 	},
 }
 
+// splitAddWords pulls the plain words `standard`, `crd` and `on` out of the
+// arguments; they can sit anywhere after the URL and are never a runbook slug,
+// group, or custom name. `on` opts the receivers into rotation reminders:
+// sysadmins set the global WebhookRotationDays, and channel team-admins opt
+// INTO rotation per add. Without it these receivers are never reminded.
+func splitAddWords(args []string) (format string, rotationOptIn bool, positional []string) {
+	format = formatStandard
+	positional = make([]string, 0, len(args))
+	for _, arg := range args {
+		switch strings.ToLower(arg) {
+		case "on":
+			rotationOptIn = true
+		case formatStandard, formatCRD:
+			format = strings.ToLower(arg)
+		default:
+			positional = append(positional, arg)
+		}
+	}
+	return format, rotationOptIn, positional
+}
+
 // handleAdd creates Mattermost incoming webhooks for the chosen target
 // (group or individual runbook), all bound to the same channel.
 //
@@ -86,108 +107,63 @@ var scaffoldSets = map[string][]string{
 // Idempotent — existing receivers (by name) are skipped, not overwritten.
 // When ALL targets in the group already exist, no new webhook is created.
 //
+// The destination is always the channel the command runs in, so there are no
+// team or channel arguments. That keeps add in line with every other command and
+// makes a mistyped slug or a cross-team misroute impossible.
+//
 // Usage:
 //
-//	/alertmanager add <team> <channel> <am-url> [target] [on] [--webhook-host=<url>]
+//	/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>]
 //
 // `target` is one of:
 //   - A category set keyword: `all` (default), `compute`, `application`,
 //     `database`, `storage`, `networking`, `observability`
 //   - An individual runbook slug: `high-cpu-usage`, `database-replication-lag`, etc.
 //
-// Trailing `on` opts the receivers in to rotation reminders. Optional
-// `--webhook-host=<url>` overrides the host portion of the rendered
+// `standard` (default) or `crd` picks the DM'd config format. Trailing `on`
+// opts the receivers in to rotation reminders. Optional
+// `webhook-host=<url>` overrides the host portion of the rendered
 // api_url for the multi-cluster deployment pattern.
 func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
-	// Extract --webhook-host=<url> from anywhere in the args list.
-	// Remaining args are positional. Allows usage like:
-	//   /alertmanager add <team> <channel> <am-url> [target] [--webhook-host=<url>]
-	//   /alertmanager add --webhook-host=<url> <team> <channel> <am-url> [target]
-	webhookHostOverride, rest := extractFlagValue(rest, "--webhook-host=")
+	if msg := removedAddSyntaxMessage(rest); msg != "" {
+		return msg, nil
+	}
+
+	webhookHostOverride, rest := extractFlagValue(rest, "webhook-host=")
 	if webhookHostOverride != "" {
 		if err := validateWebhookHost(webhookHostOverride); err != nil {
-			return fmt.Sprintf("Invalid --webhook-host value: %v", err), nil
+			return fmt.Sprintf("Invalid `webhook-host` value: %v", err), nil
 		}
 	}
 
-	// --format=standard (default, alertmanager.yml) | crd (AlertmanagerConfig).
-	// --namespace= applies to CRD output only; defaults to monitoring.
-	format, rest := extractFlagValue(rest, "--format=")
-	if format == "" {
-		format = formatStandard
-	}
-	if format != formatStandard && format != formatCRD {
-		return fmt.Sprintf(":warning: Unknown `--format=%s`. Use `standard` (alertmanager.yml, default) or `crd` (Prometheus Operator AlertmanagerConfig).", format), nil
-	}
-	namespace, rest := extractFlagValue(rest, "--namespace=")
+	// namespace= applies to CRD output only; defaults to monitoring.
+	namespace, rest := extractFlagValue(rest, "namespace=")
 	if namespace == "" {
 		namespace = defaultCRDNamespace
 	} else if err := validateCRDNamespace(namespace); err != nil {
-		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
+		return fmt.Sprintf(":warning: Invalid `namespace`: %v", err), nil
 	}
 
-	// --private creates the destination channel as PRIVATE when it doesn't yet
-	// exist (the caller is added as a member so their token can create the
-	// webhook). An existing channel keeps whatever type it already has.
-	private, rest := extractBoolFlag(rest, "--private")
+	format, rotationOptIn, positional := splitAddWords(rest)
 
-	// Extract optional `on` positional anywhere in the args list. Opts
-	// the receivers being created into the rotation reminder system.
-	// Default off — without this, the receivers we create here never
-	// trigger rotation reminders regardless of the global
-	// WebhookRotationDays setting. Two-tier opt-in: sysadmin sets the
-	// global threshold; channel team-admins opt INTO rotation per-add.
-	rotationOptIn := false
-	filtered := make([]string, 0, len(rest))
-	for _, arg := range rest {
-		if strings.EqualFold(arg, "on") {
-			rotationOptIn = true
-			continue
-		}
-		filtered = append(filtered, arg)
-	}
-	rest = filtered
-
-	if len(rest) < 3 || len(rest) > 4 {
+	if len(positional) < 1 || len(positional) > 2 {
 		return addUsageMessage(), nil
 	}
 
-	team, channel, amURL := rest[0], rest[1], strings.TrimRight(rest[2], "/")
+	amURL := strings.TrimRight(positional[0], "/")
 	// Validate the AM URL before any side effects so a bad value fails with a
-	// clear message instead of creating a channel + webhook and rolling back
+	// clear message instead of creating a webhook and rolling back
 	// (CL-03/CL-21). IsValid re-checks it at persist time for the KV-import path.
 	if err := validateAlertManagerURL(amURL); err != nil {
 		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
 	}
 
-	// Cross-team guard: refuse an add targeting a different team than the one
-	// the command was invoked from. Sysadmins bypass — they manage across teams.
-	// This prevents silent misrouting when a team slug is mistyped or when a
-	// sysadmin forgets which team context they're in. The error message tells the
-	// user exactly which team to switch to rather than giving a generic failure.
-	if !p.API.HasPermissionTo(args.UserId, model.PermissionManageSystem) && args.TeamId != "" {
-		currentTeam, appErr := p.API.GetTeam(args.TeamId)
-		if appErr != nil {
-			return fmt.Sprintf("Could not look up your current team: %v", appErr.Error()), nil
-		}
-		if currentTeam.Name != team {
-			return fmt.Sprintf("Channel `%s` is in team `%s` — switch to that team and run this command there.", channel, team), nil
-		}
-	}
-
-	// Authorize the DESTINATION team, not the invocation channel — a team_admin
-	// must not be able to create a channel or bind a webhook in a team they do
-	// not administer. System admins bypass (handled in the helper).
-	if err := p.requireTeamAdminBySlug(args.UserId, team); err != nil {
-		return err.Error(), nil
-	}
-
 	target := "all"
-	if len(rest) == 4 {
-		target = strings.ToLower(rest[3])
+	if len(positional) == 2 {
+		target = strings.ToLower(positional[1])
 	}
 
 	groupName, slugs, err := resolveAddTarget(target)
@@ -198,17 +174,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return ":warning: Target `" + target + "` resolved to zero runbooks. Either the embedded runbook list is empty or the category map is misconfigured.", nil
 	}
 
-	// Resolve the destination channel ONCE rather than per-receiver. All
-	// receivers we create here share a channel, so one lookup is enough.
-	rc, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
-	if err != nil {
-		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
+	dest, msg := p.currentChannelDestination(args)
+	if msg != "" {
+		return msg, nil
 	}
-	// Adopt the canonical team/channel names from the resolved objects for every
-	// downstream use — receiver-name construction, the skip check, and the stored
-	// entries — so nothing persists a raw arg (CL-39).
-	channelID, channelCreated := rc.channelID, rc.created
-	team, channel = rc.teamName, rc.channelName
+	channelID, team, channel := dest.channelID, dest.team, dest.channel
 
 	// Atomic read-modify-write: acquire configWriteMu here, immediately
 	// before the first getConfiguration read, and hold it through the save
@@ -262,9 +232,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		if hookErr != nil {
 			// Webhook creation failed — every requested new slug fails.
 			// Existing skipped slugs remain in the results; rendering
-			// below shows the full picture. If we created the channel just
-			// for this add, archive it so a failed add leaves no empty squat.
-			p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
+			// below shows the full picture.
 			for _, slug := range newSlugs {
 				results = append(results, scaffoldResult{receiverNameForChannel(slug, team, channel), "failed", hookErr.Error()})
 			}
@@ -314,7 +282,6 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 				p.API.LogWarn("scaffold rollback: could not delete shared webhook (orphan may remain)", "webhook", redactHookID(sharedHookID), "err", delErr.Error())
 				warn = webhookRollbackWarning(webhookDisplayNameFor(groupName, team, channel))
 			}
-			p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
 			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v%s", err, warn), nil
 		}
 	}
@@ -335,7 +302,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		}
 	}
 
-	b.WriteString(fmt.Sprintf(":white_check_mark: `/alertmanager add` complete: %d created, %d skipped, %d failed.\n\n", created, skipped, failed))
+	b.WriteString(fmt.Sprintf(":white_check_mark: `/alertmanager config add` complete: %d created, %d skipped, %d failed.\n\n", created, skipped, failed))
 	b.WriteString(fmt.Sprintf("All receivers bound to channel `~%s`. Alertmanager URL: `%s`\n\n", channel, amURL))
 	b.WriteString("| Receiver | Status | Detail |\n")
 	b.WriteString("|----------|--------|--------|\n")
@@ -375,11 +342,22 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		}
 		b.WriteString("```\n\n")
 
+		// The receivers only route alerts. The matching sample rules ride in the
+		// same DM so one message holds everything to apply.
+		rules, rulesErr := p.rulesFileForAdd(namespace, groupName, slugs, format)
+		rulesReason := ""
+		if rulesErr != nil {
+			p.API.LogWarn("scaffold: couldn't build the rules file for this group", "err", rulesErr.Error(), "group", groupName)
+			rulesReason = fmt.Sprintf(":warning: Couldn't build the rules file for this group (%v). Run `/alertmanager format rules` for the full set.", rulesErr)
+			rules = nil
+		}
+		delivered := false
+
 		if format == formatCRD {
 			// Prometheus Operator path: DM an AlertmanagerConfig + Secret
 			// manifest instead of the alertmanager.yml receivers/routes files.
 			manifest, crCount := p.assembleCRDManifest(newEntries, namespace)
-			if dmErr := p.dmCRDBundle(args.UserId, manifest, crCount, namespace); dmErr != nil {
+			if dmErr := p.dmCRDBundle(args.UserId, manifest, crCount, namespace, rules); dmErr != nil {
 				p.API.LogWarn("scaffold: couldn't DM CRD manifest; falling back to inline", "err", dmErr.Error())
 				b.WriteString(":warning: Couldn't DM the manifest (")
 				b.WriteString(dmErr.Error())
@@ -387,12 +365,13 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 				b.WriteString(manifest)
 				b.WriteString("```\n")
 			} else {
-				b.WriteString(fmt.Sprintf(":page_facing_up: **Sent `alertmanager-config.yaml` (%d AlertmanagerConfig, v1alpha1) to your DM with `@%s`.** Open it, review, then apply:\n\n```\nkubectl apply -n %s -f alertmanager-config.yaml\n```\n:book: `/alertmanager docs kubernetes`\n", crCount, webhookUsername, namespace))
+				delivered = true
+				b.WriteString(fmt.Sprintf(":page_facing_up: **Sent `alertmanager-config.yaml` (%d AlertmanagerConfig, v1alpha1) to your DM with `@%s`.** Open it, review, then apply:\n\n```\nkubectl apply -n %s -f alertmanager-config.yaml\n```\n:book: [Kubernetes guide](%s)\n", crCount, webhookUsername, namespace, p.helpPageURL("KUBERNETES.md")))
 			}
 		} else {
 			yamlFile := p.assembleReceiversYAML(newEntries, results, channel, amURL)
 			routesFile := assembleRoutesYAML(newEntries)
-			dmErr := p.dmYAMLBundle(args.UserId, yamlFile, routesFile, created, amURL)
+			dmErr := p.dmYAMLBundle(args.UserId, yamlFile, routesFile, created, amURL, rules)
 			if dmErr != nil {
 				// DM delivery failed — fall back to inline YAML in the
 				// summary post. Long but functional.
@@ -403,6 +382,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 				b.WriteString(yamlFile)
 				b.WriteString("```\n")
 			} else {
+				delivered = true
 				b.WriteString(":page_facing_up: **Sent `alertmanager-receivers.yml` to your DM with `@")
 				b.WriteString(webhookUsername)
 				b.WriteString("`** — open that conversation to download the file. Paste the contents under `receivers:` in your `alertmanager.yml`, then reload:\n\n```\ncurl -X POST ")
@@ -410,11 +390,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 				b.WriteString("/-/reload\n```\n")
 			}
 		}
+		b.WriteString(rulesReply(rules, rulesReason, delivered))
 	}
 
-	// Warn about the postgres_exporter dependency for the database group.
-	// The plugin has no Prometheus access to probe for it, so a static
-	// warning at scaffold time is the best signal we can give.
+	// The plugin has no Prometheus access to probe for the exporter, so a
+	// static warning at scaffold time is the best signal we can give.
 	if groupName == "database" {
 		b.WriteString("\n\n⚠ **Database receivers require `postgres_exporter`** — the rules for this group use `pg_replication_lag_seconds`, `pg_stat_activity_count`, and `pg_stat_statements_*` metrics that only exist when a postgres_exporter is running and scraped by Prometheus. Without it, these receivers will never fire.\n\n")
 		b.WriteString("Deploy: `helm install postgres-exporter prometheus-community/prometheus-postgres-exporter` and configure a ServiceMonitor pointing at your Postgres instance. Also enable `shared_preload_libraries = 'pg_stat_statements'` in PostgreSQL for the DatabaseHighLatency rule.")
@@ -436,8 +416,9 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 // into two paste locations.
 //
 // `routesYAML` may be empty (e.g., from handleAdd called with the
-// `noop` default) — if so, only the receivers file is sent.
-func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdCount int, amURL string) error {
+// `noop` default) — if so, only the receivers file is sent. A non-nil rules
+// file rides in the same post so one message holds everything to apply.
+func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdCount int, amURL string, rules *rulesFile) error {
 	dm, appErr := p.API.GetDirectChannel(p.BotUserID, userID)
 	if appErr != nil {
 		return fmt.Errorf("open DM with user: %w", appErr)
@@ -463,13 +444,24 @@ func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdC
 		}
 	}
 
+	if rules != nil {
+		if id := p.attachRules(dm.Id, rules); id != "" {
+			fileIds = append(fileIds, id)
+		} else {
+			rules = nil
+		}
+	}
+
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("Assembled YAML for the %d new receiver(s) you just created via `/alertmanager add`.\n\n", createdCount))
+	msg.WriteString(fmt.Sprintf("Assembled YAML for the %d new receiver(s) you just created via `/alertmanager config add`.\n\n", createdCount))
 	msg.WriteString("**Paste `alertmanager-receivers.yml`** under `receivers:` in your `alertmanager.yml`.\n")
 	if len(fileIds) > 1 {
 		msg.WriteString("**Paste `alertmanager-routes.yml`** under `route.routes:` in your `alertmanager.yml`.\n")
 	}
 	msg.WriteString(fmt.Sprintf("\nThen reload Alertmanager:\n\n```\ncurl -X POST %s/-/reload\n```", amURL))
+	if rules != nil {
+		msg.WriteString(rules.section())
+	}
 
 	dmPost := &model.Post{
 		UserId:    p.BotUserID,
@@ -494,9 +486,9 @@ func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdC
 // `continue: true`.
 //
 // Why unconditionally continue: this generator is invoked once per
-// /alertmanager add or /alertmanager export call. Those calls are
+// /alertmanager config add or /alertmanager format export call. Those calls are
 // channel-scoped — the generator only sees the receivers in ONE
-// channel. When the user runs /alertmanager add twice (once per
+// channel. When the user runs /alertmanager config add twice (once per
 // channel) and pastes both routes blocks under a single
 // `route.routes:`, a fan-out runbook (same slug bound to two
 // channels) ends up with two routes that have identical matchers.
@@ -536,13 +528,15 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	sort.Strings(slugs)
 
 	var b strings.Builder
-	b.WriteString("# Alertmanager routes generated by /alertmanager add or /alertmanager export.\n")
+	b.WriteString("# Alertmanager routes generated by /alertmanager config add or /alertmanager format export.\n")
 	b.WriteString("# Paste this block under `route.routes:` in your alertmanager.yml.\n")
 	b.WriteString("# Routes match on the `runbook` label of each alert — set that label\n")
 	b.WriteString("# on your Prometheus rules to drive alerts to the right receiver.\n")
 	b.WriteString("# Every route carries `continue: true` so fan-out (same runbook routed\n")
-	b.WriteString("# to multiple channels via separate /alertmanager add calls) works\n")
+	b.WriteString("# to multiple channels via separate /alertmanager config add calls) works\n")
 	b.WriteString("# correctly when both blocks are pasted under one routes: list.\n")
+	b.WriteString("# group_by includes namespace and pod so two pods of the same alert\n")
+	b.WriteString("# are two posts. Alerts without those labels stay one post.\n")
 	b.WriteString("\n")
 
 	// Only emit the `routes:` key when there is at least one live (runbook)
@@ -557,6 +551,7 @@ func assembleRoutesYAML(entries []alertConfig) string {
 				b.WriteString(fmt.Sprintf("  - matchers: [runbook=%q]\n", slug))
 				b.WriteString(fmt.Sprintf("    receiver: %s\n", ac.Name))
 				b.WriteString("    continue: true\n")
+				b.WriteString("    group_by: ['alertname', 'namespace', 'pod']\n")
 			}
 		}
 	}
@@ -564,7 +559,7 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	if len(customEntries) > 0 {
 		sort.Slice(customEntries, func(i, j int) bool { return customEntries[i].Name < customEntries[j].Name })
 		b.WriteString("\n")
-		b.WriteString("# Custom (non-runbook) receivers — created via /alertmanager add-custom.\n")
+		b.WriteString("# Custom (non-runbook) receivers — created via /alertmanager config add-custom.\n")
 		b.WriteString("# The plugin cannot know which labels your custom alerts carry, so no\n")
 		b.WriteString("# matcher is generated. Uncomment each block and fill in the matcher(s)\n")
 		b.WriteString("# your Prometheus rules actually emit, then paste under `route.routes:`.\n")
@@ -572,6 +567,7 @@ func assembleRoutesYAML(entries []alertConfig) string {
 			b.WriteString("#  - matchers: [ <your labels, e.g. alertname=\"MyCustomAlert\", severity=\"critical\"> ]\n")
 			b.WriteString(fmt.Sprintf("#    receiver: %s\n", ac.Name))
 			b.WriteString("#    continue: true\n")
+			b.WriteString("#    group_by: ['alertname', 'namespace', 'pod']\n")
 		}
 	}
 	return b.String()
@@ -592,7 +588,7 @@ func (p *Plugin) assembleReceiversYAML(newEntries []alertConfig, results []scaff
 	}
 
 	var y strings.Builder
-	y.WriteString("# Alertmanager receivers generated by /alertmanager add\n")
+	y.WriteString("# Alertmanager receivers generated by /alertmanager config add\n")
 	y.WriteString("# Append these blocks under `receivers:` in alertmanager.yml,\n")
 	y.WriteString("# then update the routes block to dispatch each alert to its matching receiver.\n")
 	y.WriteString(fmt.Sprintf("# Channel:  ~%s\n", channel))
@@ -676,7 +672,7 @@ type scaffoldResult struct {
 	Detail string
 }
 
-// resolveAddTarget classifies the [target] arg of /alertmanager add as
+// resolveAddTarget classifies the [target] arg of /alertmanager config add as
 // either a group set keyword or an individual runbook slug. Returns
 // (groupName, slugs) where groupName is the unit name baked into the
 // shared webhook's display name + each receiver's GroupName field, and
@@ -701,7 +697,7 @@ func resolveAddTarget(target string) (groupName string, slugs []string, err erro
 	if slices.Contains(runbookSlugs(), target) {
 		return target, []string{target}, nil
 	}
-	return "", nil, fmt.Errorf("unknown target `%s` — must be a category set (`%s`) OR a specific runbook slug (e.g. `high-cpu-usage`). Run `/alertmanager add` with no args for the full list",
+	return "", nil, fmt.Errorf("unknown target `%s` — must be a category set (`%s`) OR a specific runbook slug (e.g. `high-cpu-usage`). Run `/alertmanager config add` with no args for the full list",
 		target, strings.Join(scaffoldSetNames(), "`, `"))
 }
 
@@ -712,62 +708,51 @@ func resolveAddTarget(target string) (groupName string, slugs []string, err erro
 // handleAdd persistence discipline: configWriteMu held across the read-modify-write,
 // webhook rolled back if the save fails.
 //
-//	/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]
+//	/alertmanager config add-custom <am-url> <name> [webhook-host=<url>]
+//
+// Like handleAdd, the destination is the channel the command runs in.
 func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
-	webhookHostOverride, rest := extractFlagValue(rest, "--webhook-host=")
+	if msg := removedAddSyntaxMessage(rest); msg != "" {
+		return msg, nil
+	}
+
+	webhookHostOverride, rest := extractFlagValue(rest, "webhook-host=")
 	if webhookHostOverride != "" {
 		if err := validateWebhookHost(webhookHostOverride); err != nil {
-			return fmt.Sprintf("Invalid --webhook-host value: %v", err), nil
+			return fmt.Sprintf("Invalid `webhook-host` value: %v", err), nil
 		}
 	}
 
-	// --private creates the destination channel as PRIVATE when it's new.
-	private, rest := extractBoolFlag(rest, "--private")
+	namespace, rest := extractFlagValue(rest, "namespace=")
+	if namespace == "" {
+		namespace = defaultCRDNamespace
+	} else if err := validateCRDNamespace(namespace); err != nil {
+		return fmt.Sprintf(":warning: Invalid `namespace`: %v", err), nil
+	}
 
-	if len(rest) != 4 {
+	format, rotationOptIn, positional := splitAddWords(rest)
+	if len(positional) != 2 {
 		return addCustomUsageMessage(), nil
 	}
-	team, channel, amURL, rawName := rest[0], rest[1], strings.TrimRight(rest[2], "/"), rest[3]
+	amURL, rawName := strings.TrimRight(positional[0], "/"), positional[1]
 	// Reject a dangerous AM URL up front (CL-03/CL-21) — see handleAdd.
 	if err := validateAlertManagerURL(amURL); err != nil {
 		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
 	}
 
-	// Cross-team guard — same rationale as handleAdd.
-	if !p.API.HasPermissionTo(args.UserId, model.PermissionManageSystem) && args.TeamId != "" {
-		currentTeam, appErr := p.API.GetTeam(args.TeamId)
-		if appErr != nil {
-			return fmt.Sprintf("Could not look up your current team: %v", appErr.Error()), nil
-		}
-		if currentTeam.Name != team {
-			return fmt.Sprintf("Channel `%s` is in team `%s` — switch to that team and run this command there.", channel, team), nil
-		}
+	dest, msg := p.currentChannelDestination(args)
+	if msg != "" {
+		return msg, nil
 	}
-
-	// Authorize the DESTINATION team, not the invocation channel — otherwise a
-	// team_admin could create a channel and bind a webhook in a team they do
-	// not administer. System admins bypass (handled in the helper).
-	if err := p.requireTeamAdminBySlug(args.UserId, team); err != nil {
-		return err.Error(), nil
-	}
+	channelID, team, channel := dest.channelID, dest.team, dest.channel
 
 	receiverName, err := validateCustomReceiverName(rawName, team, channel)
 	if err != nil {
 		return ":warning: " + err.Error(), nil
 	}
-
-	rc, err := p.resolveOrCreateChannel(team, channel, private, args.UserId)
-	if err != nil {
-		return fmt.Sprintf("Failed to resolve destination channel: %v", err), nil
-	}
-	// Persist canonical names (CL-39). receiverName was already validated and
-	// built from the raw args above, which equal these canonical values for any
-	// name Mattermost accepts on lookup.
-	channelID, channelCreated := rc.channelID, rc.created
-	team, channel = rc.teamName, rc.channelName
 
 	// Atomic read-modify-write — same discipline as handleAdd.
 	p.configWriteMu.Lock()
@@ -775,8 +760,6 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 
 	for _, c := range p.getConfiguration().AlertConfigs {
 		if c.Team == team && c.Channel == channel && c.Name == receiverName {
-			// A duplicate means the channel already had this receiver, so it
-			// pre-existed — channelCreated is false and nothing is rolled back.
 			return fmt.Sprintf(":warning: Receiver `%s` already exists in this channel.", receiverName), nil
 		}
 	}
@@ -786,7 +769,6 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	webhookDisplayName := webhookDisplayNameFor(receiverBaseSlug(receiverName), team, channel)
 	hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
 	if hookErr != nil {
-		p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
 		return fmt.Sprintf("Failed to create Mattermost webhook: %v", hookErr), nil
 	}
 
@@ -800,6 +782,8 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		Custom:              true,
 		WebhookHostOverride: webhookHostOverride,
 		LastRotatedAt:       time.Now().UTC(),
+
+		RotationRemindersEnabled: rotationOptIn,
 	}
 
 	_, _, err = p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
@@ -814,30 +798,37 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 			p.API.LogWarn("add-custom rollback: could not delete webhook (orphan may remain)", "webhook", redactHookID(hookID), "err", delErr.Error())
 			warn = webhookRollbackWarning(webhookDisplayNameFor(receiverBaseSlug(receiverName), team, channel))
 		}
-		p.rollbackCreatedChannel(channelCreated, channelID, team, channel)
 		return fmt.Sprintf("Failed to persist custom receiver (rolled back webhook): %v%s", err, warn), nil
 	}
-
-	// Build the runbook-free receiver block + the commented route stub and DM
-	// them to the caller. add-custom can target a channel the caller is not a
-	// member of, so pointing them at channel-scoped `/alertmanager export` could
-	// leave them unable to retrieve the block — DM it directly (mirrors handleAdd).
-	receiverYAML := "# Custom (non-runbook) receiver created by /alertmanager add-custom.\n" +
-		"# Paste under `receivers:` in your alertmanager.yml.\n\n" +
-		renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), channel, "", p.siteURL()+webhookIconURL, true)
-	routesYAML := assembleRoutesYAML([]alertConfig{entry})
 
 	var b strings.Builder
 	fmt.Fprintf(&b, ":white_check_mark: Created custom receiver `%s`\n", receiverName)
 	fmt.Fprintf(&b, "Webhook created and bound to `%s` (team `%s`). No runbook is attached — alerts render as raw content.\n\n", channel, team)
-	b.WriteString(":warning: **No route exists yet — you must wire it manually.** Add a matcher under `route.routes:` selecting the alerts you want here, e.g.:\n\n")
+	b.WriteString(":warning: **No route exists yet — you must wire it manually.** Add a matcher selecting the alerts you want here, e.g.:\n\n")
 	b.WriteString("```yaml\n")
 	b.WriteString("  - matchers: [ alertname=\"MyCustomAlert\" ]   # <-- set to labels YOUR rules emit\n")
 	fmt.Fprintf(&b, "    receiver: %s\n", receiverName)
 	b.WriteString("    continue: true\n")
 	b.WriteString("```\n\n")
 
-	if dmErr := p.dmYAMLBundle(args.UserId, receiverYAML, routesYAML, 1, amURL); dmErr != nil {
+	if format == formatCRD {
+		manifest, crCount := p.assembleCRDManifest([]alertConfig{entry}, namespace)
+		if dmErr := p.dmCRDBundle(args.UserId, manifest, crCount, namespace, nil); dmErr != nil {
+			p.API.LogWarn("add-custom: couldn't DM CRD manifest; falling back to inline", "err", dmErr.Error())
+			fmt.Fprintf(&b, ":warning: Couldn't DM the manifest (%s). Inline copy below — review and `kubectl apply -n %s`:\n\n```yaml\n%s```\n", dmErr.Error(), namespace, manifest)
+		} else {
+			fmt.Fprintf(&b, ":page_facing_up: **Sent `alertmanager-config.yaml` (%d AlertmanagerConfig, v1alpha1) to your DM with `@%s`.** Open it, review, wire the route stub inside it, then apply:\n\n```\nkubectl apply -n %s -f alertmanager-config.yaml\n```\n:book: [Kubernetes guide](%s)", crCount, webhookUsername, namespace, p.helpPageURL("KUBERNETES.md"))
+		}
+		return b.String(), nil
+	}
+
+	// Runbook-free receiver block plus the commented route stub, DM'd to the caller.
+	receiverYAML := "# Custom (non-runbook) receiver created by /alertmanager config add-custom.\n" +
+		"# Paste under `receivers:` in your alertmanager.yml.\n\n" +
+		renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), channel, "", p.siteURL()+webhookIconURL, true)
+	routesYAML := assembleRoutesYAML([]alertConfig{entry})
+
+	if dmErr := p.dmYAMLBundle(args.UserId, receiverYAML, routesYAML, 1, amURL, nil); dmErr != nil {
 		// DM failed — inline the receiver block so the caller isn't left unable
 		// to retrieve it (export is channel-scoped and may be unreachable).
 		p.API.LogWarn("add-custom: couldn't DM receiver YAML; falling back to inline", "err", dmErr.Error())
@@ -847,18 +838,19 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		b.WriteString(receiverYAML)
 		b.WriteString("```\n")
 	} else {
-		fmt.Fprintf(&b, ":page_facing_up: **Sent the receiver block + route stub to your DM with `@%s`.** See `/alertmanager docs configuration` for the walkthrough.", webhookUsername)
+		fmt.Fprintf(&b, ":page_facing_up: **Sent the receiver block + route stub to your DM with `@%s`.** See the [Configuration guide](%s) for the walkthrough.", webhookUsername, p.helpPageURL("CONFIGURATION.md"))
 	}
 	return b.String(), nil
 }
 
-// addCustomUsageMessage is shown when /alertmanager add-custom is called with
+// addCustomUsageMessage is shown when /alertmanager config add-custom is called with
 // the wrong number of positional args.
 func addCustomUsageMessage() string {
-	return "Usage: `/alertmanager add-custom <team> <channel> <am-url> <name> [--webhook-host=<url>]`\n\n" +
-		"Creates ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own Mattermost webhook. " +
-		"Unlike `/alertmanager add`, it does NOT generate a `runbook=` route — you wire the matcher yourself " +
-		"(see `/alertmanager docs configuration`). `<name>`: lowercase `[a-z0-9_-]`, no `--`, and not a runbook slug or category set. " +
+	return "Usage: `/alertmanager config add-custom <am-url> <name> [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>]`\n\n" +
+		"Run it in the channel that should receive the alerts. Creates ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own Mattermost webhook. " +
+		"Unlike `/alertmanager config add`, it does NOT generate a `runbook=` route — you wire the matcher yourself " +
+		"(see the Configuration page from `/alertmanager docs`). `<name>`: lowercase `[a-z0-9_-]`, no `--`, and not a runbook slug, category set, or one of `standard`, `crd`, `on`. " +
+		"`standard` (default) DMs plain alertmanager.yml receivers; `crd` DMs Prometheus Operator objects. `on` opts into rotation reminders. " +
 		"Requires channel team-admin or sysadmin."
 }
 
@@ -876,7 +868,7 @@ func validateCustomReceiverName(rawName, team, channel string) (fullName string,
 		return "", fmt.Errorf("name %q must not contain `--` (that's the reserved slug/team-channel separator)", name)
 	}
 	if slices.Contains(runbookSlugs(), name) {
-		return "", fmt.Errorf("name %q is a runbook slug — use `/alertmanager add %s %s %s` for the runbook flow, or pick a different custom name", name, team, channel, name)
+		return "", fmt.Errorf("name %q is a runbook slug — use `/alertmanager config add <am-url> %s` for the runbook flow, or pick a different custom name", name, name)
 	}
 	if _, ok := scaffoldSets[name]; ok {
 		return "", fmt.Errorf("name %q is a reserved category set — pick a different custom name", name)
@@ -904,14 +896,14 @@ func scaffoldSetNames() []string {
 }
 
 // addUsageMessage renders the help shown when the user runs
-// /alertmanager add with wrong arity. Lists every available set,
+// /alertmanager config add with wrong arity. Lists every available set,
 // the individual-slug path, and the optional flags. Discoverability
 // matters because this is the bootstrap step and the user shouldn't
 // have to read source to use it.
 func addUsageMessage() string {
 	var b strings.Builder
-	b.WriteString("**Usage:** `/alertmanager add <team> <channel> <am-url> [target] [on] [--webhook-host=<url>]`\n\n")
-	b.WriteString("Creates Mattermost incoming webhook(s) for the chosen target, all bound to the named channel.\n")
+	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>]`\n\n")
+	b.WriteString("Run it in the channel that should receive the alerts. Creates Mattermost incoming webhook(s) for the chosen target, all bound to this channel.\n")
 	b.WriteString("- **Group target** (e.g. `compute`, `all`): one shared webhook serves every receiver in the set.\n")
 	b.WriteString("- **Individual slug target** (e.g. `high-cpu-usage`): one dedicated webhook for that one receiver.\n")
 	b.WriteString("Existing receivers (by name) are skipped — re-run safely.\n\n")
@@ -930,17 +922,18 @@ func addUsageMessage() string {
 		b.WriteString(fmt.Sprintf("| `%s` | %d | %s |\n", name, len(slugs), strings.Join(slugs, ", ")))
 	}
 
-	b.WriteString("\n**Individual slug targets:** any runbook slug. Run `/alertmanager docs` to see what ships.\n\n")
+	b.WriteString("\n**Individual slug targets:** any runbook slug. Run `/alertmanager docs` for the runbook library link.\n\n")
 	b.WriteString("**Optional args:**\n")
+	b.WriteString("- `standard` (default) or `crd` — format of the config DM'd to you. `standard` is `alertmanager.yml` receivers and routes. `crd` is a Prometheus Operator AlertmanagerConfig plus Secret.\n")
 	b.WriteString("- `on` — opt these receivers in to webhook rotation reminders (see `WebhookRotationDays` in System Console)\n")
-	b.WriteString("- `--webhook-host=<url>` — override the host portion of the rendered `api_url` for the multi-cluster pattern\n")
+	b.WriteString("- `webhook-host=<url>` — override the host portion of the rendered `api_url` for the multi-cluster pattern\n")
 	return b.String()
 }
 
 // extractFlagValue pulls a "--name=value" style flag out of an args
 // list. Returns the value (empty if absent) and the remaining args
 // with the flag removed. Multiple matches: last one wins. Used for
-// optional flags like --webhook-host in /alertmanager add.
+// optional key=value words like webhook-host in /alertmanager config add.
 func extractFlagValue(args []string, prefix string) (value string, rest []string) {
 	rest = make([]string, 0, len(args))
 	for _, a := range args {
@@ -951,20 +944,6 @@ func extractFlagValue(args []string, prefix string) (value string, rest []string
 		rest = append(rest, a)
 	}
 	return value, rest
-}
-
-// extractBoolFlag removes a bare boolean flag (e.g. `--private`) from anywhere in
-// args, returning whether it was present and the remaining positionals.
-func extractBoolFlag(args []string, flag string) (present bool, rest []string) {
-	rest = make([]string, 0, len(args))
-	for _, a := range args {
-		if a == flag {
-			present = true
-			continue
-		}
-		rest = append(rest, a)
-	}
-	return present, rest
 }
 
 // runbookSlugs reads the embedded runbooks/ directory and returns the
@@ -988,4 +967,54 @@ func runbookSlugs() []string {
 	})
 	sort.Strings(slugs)
 	return slugs
+}
+
+// addDestination is where add and add-custom bind receivers: the channel the
+// command ran in.
+type addDestination struct {
+	channelID string
+	team      string
+	channel   string
+}
+
+// currentChannelDestination resolves the channel the command ran in and checks
+// the caller may manage it. The message is user-facing and non-empty on failure.
+// Direct and group messages are rejected because a receiver needs a team
+// channel to live in.
+func (p *Plugin) currentChannelDestination(args *model.CommandArgs) (addDestination, string) {
+	if args.ChannelId == "" {
+		return addDestination{}, "Run this command in the channel that should receive the alerts."
+	}
+	channel, appErr := p.API.GetChannel(args.ChannelId)
+	if appErr != nil {
+		return addDestination{}, fmt.Sprintf("Could not look up this channel: %v", appErr)
+	}
+	if channel.Type != model.ChannelTypeOpen && channel.Type != model.ChannelTypePrivate {
+		return addDestination{}, "Receivers cannot be added in a direct or group message. Run this in a team channel."
+	}
+	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
+		return addDestination{}, err.Error()
+	}
+	team, appErr := p.API.GetTeam(channel.TeamId)
+	if appErr != nil {
+		return addDestination{}, fmt.Sprintf("Could not look up this channel's team: %v", appErr)
+	}
+	return addDestination{channelID: channel.Id, team: team.Name, channel: channel.Name}, ""
+}
+
+// removedAddSyntaxMessage catches the arguments add and add-custom used to take,
+// so someone with the old form in muscle memory gets the new one instead of a
+// confusing URL or target error. It returns "" when none are present.
+func removedAddSyntaxMessage(args []string) string {
+	var positional []string
+	for _, a := range args {
+		if !strings.EqualFold(a, "on") {
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) >= 3 && strings.Contains(positional[2], "://") && !strings.Contains(positional[0], "://") {
+		return ":warning: Team and channel are no longer arguments. The receivers go in the channel you run this in. " +
+			"Go to that channel and run `/alertmanager config add <am-url> [target]` (or `config add-custom <am-url> <name>`)."
+	}
+	return ""
 }

@@ -274,7 +274,7 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 	// Inverse drift detection: receivers that exist in AM's loaded
 	// config but have no matching plugin entry. Means someone
 	// hand-edited alertmanager.yml outside the plugin's lifecycle
-	// (or rotated a webhook via /alertmanager rotate without
+	// (or rotated a webhook via /alertmanager config rotate without
 	// pasting the new YAML into AM yet).
 	//
 	// Computed per AM URL because each backend has its own loaded
@@ -292,6 +292,15 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 		Names []string
 	}
 	var amDrift []amDriftGroup
+	// Acknowledged names are receivers another system created on purpose.
+	// A KV read failure shows them as AM-only again rather than hiding
+	// every warning.
+	acked := map[string]bool{}
+	if names, aerr := p.loadAcknowledgedReceivers(); aerr != nil {
+		p.API.LogWarn("could not read acknowledged receivers; AM-only list will include them", "err", aerr.Error())
+	} else {
+		acked = acknowledgedSet(names)
+	}
 	for amURL, entry := range amStatus {
 		if !entry.Reachable || entry.ConfigBody == "" {
 			continue
@@ -327,6 +336,9 @@ func (p *Plugin) renderInventoryHTML(w http.ResponseWriter, r *http.Request, con
 				if pluginSet[base] {
 					continue
 				}
+			}
+			if acked[canonical] {
+				continue
 			}
 			if !pluginSet[canonical] {
 				driftNames = append(driftNames, n)
@@ -903,7 +915,7 @@ func (p *Plugin) runInventoryEndToEnd(targetSlugs []string, severity, extra stri
 
 	for _, slug := range targetSlugs {
 		// One actionResult row per (slug, spec) so the operator can
-		// see which combinations landed when --severity=all multiplies
+		// see which combinations landed when severity=all multiplies
 		// the alert count.
 		for _, s := range specs {
 			specLabel := s.Severity
@@ -938,7 +950,7 @@ func (p *Plugin) runInventoryEndToEnd(targetSlugs []string, severity, extra stri
 // runInventorySimulation parses the form's label input, picks the
 // first reachable AM, walks its loaded route tree against the
 // labels, and returns a result struct the template can render.
-// Same engine as the /alertmanager validate --simulate command — just
+// Same engine as the /alertmanager config validate simulate command — just
 // a different entry point. Empty input is not an error: returns
 // zero-value result so the page renders just the form.
 func (p *Plugin) runInventorySimulation(input string, configs []alertConfig, amStatus map[string]amReachabilityEntry) inventorySimResult {
@@ -1346,7 +1358,7 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
         <div class="row"><span class="status ok">OK · via operator</span><span class="desc">Loaded and reachable, but present under the Prometheus Operator's <code>&lt;namespace&gt;/&lt;alertmanagerconfig&gt;/</code> prefix — i.e. delivered by an AlertmanagerConfig CRD, not a flat alertmanager.yml.</span></div>
         <div class="row"><span class="status warn">Not in AM YAML</span><span class="desc">Receiver in plugin config but missing from AM's loaded config (paste the latest receivers.yml + reload AM).</span></div>
         <div class="row"><span class="status bad">AM unreachable</span><span class="desc">Plugin can't reach the Alertmanager URL (network, TLS, or AM down).</span></div>
-        <div class="row"><span class="status drift">AM-only</span><span class="desc">Loaded in AM but NOT tracked by the plugin (someone hand-edited alertmanager.yml). Shown in the orange "AM-only receivers" section below.</span></div>
+        <div class="row"><span class="status drift">AM-only</span><span class="desc">Loaded in AM but NOT tracked by the plugin. A hand edit, or a receiver another system created. <code>/alertmanager admin acknowledge add &lt;name&gt;</code> hides one you meant to keep. That does not mute its alerts.</span></div>
     </div>
 
     <div class="controls">
@@ -1364,7 +1376,7 @@ var inventoryTemplate = template.Must(template.New("inventory").Parse(`<!DOCTYPE
     <div class="drift-group">
         <div class="group-header">
             <h2>⚠ AM-only receivers</h2>
-            <div class="sub">{{.AMURL}} · {{len .Names}} receiver(s) loaded in AM but not tracked by the plugin. Usually means someone hand-edited alertmanager.yml outside the plugin lifecycle, OR a /alertmanager rotate ran but the new YAML wasn't pasted in. Investigate before they go stale.</div>
+            <div class="sub">{{.AMURL}} · {{len .Names}} receiver(s) loaded in AM but not tracked by the plugin. A hand edit, a rotate whose YAML was not pasted, or a receiver another system created. <code>/alertmanager admin acknowledge add &lt;name&gt;</code> hides one you meant to keep. That does not mute its alerts.</div>
         </div>
         <table>
             <thead>

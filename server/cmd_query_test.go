@@ -17,7 +17,7 @@ func TestFormatSilenceLineSanitizesID(t *testing.T) {
 	s := &models.GettableSilence{}
 	s.ID = &hostile
 
-	out := formatSilenceLine("high-cpu-usage--team-chan", s)
+	out := formatSilenceLine("high-cpu-usage--team-chan", s, true)
 
 	if strings.Contains(out, "](") {
 		t.Errorf("disguised markdown link survived via silence ID:\n%s", out)

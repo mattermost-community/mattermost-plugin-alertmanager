@@ -9,11 +9,18 @@ import (
 	amconfig "github.com/prometheus/alertmanager/config"
 )
 
+// exportOptions are the parsed words of `/alertmanager format export|diff`.
+type exportOptions struct {
+	format    string // "" when not given
+	namespace string // CRD output only, validated
+	diff      bool
+}
+
 // handleExport renders fresh YAML for every receiver bound to the
 // current channel and DMs the resulting receivers.yml to the calling
 // sysadmin. Used to apply template/URL changes from a plugin upgrade
 // to existing receivers without rotating their webhook IDs (which
-// /alertmanager remove all + add would do).
+// /alertmanager config remove all + add would do).
 //
 // Sysadmin-gated because the rendered YAML embeds webhook URLs
 // (channel-bound bearer tokens). Channel-scoped: only receivers bound
@@ -21,39 +28,31 @@ import (
 //
 // Usage:
 //
-//	/alertmanager export                          # plain export
-//	/alertmanager export --diff-against-loaded    # sysadmin-only diff
+//	/alertmanager format export [standard|crd] [namespace=<ns>]
+//	/alertmanager format diff [standard|crd]       # sysadmin-only
 //
-// `--diff-against-loaded` shifts the output to a side-by-side
-// diff between the AM-loaded config (fetched live via /api/v2/status)
-// and what the plugin would emit. Useful as the answer to "I have
-// some receivers in AM YAML by hand, what would the plugin's
-// additions look like merged in?" — without the operator having to
-// guess the merge points themselves.
+// diff shifts the output to a side-by-side comparison between the
+// AM-loaded config (fetched live via /api/v2/status) and what the plugin
+// would emit. Useful as the answer to "I have some receivers in AM YAML by
+// hand, what would the plugin's additions look like merged in?" — without
+// the operator having to guess the merge points themselves.
 //
-// Output: an in-channel ephemeral summary, plus a DM from
-// @alertmanagerbot with the assembled receivers.yml (or
-// alertmanager-diff.txt when --diff-against-loaded is set).
-func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
-	fields := strings.Fields(args.Command)
-	rest := fields[2:]
-
-	// --format=standard (default, alertmanager.yml) | crd (AlertmanagerConfig).
-	format, rest := extractFlagValue(rest, "--format=")
+// Output: an in-channel ephemeral summary, plus DMs from @alertmanagerbot
+// with the assembled receivers.yml (or alertmanager-diff.txt for diff) and
+// the PrometheusRule for the runbooks those receivers cover.
+func (p *Plugin) handleExport(args *model.CommandArgs, opts exportOptions) (string, error) {
+	requestedFormat := opts.format
+	format := opts.format
 	if format == "" {
 		format = formatStandard
 	}
-	// --namespace= applies to CRD output only; defaults to monitoring.
-	namespace, rest := extractFlagValue(rest, "--namespace=")
+	namespace := opts.namespace
 	if namespace == "" {
 		namespace = defaultCRDNamespace
-	} else if err := validateCRDNamespace(namespace); err != nil {
-		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
 	}
+	diffMode := opts.diff
 
-	diffMode := containsFlag(rest, "--diff-against-loaded")
-
-	// --diff-against-loaded stays sysadmin-only. Output is channel-scoped,
+	// diff stays sysadmin-only. Output is channel-scoped,
 	// but it still prints this channel's webhook URLs (bearer tokens)
 	// taken from Alertmanager's loaded config. Plain export stays
 	// team_admin: it only emits the channel-scoped receivers the caller
@@ -74,23 +73,18 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	}
 
 	if diffMode {
-		return p.handleExportDiff(args, scoped)
+		return p.handleExportDiff(args, scoped, requestedFormat)
 	}
 
-	switch format {
-	case formatStandard:
-		// fall through to the file-format path below
-	case formatCRD:
+	if format == formatCRD {
 		return p.handleExportCRD(args, scoped, namespace)
-	default:
-		return fmt.Sprintf(":warning: Unknown `--format=%s`. Use `standard` (alertmanager.yml, default) or `crd` (Prometheus Operator AlertmanagerConfig).", format), nil
 	}
 
 	// Assemble the YAML for every channel-scoped receiver. Same
-	// concatenation pattern as the /alertmanager add file, but iterates
+	// concatenation pattern as the /alertmanager config add file, but iterates
 	// over existing entries rather than newly-created ones.
 	var y strings.Builder
-	y.WriteString("# Alertmanager receivers exported by /alertmanager export\n")
+	y.WriteString("# Alertmanager receivers exported by /alertmanager format export\n")
 	y.WriteString("# All receivers currently registered in plugin config for this channel.\n")
 	y.WriteString("# Hook IDs are preserved — replace the receivers: block in your\n")
 	y.WriteString("# alertmanager.yml with this content, then reload AM.\n")
@@ -102,10 +96,11 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	}
 
 	// DM both the receivers AND the matching routes as separate files.
-	// Same delivery path as /alertmanager add — ephemeral file
+	// Same delivery path as /alertmanager config add — ephemeral file
 	// attachments are unreliable in Mattermost, DMs persist normally.
 	routesYAML := assembleRoutesYAML(scoped)
-	dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(scoped), "")
+	rules, rulesReason := p.rulesFileForChannel(namespace, scoped, formatStandard)
+	dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(scoped), "", rules)
 	if dmErr != nil {
 		return fmt.Sprintf(
 			":warning: Couldn't DM the assembled YAML (%v). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n%s```\n",
@@ -121,32 +116,35 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	}
 	b.WriteString("```\n\n")
 	b.WriteString("Open your DM with the bot to download `alertmanager-receivers.yml`. Replace the `receivers:` block in your `alertmanager.yml` with the file contents, then reload Alertmanager. Hook IDs are preserved — no webhook rotation involved.\n")
-	b.WriteString("\n:information_source: _Template re-rendered at export time — may differ from what's currently loaded in Alertmanager if templates changed since these receivers were created. Run `/alertmanager validate` to confirm the live AM state._\n")
+	b.WriteString("\n:information_source: _Template re-rendered at export time — may differ from what's currently loaded in Alertmanager if templates changed since these receivers were created. Run `/alertmanager config validate` to confirm the live AM state._\n")
 
-	// Discoverability hint for the diff flag. Sysadmin-only feature,
+	b.WriteString(rulesReply(rules, rulesReason, true))
+
+	// Discoverability hint for diff. Sysadmin-only feature,
 	// so the tip is conditional on the calling user actually being
 	// a sysadmin — no point teasing a command the caller can't run.
 	if p.requireSystemAdmin(args.UserId) == nil {
 		b.WriteString("\n")
-		b.WriteString(":bulb: **Sysadmin tip:** run `/alertmanager export --diff-against-loaded` to see a side-by-side diff between Alertmanager's currently-loaded config and what this export would add. Useful before pasting into a hand-maintained `alertmanager.yml`.\n")
+		b.WriteString(":bulb: **Sysadmin tip:** run `/alertmanager format diff` to compare Alertmanager's loaded config with what this channel would add.\n")
 	}
 	return b.String(), nil
 }
 
-// handleExportDiff is the --diff-against-loaded path. Fetches AM's
+// handleExportDiff is the format diff path. Fetches AM's
 // currently-loaded config via /api/v2/status, identifies which of
 // the channel's receivers are new vs already present, and renders a
 // channel-scoped diff showing only this channel's section.
 //
-// Auto-detects Prometheus Operator CRD mode: if AM's loaded config
-// contains receivers with namespaced names (<ns>/mattermost-alertmanager-
-// <hash>/<receiver-name>) matching any of this channel's receivers, CRD
-// mode activates and the "already loaded" check matches on the third
-// path segment instead of the full name.
+// With no format, auto-detects Prometheus Operator CRD mode: if AM's loaded
+// config contains receivers with namespaced names (<ns>/mattermost-
+// alertmanager-<hash>/<receiver-name>) matching any of this channel's
+// receivers, CRD mode activates and the "already loaded" check matches on the
+// third path segment instead of the full name. An explicit format ("crd" or
+// "standard") skips detection and compares against that deployment form.
 //
 // Sysadmin-only: the diff includes webhook URLs (channel-bound bearer
 // tokens) for this channel's receivers.
-func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig) (string, error) {
+func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig, format string) (string, error) {
 	groups := groupByAMURL(scoped)
 	var diffOutput strings.Builder
 	var summary strings.Builder
@@ -178,8 +176,17 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 		// If any of this channel's receivers appear in that namespaced form,
 		// switch to CRD-aware matching for toAdd detection and route extraction.
 		crdMode := detectCRDMode(entry.ConfigBody, ownNames)
-		if crdMode {
-			diffOutput.WriteString("Detection: **CRD mode** (Prometheus Operator — channel receivers found as `<namespace>/mattermost-alertmanager-.../<name>`)\n\n")
+		switch format {
+		case formatCRD:
+			crdMode = true
+			diffOutput.WriteString("Format: **crd** (requested). Matching receivers as `<namespace>/mattermost-alertmanager-.../<name>`.\n\n")
+		case formatStandard:
+			crdMode = false
+			diffOutput.WriteString("Format: **standard** (requested). Matching receivers by their plain name.\n\n")
+		default:
+			if crdMode {
+				diffOutput.WriteString("Detection: **CRD mode** (Prometheus Operator — channel receivers found as `<namespace>/mattermost-alertmanager-.../<name>`)\n\n")
+			}
 		}
 
 		// Identify additions using CRD-aware name matching.
@@ -226,7 +233,7 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 			diffOutput.WriteString("  Do NOT paste this into alertmanager.yml as-is — fix the underlying issue first.\n\n")
 		} else {
 			if crdMode {
-				diffOutput.WriteString("Validation: :white_check_mark: flat-equivalent config parses cleanly. For CRD deployments, apply via `kubectl apply` — use `/alertmanager show export --format=crd` to get the AlertmanagerConfig YAML.\n\n")
+				diffOutput.WriteString("Validation: :white_check_mark: flat-equivalent config parses cleanly. For CRD deployments, apply via `kubectl apply` — use `/alertmanager format export crd` to get the AlertmanagerConfig YAML.\n\n")
 			} else {
 				diffOutput.WriteString("Validation: :white_check_mark: merged config parses cleanly via alertmanager/config. Safe to paste.\n\n")
 			}

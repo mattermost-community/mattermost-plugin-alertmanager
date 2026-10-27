@@ -1,6 +1,7 @@
 package alertmanager
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -151,5 +152,53 @@ func httpRetry(method, url, user, password string) ([]byte, int, error) {
 		return nil, 0, errRetry
 	}
 
+	return body, statusCode, nil
+}
+
+// httpPostJSON POSTs a JSON body to an Alertmanager API. A fresh reader is
+// built on every attempt because the transport consumes the body. 4xx is
+// permanent: repeating a rejected silence will not make it valid. The
+// response body is read before this function returns, same as httpRetry.
+func httpPostJSON(url, user, password string, payload []byte) ([]byte, int, error) {
+	var body []byte
+	var statusCode int
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	fn := func() error {
+		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if errReq != nil {
+			return backoff.Permanent(errReq)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if user != "" {
+			req.SetBasicAuth(user, password)
+		}
+
+		resp, err := GetClient().Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		statusCode = resp.StatusCode
+		b, readErr := ReadAllLimited(resp.Body)
+		if readErr != nil {
+			return readErr
+		}
+		body = b
+		if statusCode == http.StatusOK || statusCode == http.StatusCreated {
+			return nil
+		}
+		if statusCode >= 400 && statusCode < 500 {
+			return backoff.Permanent(fmt.Errorf("alertmanager returned status %d", statusCode))
+		}
+		return fmt.Errorf("alertmanager returned status %d", statusCode)
+	}
+
+	if errRetry := backoff.Retry(fn, httpBackoff()); errRetry != nil {
+		return nil, statusCode, errRetry
+	}
 	return body, statusCode, nil
 }
