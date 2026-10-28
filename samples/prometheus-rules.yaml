@@ -444,15 +444,21 @@ groups:
       # PersistentVolumeFull — labels required: namespace, pod.
       # kubelet_volume_stats_* carries `namespace` and
       # `persistentvolumeclaim`. To resolve PVC → pod, join with
-      # kube_pod_spec_volumes_persistentvolumeclaims_info which
-      # carries `namespace`, `persistentvolumeclaim`, and `pod`.
+      # kube_pod_spec_volumes_persistentvolumeclaims_info, which has one
+      # series per pod that mounts the claim. The PVC is the "one" side, so
+      # the join is group_right. The max by () drops the kube-state-metrics
+      # scrape labels so a claim shared by several pods does not collide.
       - alert: PersistentVolumeFull
         expr: |
           (
-            kubelet_volume_stats_used_bytes
-              / kubelet_volume_stats_capacity_bytes * 100
-          ) * on (namespace, persistentvolumeclaim) group_left(pod)
-          kube_pod_spec_volumes_persistentvolumeclaims_info > 90
+            (
+              kubelet_volume_stats_used_bytes
+                / kubelet_volume_stats_capacity_bytes * 100
+            ) > 90
+          ) * on (namespace, persistentvolumeclaim) group_right()
+          max by (namespace, persistentvolumeclaim, pod) (
+            kube_pod_spec_volumes_persistentvolumeclaims_info
+          )
         for: 5m
         labels:
           severity: critical
@@ -593,7 +599,7 @@ groups:
         # CUSTOMIZE THIS ALLOWLIST before enabling in production.
         expr: |
           count by (namespace, pod, container, image) (
-            kube_pod_container_info{image!~"^(mattermost/|registry\\.mattermost\\.com/|ghcr\\.io/mattermost/|docker\\.io/mattermost/|docker\\.io/rancher/|docker\\.io/grafana/|docker\\.io/bitnami/|docker\\.io/bitnamilabs/|docker\\.io/library/|docker\\.io/kiwigrid/|docker\\.io/nginxinc/|ghcr\\.io/fluxcd/|ghcr\\.io/controlplaneio-fluxcd/|quay\\.io/prometheus/|quay\\.io/prometheus-operator/|quay\\.io/prometheuscommunity/|quay\\.io/jetstack/|registry\\.k8s\\.io/|registry\\.istio\\.io/|mcr\\.microsoft\\.com/|sha256:).*"}
+            kube_pod_container_info{image!~"^(mattermost/|registry\\.mattermost\\.com/|ghcr\\.io/mattermost/|docker\\.io/mattermost/|docker\\.io/rancher/|docker\\.io/grafana/|docker\\.io/bitnami/|docker\\.io/bitnamilegacy/|docker\\.io/library/|docker\\.io/kiwigrid/|docker\\.io/nginxinc/|ghcr\\.io/fluxcd/|ghcr\\.io/controlplaneio-fluxcd/|quay\\.io/prometheus/|quay\\.io/prometheus-operator/|quay\\.io/prometheuscommunity/|quay\\.io/jetstack/|registry\\.k8s\\.io/|registry\\.istio\\.io/|mcr\\.microsoft\\.com/|sha256:).*"}
           ) > 0
         for: 5m
         labels:
