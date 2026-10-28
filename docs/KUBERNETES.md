@@ -284,6 +284,76 @@ The only hard requirement for the plugin to work is that your rules emit
 `runbook: <slug>` — see [Required: route alerts to the right
 receiver](#required-route-alerts-to-the-right-receiver) above.
 
+### kube-prometheus-stack: stock control-plane alerts
+
+`kube-prometheus-stack` ships about 150 alert rules of its own. They carry no
+`runbook` label, so none of them reach Mattermost through this plugin's
+receivers. They still fire in Prometheus and Alertmanager, and on some
+clusters a few of them fire all the time.
+
+The cause is the control-plane scrape targets. The chart enables ServiceMonitors
+and alerts for etcd, the scheduler, the controller-manager and `kube-proxy`.
+Those only work where you can reach the component's metrics port:
+
+| Cluster | etcd, scheduler, controller-manager | kube-proxy |
+|---|---|---|
+| AKS, EKS, GKE | Hidden by the provider. Targets stay down. | Runs, but metrics bind to localhost. Targets stay down. |
+| RKE2, k3s, kubeadm | Bound to localhost by default. Down until you expose them (RKE2: `etcd-expose-metrics: true` and `bind-address=0.0.0.0` for the scheduler and controller-manager). | Not present when Cilium replaces it. |
+
+The symptoms are `TargetDown` for `kube-etcd`, `kube-scheduler` and
+`kube-controller-manager`, plus `KubeProxyDown` and `etcdMembersDown`. If you
+route any of those to a channel, expect permanent noise.
+
+On a cluster that can't expose these components, turn them off in the
+`kube-prometheus-stack` values. This is plain chart configuration, so it works
+the same through Helm, Flux, Argo CD or Terraform:
+
+```yaml
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+```
+
+Leave `kubeSchedulerRecording` on. The scheduler dashboards use those recording
+rules. To mute one stock alert instead of a whole group, use
+`defaultRules.disabled`, for example `{ KubeCPUOvercommit: true }`.
+
+### Prometheus ignores objects without the release label
+
+A ServiceMonitor or PrometheusRule that Prometheus never selects fails
+silently. The object exists, `kubectl get` shows it, and the rules or metrics
+never appear. With `kube-prometheus-stack` the default selectors require
+`release: <helm release name>`:
+
+```bash
+kubectl -n monitoring get prometheus -o jsonpath='{.items[0].spec.ruleSelector}{"\n"}{.items[0].spec.serviceMonitorSelector}{"\n"}'
+```
+
+If that prints a `release` label, every PrometheusRule and ServiceMonitor you
+add, including the ones for Mattermost and your database exporter, needs the
+same label. Check that your rules loaded and evaluate cleanly:
+
+```bash
+kubectl get --raw "/api/v1/namespaces/monitoring/services/kube-prometheus-stack-prometheus:9090/proxy/api/v1/rules?type=alert" \
+  | jq '.data.groups[].rules[] | select(.labels.runbook != null) | {name, health, lastError}'
+```
+
+Chart option names differ between charts. The `prometheus-postgres-exporter`
+chart reads `serviceMonitor.labels` and `serviceMonitor.timeout`. It ignores
+`additionalLabels` and `scrapeTimeout` without a warning, which leaves the
+ServiceMonitor unselected.
+
 ## HA / multi-pod considerations
 
 The plugin is HA-aware where it counts:
