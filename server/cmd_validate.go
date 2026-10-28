@@ -21,7 +21,7 @@ import (
 	"github.com/prometheus/alertmanager/dispatch"
 )
 
-// cmd_validate.go owns /alertmanager validate — an end-to-end diagnostic
+// cmd_validate.go owns /alertmanager config validate — an end-to-end diagnostic
 // that confirms each link in the alerting pipeline is wired correctly.
 // Channel-scoped (only checks receivers bound to the current channel).
 //
@@ -29,10 +29,10 @@ import (
 //
 //   (a) AM reachability             — GET /api/v2/status, expect 200
 //   (b) Receiver loaded in AM       — fetch AM config, search for `name: X`
-//   (c) Webhook accepts POSTs       — opt-in via --webhook-test;
+//   (c) Webhook accepts POSTs       — opt-in via webhook-test;
 //                                     posts a visible test message
 //                                     to the channel
-//   (d) End-to-end alert delivery   — opt-in via --end-to-end;
+//   (d) End-to-end alert delivery   — opt-in via end-to-end;
 //                                     fires a synthetic alert through
 //                                     AM, user watches channel for arrival
 //
@@ -40,19 +40,19 @@ import (
 // Opt-in flags trigger side effects so admins choose their level of
 // intrusiveness.
 
-// handleValidate is the entry point for /alertmanager validate.
+// handleValidate is the entry point for /alertmanager config validate.
 // Usage:
 //
-//	/alertmanager validate                              # all receivers in this channel
-//	/alertmanager validate <name>                       # one receiver by name
-//	/alertmanager validate <set>                        # only receivers in a runbook set (compute, application, etc.)
-//	/alertmanager validate all                          # alias of no-arg
-//	/alertmanager validate --webhook-test               # also POST visible test message per receiver
-//	/alertmanager validate --end-to-end                 # also fire synthetic alert through AM
-//	/alertmanager validate compute --end-to-end         # combine set filter + flag
+//	/alertmanager config validate                              # all receivers in this channel
+//	/alertmanager config validate <name>                       # one receiver by name
+//	/alertmanager config validate <set>                        # only receivers in a runbook set (compute, application, etc.)
+//	/alertmanager config validate all                          # alias of no-arg
+//	/alertmanager config validate webhook-test                 # also POST visible test message per receiver
+//	/alertmanager config validate end-to-end                   # also fire synthetic alert through AM
+//	/alertmanager config validate compute end-to-end         # combine set filter + flag
 //
 // Set names take precedence over receiver names (same dispatch rule
-// as /alertmanager remove). Runbook slugs don't collide with set
+// as /alertmanager config remove). Runbook slugs don't collide with set
 // names so the precedence is safe.
 func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
@@ -62,28 +62,28 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
-	// --simulate is a sub-mode of validate: instead of probing real
+	// simulate is a sub-mode of validate: instead of probing real
 	// receivers, walk the AM route tree with the given label set and
 	// report which receivers an alert with those labels would actually
-	// dispatch to. Everything AFTER --simulate is the label list, so
+	// dispatch to. Everything AFTER the word is the label list, so
 	// extract it first and short-circuit the regular validate path.
-	if idx := indexOfFlag(rest, "--simulate"); idx >= 0 {
+	if idx := indexOfMode(rest, modeSimulate); idx >= 0 {
 		return p.handleValidateSimulate(args, rest[idx+1:])
 	}
 
-	webhookTest := containsFlag(rest, "--webhook-test")
-	endToEnd := containsFlag(rest, "--end-to-end")
+	webhookTest := indexOfMode(rest, modeWebhookTest) >= 0
+	endToEnd := indexOfMode(rest, modeEndToEnd) >= 0
 
-	// --severity=<value> drives the end-to-end fire matrix.
-	// Accepted: warning, critical, info, all. `all` fires four
-	// synthetic alerts per receiver (warning + critical + info +
-	// resolved). Empty/missing defaults to warning. Validated by
-	// expandSeverityForFire — empty return slice = invalid value.
-	severityFlag, rest := extractFlagValue(rest, "--severity=")
-	rest = stripFlags(rest, "--webhook-test", "--end-to-end")
+	// severity=<value> drives the end-to-end fire matrix. It is not offered in
+	// typeahead. Accepted: warning, critical, info, all. `all` fires four
+	// synthetic alerts per receiver (warning + critical + info + resolved).
+	// Empty/missing defaults to warning. Validated by expandSeverityForFire,
+	// where an empty return slice means an invalid value.
+	severityFlag, rest := extractFlagValue(rest, "severity=")
+	rest = stripModes(rest, modeWebhookTest, modeEndToEnd)
 	fireSpecs := expandSeverityForFire(severityFlag)
 	if endToEnd && fireSpecs == nil {
-		return fmt.Sprintf(":x: Invalid `--severity=%s` value. Accepted: `warning`, `critical`, `info`, `all`.", severityFlag), nil
+		return fmt.Sprintf(":x: Invalid `severity=%s` value. Accepted: `warning`, `critical`, `info`, `all`.", severityFlag), nil
 	}
 
 	// First positional, if any, is either a set name or a receiver name.
@@ -199,7 +199,7 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		}
 
 		// (d) End-to-end alert via AM — opt-in. Fires one synthetic per
-		// fireSpec. When --severity=all, this is 4 alerts per receiver
+		// fireSpec. When severity=all, this is 4 alerts per receiver
 		// (warning + critical + info + resolved); otherwise 1. Per-spec
 		// errors get aggregated into a single status string.
 		if endToEnd && st.ok {
@@ -244,10 +244,10 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 	b.WriteString("\n")
 	b.WriteString("**Legend:** ✓ = passed · ✗ = failed · — = skipped\n\n")
 	if !webhookTest {
-		b.WriteString("_Run with_ `--webhook-test` _to also POST a marked test message to each webhook (visible in this channel)._\n")
+		b.WriteString("_Run with_ `webhook-test` _to also POST a marked test message to each webhook (visible in this channel)._\n")
 	}
 	if !endToEnd {
-		b.WriteString("_Run with_ `--end-to-end` _to also fire a synthetic alert through Alertmanager — watch the channel for delivery within ~30s._\n")
+		b.WriteString("_Run with_ `end-to-end` _to also fire a synthetic alert through Alertmanager — watch the channel for delivery within ~30s._\n")
 	}
 	return b.String(), nil
 }
@@ -275,7 +275,7 @@ func isKnownSet(name string) bool {
 //
 // Reads AM's loaded config from the cached probe (no fresh HTTP
 // call needed unless the cache is stale — same path
-// /alertmanager validate's loaded-in-AM check uses).
+// /alertmanager config validate's loaded-in-AM check uses).
 func (p *Plugin) handleValidateSimulate(args *model.CommandArgs, simulateArgs []string) (string, error) {
 	scoped := p.configsForCurrentChannel(args)
 	if len(scoped) == 0 {
@@ -288,7 +288,7 @@ func (p *Plugin) handleValidateSimulate(args *model.CommandArgs, simulateArgs []
 
 	labels, parseErr := parseSimulateLabels(simulateArgs)
 	if parseErr != nil {
-		return fmt.Sprintf(":x: %v\n\nUsage: `/alertmanager validate --simulate <key>=<value> [<key>=<value> ...]`\n\nExample: `/alertmanager validate --simulate runbook=high-cpu-usage severity=warning`", parseErr), nil
+		return fmt.Sprintf(":x: %v\n\nUsage: `/alertmanager config validate simulate <key>=<value> [<key>=<value> ...]`\n\nExample: `/alertmanager config validate simulate runbook=high-cpu-usage severity=warning`", parseErr), nil
 	}
 
 	// Same-AM assumption: all receivers in a channel point at one AM
@@ -398,28 +398,26 @@ func formatSimulatePresets() string {
 	b.WriteString("Run with one or more `key=value` labels to see which receiver an alert with those labels would route to. Use one of these runbook slugs as a starting point:\n\n")
 	b.WriteString("```\n")
 	for _, slug := range slugs {
-		fmt.Fprintf(&b, "/alertmanager validate --simulate runbook=%s\n", slug)
+		fmt.Fprintf(&b, "/alertmanager config validate simulate runbook=%s\n", slug)
 	}
 	b.WriteString("```\n\n")
 	b.WriteString("Or supply your own label set with anything Prometheus emits:\n\n")
-	b.WriteString("- `/alertmanager validate --simulate severity=critical service=api-gateway`\n")
-	b.WriteString("- `/alertmanager validate --simulate alertname=PodCrashLoopBackOff namespace=billing`\n")
-	b.WriteString("- `/alertmanager validate --simulate runbook=high-cpu-usage severity=warning`\n\n")
+	b.WriteString("- `/alertmanager config validate simulate severity=critical service=api-gateway`\n")
+	b.WriteString("- `/alertmanager config validate simulate alertname=PodCrashLoopBackOff namespace=billing`\n")
+	b.WriteString("- `/alertmanager config validate simulate runbook=high-cpu-usage severity=warning`\n\n")
 	b.WriteString("The simulation walks Alertmanager's currently-loaded route tree (fetched live via `/api/v2/status`) — no synthetic alert is actually fired, so this is safe to run as often as you want.")
 	return b.String()
 }
 
-// indexOfFlag returns the position of the named flag in args, or -1
-// if absent. Used by --simulate, where everything AFTER the flag is
-// the label list (key=value pairs) and we need to peel those off
-// from any preceding positionals.
-func indexOfFlag(args []string, flag string) int {
-	for i, a := range args {
-		if a == flag {
-			return i
-		}
-	}
-	return -1
+// Validate mode words, typed as plain words.
+const (
+	modeWebhookTest = "webhook-test"
+	modeEndToEnd    = "end-to-end"
+	modeSimulate    = "simulate"
+)
+
+func isModeWord(arg, mode string) bool {
+	return strings.EqualFold(arg, mode)
 }
 
 // containsFlag returns true if the args list includes the exact flag.
@@ -427,22 +425,17 @@ func containsFlag(args []string, flag string) bool {
 	return slices.Contains(args, flag)
 }
 
-// stripFlags removes the named flags from the args list, returning
-// only positional args. Used after containsFlag to leave the receiver
-// name behind.
-func stripFlags(args []string, flags ...string) []string {
-	skip := make(map[string]bool, len(flags))
-	for _, f := range flags {
-		skip[f] = true
-	}
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		if skip[a] {
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
+// indexOfMode returns the position of the mode word in args, or -1 if absent.
+// simulate uses it because everything AFTER the word is the label list.
+func indexOfMode(args []string, mode string) int {
+	return slices.IndexFunc(args, func(a string) bool { return isModeWord(a, mode) })
+}
+
+// stripModes removes the mode words from args, leaving the positional target.
+func stripModes(args []string, modes ...string) []string {
+	return slices.DeleteFunc(slices.Clone(args), func(a string) bool {
+		return slices.ContainsFunc(modes, func(m string) bool { return isModeWord(a, m) })
+	})
 }
 
 // doValidateAMStatus performs check (a) AND fetches the AM config body
@@ -508,7 +501,7 @@ func doValidateAMStatus(amURL string) (out struct {
 
 // webhookTestClient is the guarded HTTP client for validate/inventory
 // webhook-test POSTs. The webhook host is team-admin-controllable (per-receiver
-// --webhook-host or the global setting), so this is a server-side request to an
+// webhook-host or the global setting), so this is a server-side request to an
 // attacker-influenced URL — the same SSRF class the Alertmanager client defends
 // against. It reuses that posture: alertmanager.NewTransport() disables env
 // proxies (Proxy=nil) and installs the dial guard (CheckDestinationIP, post-DNS),
@@ -526,7 +519,7 @@ var webhookTestClient = &http.Client{
 // perspective) that the URL is valid and MM accepts the post.
 //
 // The message is visible in the channel — that's the cost of running
-// check (c). User opts in by passing --webhook-test.
+// check (c). User opts in by passing webhook-test.
 func postValidateTestMessage(webhookURL, hookID, receiverName string) error {
 	payload := map[string]any{
 		"text":     fmt.Sprintf(":mag: Validate check: this is a test message confirming the `%s` receiver's webhook is reachable. Safe to delete.", receiverName),
@@ -599,13 +592,13 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 		severity = "warning"
 	}
 	// Per-severity alertname so AM groups each severity into its own
-	// notification. Without this, --severity=all collapses
+	// notification. Without this, severity=all collapses
 	// warning + critical + info into one (3 firing) group post since
 	// AM's standard group_by includes alertname. Each spec needs a
 	// distinct alertname to materialize as a distinct chat post.
 	titleSeverity := strings.ToUpper(severity[:1]) + severity[1:]
 	alertname := "ValidateSyntheticTest" + titleSeverity
-	summary := fmt.Sprintf("Synthetic %s alert from /alertmanager validate", severity)
+	summary := fmt.Sprintf("Synthetic %s alert from /alertmanager config validate", severity)
 	description := fmt.Sprintf("Validate diagnostic at %s severity — if you see this in the channel, AM → MM delivery works end-to-end. Auto-resolves after ~5 minutes.", severity)
 	if resolved {
 		// Resolved gets its own alertname too, plus startsAt/endsAt
@@ -613,7 +606,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 		// a resolved-state notification independent of any firing
 		// counterpart.
 		alertname = "ValidateSyntheticTestResolved"
-		summary = "Resolved synthetic alert from /alertmanager validate"
+		summary = "Resolved synthetic alert from /alertmanager config validate"
 		description = "Resolved-state diagnostic — verifies the [✓ RESOLVED:] title and green sidebar render correctly."
 	}
 
@@ -679,7 +672,7 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 	return runbookSlug, nil
 }
 
-// expandSeverityForFire turns a --severity flag value into the ordered
+// expandSeverityForFire turns a severity flag value into the ordered
 // list of (severity, resolved) tuples to fire. Single severities fire
 // one alert; "all" fires four — warning, critical, info, plus a
 // resolved alert. Empty string defaults to warning (backwards compat

@@ -1,19 +1,32 @@
-# Sample Prometheus alert rules covering all 30 canonical runbooks
-# (including the security category) shipped by the mattermost-plugin-alertmanager plugin.
+# Sample Prometheus alert rules covering all 36 canonical runbooks
+# shipped by the mattermost-plugin-alertmanager plugin.
 #
 # WHERE THIS FILE LIVES
 # ---------------------
 # In the plugin source: samples/prometheus-rules.yaml
 # In the plugin tarball: bundled under the same path.
-# To install: copy or symlink into a directory that matches the
-# `rule_files:` glob in your prometheus.yml, then reload Prometheus:
-#   curl -X POST http://prometheus:9090/-/reload
+#
+# HOW TO APPLY THESE RULES
+# -------------------------
+# File-based Prometheus (add to rule_files:):
+#   Copy or symlink into a directory that matches the `rule_files:` glob
+#   in your prometheus.yml, then reload Prometheus:
+#     curl -X POST http://prometheus:9090/-/reload
+#
+# Prometheus Operator (PrometheusRule CRD):
+#   Run `/alertmanager format rules crd [namespace=monitoring]`
+#   in any Mattermost channel where the plugin is installed. The plugin
+#   DMs you a ready-to-apply PrometheusRule CRD (monitoring.coreos.com/v1)
+#   wrapping these same groups. Apply with:
+#     kubectl apply -n monitoring -f mattermost-prometheus-rules.yaml
+#   Adjust the `release` label in the generated manifest to match your
+#   Helm release name (default: kube-prometheus-stack).
 #
 # HOW TO VALIDATE THESE RULES BEFORE TRUSTING THEM
 # -------------------------------------------------
 # 1. Syntax: `promtool check rules prometheus-rules.yaml`
 # 2. Routing: in any Mattermost channel with plugin receivers, run
-#    `/alertmanager validate --simulate runbook=high-cpu-usage` (or
+#    `/alertmanager validate simulate runbook=high-cpu-usage` (or
 #    any other slug). The plugin walks Alertmanager's loaded route
 #    tree against those labels and reports which receiver an alert
 #    with that label set would actually dispatch to. Useful for
@@ -144,6 +157,8 @@ groups:
       - alert: PodNotReady
         expr: |
           sum by (namespace, pod) (kube_pod_status_ready{condition="false"}) > 0
+          unless on (namespace, pod)
+          kube_pod_status_phase{phase=~"Succeeded|Failed"} == 1
         for: 10m
         labels:
           severity: warning
@@ -429,15 +444,21 @@ groups:
       # PersistentVolumeFull — labels required: namespace, pod.
       # kubelet_volume_stats_* carries `namespace` and
       # `persistentvolumeclaim`. To resolve PVC → pod, join with
-      # kube_pod_spec_volumes_persistentvolumeclaims_info which
-      # carries `namespace`, `persistentvolumeclaim`, and `pod`.
+      # kube_pod_spec_volumes_persistentvolumeclaims_info, which has one
+      # series per pod that mounts the claim. The PVC is the "one" side, so
+      # the join is group_right. The max by () drops the kube-state-metrics
+      # scrape labels so a claim shared by several pods does not collide.
       - alert: PersistentVolumeFull
         expr: |
           (
-            kubelet_volume_stats_used_bytes
-              / kubelet_volume_stats_capacity_bytes * 100
-          ) * on (namespace, persistentvolumeclaim) group_left(pod)
-          kube_pod_spec_volumes_persistentvolumeclaims_info > 90
+            (
+              kubelet_volume_stats_used_bytes
+                / kubelet_volume_stats_capacity_bytes * 100
+            ) > 90
+          ) * on (namespace, persistentvolumeclaim) group_right()
+          max by (namespace, persistentvolumeclaim, pod) (
+            kube_pod_spec_volumes_persistentvolumeclaims_info
+          )
         for: 5m
         labels:
           severity: critical
@@ -566,13 +587,19 @@ groups:
     interval: 30s
     rules:
       # UnexpectedContainerImage — labels required: namespace, pod.
-      # Any running container whose image is OUTSIDE the approved
-      # registry allowlist. The regex below is an example — replace it
-      # with your own registries before trusting this rule.
+      # Any running container whose image is OUTSIDE the approved registry
+      # allowlist. CUSTOMIZE THIS BEFORE ENABLING IN PRODUCTION — the
+      # default allowlist covers common infra registries (Prometheus stack,
+      # Flux, cert-manager, Istio, RKE2, Azure CSI, Bitnami, etc.) plus all
+      # Mattermost registries. Without customization, a bare kube-prometheus-
+      # stack cluster will fire 0 false positives; anything beyond that may
+      # need additions. Enumerate what's actually running first:
+      #   kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}' | sort -u
       - alert: UnexpectedContainerImage
+        # CUSTOMIZE THIS ALLOWLIST before enabling in production.
         expr: |
           count by (namespace, pod, container, image) (
-            kube_pod_container_info{image!~"^(mattermost/|registry\\.mattermost\\.com/|ghcr\\.io/mattermost/).*"}
+            kube_pod_container_info{image!~"^(mattermost/|registry\\.mattermost\\.com/|ghcr\\.io/mattermost/|docker\\.io/mattermost/|docker\\.io/rancher/|docker\\.io/grafana/|docker\\.io/bitnami/|docker\\.io/bitnamilegacy/|docker\\.io/library/|docker\\.io/kiwigrid/|docker\\.io/nginxinc/|ghcr\\.io/fluxcd/|ghcr\\.io/controlplaneio-fluxcd/|quay\\.io/prometheus/|quay\\.io/prometheus-operator/|quay\\.io/prometheuscommunity/|quay\\.io/jetstack/|registry\\.k8s\\.io/|registry\\.istio\\.io/|mcr\\.microsoft\\.com/|sha256:).*"}
           ) > 0
         for: 5m
         labels:
@@ -663,3 +690,123 @@ groups:
         annotations:
           summary: "Security sensor {{ $labels.job }}/{{ $labels.instance }} is down for 5m"
           description: "A runtime/policy/audit sensor stopped reporting — tooling-dependent security alerts are now blind."
+
+  # ── Mattermost Application ────────────────────────────────────────────────
+  # Rules for the Mattermost server itself. Requires Mattermost metrics to be
+  # enabled (ServiceSettings.EnableMetrics: true in config.json) and scraped.
+  #
+  # IMPORTANT: Mattermost metric names can vary slightly between versions.
+  # Verify each metric name from your Mattermost /metrics endpoint before
+  # deploying. All thresholds are demo placeholders — tune to your load.
+  - name: mattermost-alertmanager-mattermost
+    interval: 60s
+    rules:
+
+      # MattermostAPIHighLatency — p95 API response time above 1 second for 5m.
+      # Covers all handlers — check the 'handler' label in the alert to narrow
+      # down which endpoint is slow. Common offenders: /api/v4/posts (DB write
+      # path) and /api/v4/users/search (full-text search).
+      - alert: MattermostAPIHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, handler) (
+              rate(mattermost_api_time_elapsed_seconds_bucket[5m])
+            )
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          category: mattermost
+          runbook: mattermost-api-high-latency
+        annotations:
+          summary: "Mattermost API p95 latency > 1s on {{ $labels.handler }}"
+          description: "95th-percentile API response time has exceeded 1 second for 5 minutes. Users may see stalls on message send and channel load."
+
+      # MattermostHighLoginFailures — spike in failed login attempts.
+      # This is the earliest signal of a credential stuffing or brute force
+      # attack. mattermost_login_10sec_users_with_failed_logins is a gauge
+      # tracking distinct users with failures in the last 10 seconds.
+      - alert: MattermostHighLoginFailures
+        expr: |
+          increase(mattermost_login_10sec_users_with_failed_logins[10m]) > 10
+        for: 0m
+        labels:
+          severity: warning
+          category: mattermost
+          runbook: mattermost-high-login-failures
+        annotations:
+          summary: "Mattermost login failures spiking ({{ $value | printf \"%.0f\" }} failures in 10m)"
+          description: "More than 10 failed login attempts accumulated in 10 minutes — investigate for credential stuffing or brute force."
+
+      # MattermostWebSocketDrop — active WebSocket connections dropped > 50%
+      # vs 10 minutes ago. A self-calibrating check: catches drops at any
+      # scale. Typical cause: pod restart, LB timeout misconfiguration, or
+      # a network disruption affecting long-lived connections.
+      - alert: MattermostWebSocketDrop
+        expr: |
+          mattermost_http_websockets_total
+            < (mattermost_http_websockets_total offset 10m) * 0.5
+        for: 5m
+        labels:
+          severity: warning
+          category: mattermost
+          runbook: mattermost-websocket-drop
+        annotations:
+          summary: "Mattermost WebSocket connections dropped > 50%"
+          description: "Active WebSocket connections are less than half their level from 10 minutes ago. Users are losing real-time updates."
+
+      # MattermostDBSlowQuery — p99 database store operation time above 500ms.
+      # Mattermost makes synchronous DB calls on most API request paths, so a
+      # DB slowdown propagates directly to API latency.
+      - alert: MattermostDBSlowQuery
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (
+              rate(mattermost_db_store_time_elapsed_seconds_bucket[5m])
+            )
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          category: mattermost
+          runbook: mattermost-db-slow-query
+        annotations:
+          summary: "Mattermost DB p99 query latency > 500ms"
+          description: "99th-percentile database store operation time has exceeded 500ms for 5 minutes. API latency will follow."
+
+      # MattermostHighErrorRate — more than 5% of API calls returning 5xx.
+      # Unlike 4xx (expected user errors), 5xx means the server failed.
+      # Common causes: DB connectivity loss, plugin panic, bad deployment.
+      - alert: MattermostHighErrorRate
+        expr: |
+          sum(rate(mattermost_api_calls_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(mattermost_api_calls_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          category: mattermost
+          runbook: mattermost-high-error-rate
+        annotations:
+          summary: "Mattermost 5xx error rate > 5% ({{ $value | printf \"%.1f%%\" }})"
+          description: "More than 5% of Mattermost API calls are returning server errors. Users see intermittent message and channel failures."
+
+      # MattermostLicenseExpiringSoon — Enterprise license expires in < 30 days.
+      # On expiry, Mattermost reverts to Team Edition: LDAP, SAML, guest accounts,
+      # compliance exports, and HA are all disabled. This is a planned, avoidable
+      # outage — renew well before the threshold.
+      # Note: this metric is absent on Team Edition. If absent() fires for
+      # mattermost_license_expire_date, metrics are disabled or the server is
+      # already running Team Edition.
+      - alert: MattermostLicenseExpiringSoon
+        expr: |
+          (mattermost_license_expire_date - time()) / 86400 < 30
+        for: 0m
+        labels:
+          severity: warning
+          category: mattermost
+          runbook: mattermost-license-expiring-soon
+        annotations:
+          summary: "Mattermost license expires in {{ $value | printf \"%.0f\" }} days"
+          description: "The Mattermost Enterprise license expires soon. On expiry, LDAP, SAML, and other enterprise features are disabled. Renew at customers.mattermost.com."

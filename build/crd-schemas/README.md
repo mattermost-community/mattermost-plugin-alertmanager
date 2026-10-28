@@ -1,9 +1,9 @@
 # Vendored CRD JSON schemas
 
 kubeconform schemas for the Prometheus Operator CRDs the plugin generates
-(`/alertmanager export|add --format=crd`). **Vendored on purpose** so the
-`validate-crd` CI job runs fully offline — air-gapped / closed environments have
-no access to the upstream schema catalog at run time.
+(`/alertmanager show export crd` and `add --format=crd`). **Vendored on purpose** so the
+`validate-crd` CI job runs fully offline. The job has no network access to the
+upstream schema catalog at run time.
 
 ## Files
 

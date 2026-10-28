@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 // every successful invocation either creates a webhook receiver (network
 // surface) or removes one (alerts go silent without it).
 //
-// /alertmanager add (bulk creation from a runbook set) lives in
+// /alertmanager config add (bulk creation from a runbook set) lives in
 // cmd_scaffold.go — split out for size. This file owns the per-receiver
 // lifecycle: remove, rotate, list, config.
 
@@ -25,11 +24,11 @@ import (
 //	<name>           → single receiver by name
 //	<set>            → all receivers in this channel matching that runbook set
 //	                   (compute, application, database, storage, networking,
-//	                   observability) — requires --force
-//	all              → every receiver in this channel — requires --force
+//	                   observability) — requires force
+//	all              → every receiver in this channel — requires force
 //
 // All paths are channel-scoped: a user in #web-alerts can't reach
-// receivers bound to #db-alerts. Bulk paths (set, all) gate on --force
+// receivers bound to #db-alerts. Bulk paths (set, all) gate on force
 // to prevent accidental multi-receiver nukes.
 //
 // Set names take precedence over receiver names. Since plugin-managed
@@ -42,10 +41,10 @@ func (p *Plugin) handleRemove(args *model.CommandArgs) (string, error) {
 
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
-		return "Usage: `/alertmanager remove <name>` | `/alertmanager remove <set> --force` | `/alertmanager remove all --force`\n\nSets: `compute`, `application`, `database`, `storage`, `networking`, `observability`", nil
+		return "Usage: `/alertmanager config remove <name>` | `/alertmanager config remove <set> force` | `/alertmanager config remove all force`\n\nSets: `compute`, `application`, `database`, `storage`, `networking`, `observability`", nil
 	}
 	target := strings.ToLower(fields[2])
-	force := len(fields) >= 4 && fields[3] == "--force"
+	force := len(fields) >= 4 && fields[3] == "force"
 
 	if target == "all" {
 		return p.handleRemoveAll(args, force)
@@ -122,7 +121,7 @@ func (p *Plugin) handleRemoveOne(args *model.CommandArgs, name string) (string, 
 		return fmt.Sprintf("Failed to persist config: %v", err), nil
 	}
 	if identityChanged {
-		return fmt.Sprintf("Receiver %q changed since you last listed it (it was re-created elsewhere with a new webhook). Nothing removed — re-run `/alertmanager list` then remove again.", resolved), nil
+		return fmt.Sprintf("Receiver %q changed since you last listed it (it was re-created elsewhere with a new webhook). Nothing removed — re-run `/alertmanager config list` then remove again.", resolved), nil
 	}
 	if hookID == "" {
 		// In scope per the in-memory snapshot but absent from the freshly-read KV
@@ -203,11 +202,11 @@ func orphanedWebhookIDs(before, after []alertConfig) []string {
 // handleRemoveAll removes every receiver bound to the current channel.
 // Two-step UX:
 //
-//	/alertmanager remove all           → dry-run preview (lists targets)
-//	/alertmanager remove all --force   → actually removes
+//	/alertmanager config remove all           → dry-run preview (lists targets)
+//	/alertmanager config remove all force   → actually removes
 //
 // Webhook delete failures don't abort — the plugin config entry is still
-// pruned so /alertmanager list reflects the truth. Orphan webhooks (if
+// pruned so /alertmanager config list reflects the truth. Orphan webhooks (if
 // any survive) can be cleaned up via System Console.
 func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, error) {
 	// Atomic read-modify-write: hold configWriteMu from the read below
@@ -221,14 +220,14 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 	}
 
 	if !force {
-		// Dry-run: list what would be deleted, refuse to execute without --force.
+		// Dry-run: list what would be deleted, refuse to execute without force.
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf(":warning: **About to remove %d receiver(s) bound to this channel:**\n\n", len(scoped)))
 		for _, c := range scoped {
 			b.WriteString(fmt.Sprintf("- `%s` (webhook `%s`)\n", c.Name, redactHookID(c.WebhookID)))
 		}
 		b.WriteString("\nThis deletes the plugin config entries AND the underlying Mattermost incoming webhooks. **The corresponding `slack_configs` blocks in your `alertmanager.yml` will start failing immediately** — clean them up after.\n\n")
-		b.WriteString("To proceed, re-run with `--force`:\n\n```\n/alertmanager remove all --force\n```\n")
+		b.WriteString("To proceed, re-run with `force`:\n\n```\n/alertmanager config remove all force\n```\n")
 		return b.String(), nil
 	}
 
@@ -290,7 +289,7 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 			len(webhookFailures), strings.Join(webhookFailures, "`, `")))
 	}
 	if len(skippedChanged) > 0 {
-		b.WriteString(fmt.Sprintf("\n:information_source: Left %d receiver(s) untouched — they were re-created (new webhook) since you last listed this channel: `%s`. Re-run `/alertmanager list` then remove again if you still want them gone.\n",
+		b.WriteString(fmt.Sprintf("\n:information_source: Left %d receiver(s) untouched — they were re-created (new webhook) since you last listed this channel: `%s`. Re-run `/alertmanager config list` then remove again if you still want them gone.\n",
 			len(skippedChanged), strings.Join(skippedChanged, "`, `")))
 	}
 	b.WriteString("\nClean up the corresponding `slack_configs` blocks in `alertmanager.yml` and reload AM.")
@@ -303,11 +302,11 @@ func (p *Plugin) handleRemoveAll(args *model.CommandArgs, force bool) (string, e
 //
 // Two-step UX matching handleRemoveAll:
 //
-//	/alertmanager remove compute            → dry-run preview
-//	/alertmanager remove compute --force    → actually removes
+//	/alertmanager config remove compute            → dry-run preview
+//	/alertmanager config remove compute force    → actually removes
 //
 // Webhook delete failures don't abort — config entries are still pruned
-// so /alertmanager list reflects the new truth. Orphan webhooks (if
+// so /alertmanager config list reflects the new truth. Orphan webhooks (if
 // any survive the delete attempt) can be cleaned up via System Console.
 func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlugs []string, force bool) (string, error) {
 	// Atomic read-modify-write: hold configWriteMu across the read + save.
@@ -341,7 +340,7 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 		for _, c := range matched {
 			b.WriteString(fmt.Sprintf("- `%s` (webhook `%s`)\n", c.Name, redactHookID(c.WebhookID)))
 		}
-		b.WriteString(fmt.Sprintf("\nReceivers in this channel NOT in the `%s` set will be left alone. To proceed:\n\n```\n/alertmanager remove %s --force\n```\n", setName, setName))
+		b.WriteString(fmt.Sprintf("\nReceivers in this channel NOT in the `%s` set will be left alone. To proceed:\n\n```\n/alertmanager config remove %s force\n```\n", setName, setName))
 		return b.String(), nil
 	}
 
@@ -400,7 +399,7 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 			len(webhookFailures), strings.Join(webhookFailures, "`, `")))
 	}
 	if len(skippedChanged) > 0 {
-		b.WriteString(fmt.Sprintf("\n:information_source: Left %d receiver(s) untouched — re-created (new webhook) since you last listed this channel: `%s`. Re-run `/alertmanager list` then remove again if you still want them gone.\n",
+		b.WriteString(fmt.Sprintf("\n:information_source: Left %d receiver(s) untouched — re-created (new webhook) since you last listed this channel: `%s`. Re-run `/alertmanager config list` then remove again if you still want them gone.\n",
 			len(skippedChanged), strings.Join(skippedChanged, "`, `")))
 	}
 	b.WriteString("\nRemove the matching `slack_configs` and `routes:` entries from your `alertmanager.yml` and reload AM.")
@@ -414,8 +413,8 @@ func (p *Plugin) handleRemoveSet(args *model.CommandArgs, setName string, setSlu
 //
 // Usage:
 //
-//	/alertmanager rotate <name>           # one receiver by name
-//	/alertmanager rotate all --overdue    # every receiver in this
+//	/alertmanager config rotate <name>           # one receiver by name
+//	/alertmanager config rotate all overdue    # every receiver in this
 //	                                       # channel past its rotation
 //	                                       # threshold (sysadmin / team
 //	                                       # admin only; reads
@@ -428,12 +427,12 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
-		return "Usage: `/alertmanager rotate <name>` or `/alertmanager rotate all --overdue`", nil
+		return "Usage: `/alertmanager config rotate <name>` or `/alertmanager config rotate all overdue`", nil
 	}
 	target := fields[2]
 	rest := fields[3:]
 
-	if target == "all" && containsFlag(rest, "--overdue") {
+	if target == "all" && containsFlag(rest, "overdue") {
 		return p.handleRotateOverdue(args)
 	}
 
@@ -487,17 +486,14 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 	}
 	oldHookID := target.WebhookID
 
-	// Rotation resolves the receiver's existing channel; target.Team/Channel are
-	// already canonical, and a rotate never scaffolds a new channel, so only the
-	// channel ID is needed here.
-	rc, err := p.resolveOrCreateChannel(target.Team, target.Channel, false, "")
+	// target.Team/Channel are already canonical, so only the channel ID is needed.
+	channelID, err := p.resolveChannelID(target.Team, target.Channel)
 	if err != nil {
 		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), false, nil
 	}
-	channelID := rc.channelID
 
 	// Webhook display name for the replacement follows the same rule as
-	// /alertmanager add: the receiver-name format <base>--<team>-<channel>.
+	// /alertmanager config add: the receiver-name format <base>--<team>-<channel>.
 	// Group receivers use the category as the base; individual/legacy
 	// receivers use their runbook slug, so the display name lines up with the
 	// receiver name in System Console (and legacy entries pick up the
@@ -583,12 +579,12 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 
 // renderRotateGroupResponse builds the in-channel summary AND fires the
 // DM with the merged YAML bundle when the rotated webhook serves a
-// multi-receiver group. Same DM shape as /alertmanager rotate all
-// --overdue — operator pastes once into alertmanager.yml.
+// multi-receiver group. Same DM shape as /alertmanager config rotate all
+// overdue — operator pastes once into alertmanager.yml.
 func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig, groupName string, oldDeleted bool, oldHookID string) string {
 	primary := affected[0]
 	var y strings.Builder
-	y.WriteString(fmt.Sprintf("# Alertmanager receivers re-rotated by /alertmanager rotate (group %q)\n", groupName))
+	y.WriteString(fmt.Sprintf("# Alertmanager receivers re-rotated by /alertmanager config rotate (group %q)\n", groupName))
 	y.WriteString(fmt.Sprintf("# %d receiver(s) share the rotated webhook.\n", len(affected)))
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
 	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
@@ -597,7 +593,7 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 		y.WriteString("\n")
 	}
 	routesYAML := assembleRoutesYAML(affected)
-	if dmErr := p.dmYAMLBundle(userID, y.String(), routesYAML, len(affected), primary.AlertManagerURL); dmErr != nil {
+	if dmErr := p.dmYAMLBundle(userID, y.String(), routesYAML, len(affected), primary.AlertManagerURL, nil); dmErr != nil {
 		p.API.LogWarn("rotation: couldn't DM YAML after group rotate", "err", dmErr.Error())
 	}
 
@@ -623,7 +619,7 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 // webhook would be rotated once per overdue member — needless churn and duplicate
 // DMs. Names with an unknown (missing-from-map) webhook are treated as their own
 // group so they're never silently dropped.
-// overdueReceiverNames returns the receivers eligible for `rotate all --overdue`:
+// overdueReceiverNames returns the receivers eligible for `rotate all overdue`:
 // only those the operator OPTED INTO rotation reminders (RotationRemindersEnabled,
 // F-007) and whose last rotation is older than threshold. A zero LastRotatedAt is
 // treated as "not yet due" (the reconciler stamps it on first sight). Matching
@@ -676,7 +672,7 @@ func groupOverdueByWebhook(overdueNames []string, webhookByName map[string]strin
 // handleRotateOverdue rotates every receiver bound to the calling
 // channel whose LastRotatedAt is older than WebhookRotationDays.
 // One DM at the end with the merged updated YAML — same format as
-// /alertmanager export — so the operator pastes once.
+// /alertmanager format export — so the operator pastes once.
 //
 // Skipped silently when WebhookRotationDays is 0 (feature disabled);
 // emits a hint pointing the sysadmin at the setting.
@@ -747,10 +743,10 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 		}
 	}
 
-	// Build the merged YAML DM in the same shape /alertmanager export
+	// Build the merged YAML DM in the same shape /alertmanager format export
 	// produces, but scoped to JUST the rotated set.
 	var y strings.Builder
-	y.WriteString("# Alertmanager receivers re-rotated by /alertmanager rotate all --overdue\n")
+	y.WriteString("# Alertmanager receivers re-rotated by /alertmanager config rotate all overdue\n")
 	y.WriteString(fmt.Sprintf("# %d receiver(s) past the %d-day rotation threshold.\n", len(rotated), cfg.WebhookRotationDays))
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
 	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
@@ -759,7 +755,7 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 		y.WriteString("\n")
 	}
 	routesYAML := assembleRoutesYAML(rotated)
-	if dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(rotated), ""); dmErr != nil {
+	if dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(rotated), "", nil); dmErr != nil {
 		p.API.LogWarn("rotation: couldn't DM YAML after bulk overdue rotate", "err", dmErr.Error())
 	}
 
@@ -837,7 +833,7 @@ func resolveReceiverName(all []alertConfig, supplied, channelID string, p *Plugi
 
 // handleList: read-only summary of receivers bound to the current
 // channel — always scoped, no org-wide escape hatch. A user running
-// /alertmanager list in #web-alerts should never see DB or compute
+// /alertmanager config list in #web-alerts should never see DB or compute
 // receivers from other channels, even with admin privileges.
 // Cross-channel inventory is a System-Console-only concern.
 //
@@ -922,7 +918,7 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
-		return "Usage: `/alertmanager config <name>`\n\nList available receiver names with `/alertmanager list`.", nil
+		return "Usage: `/alertmanager config <name>`\n\nList available receiver names with `/alertmanager config list`.", nil
 	}
 	name := fields[2]
 
@@ -937,7 +933,7 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	}
 	if match == nil {
 		return fmt.Sprintf(
-			"Receiver `%s` is not bound to this channel. Run `/alertmanager list` here to see what is.",
+			"Receiver `%s` is not bound to this channel. Run `/alertmanager config list` here to see what is.",
 			name,
 		), nil
 	}
@@ -950,7 +946,8 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	b.WriteString(fmt.Sprintf("- **Channel:** `~%s`\n", match.Channel))
 	b.WriteString(fmt.Sprintf("- **Alertmanager URL:** `%s`\n", match.AlertManagerURL))
 	b.WriteString(fmt.Sprintf("- **Webhook ID:** `%s`\n", redactHookID(match.WebhookID)))
-	b.WriteString(fmt.Sprintf("- **Runbook (default):** %s\n", p.runbookDefaultURL(receiverBaseSlug(match.Name))))
+	runbookURL := p.runbookDefaultURL(receiverBaseSlug(match.Name))
+	b.WriteString(fmt.Sprintf("- **Runbook (default):** [%s](%s)\n", receiverBaseSlug(match.Name), runbookURL))
 	if match.User != "" {
 		// Username is shown but password is never echoed — even masked,
 		// echoing it teaches admins the password length, which weakens it.
@@ -959,115 +956,27 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	b.WriteString("\n**slack_configs YAML** (paste under `receivers:` in alertmanager.yml):\n\n```yaml\n")
 	b.WriteString(yaml)
 	b.WriteString("```\n\n")
+	b.WriteString(":information_source: _Template re-rendered at export time — may differ from what's currently loaded in Alertmanager if templates changed since this receiver was created. Run `/alertmanager config validate` to confirm the live AM state._\n\n")
 	b.WriteString(fmt.Sprintf("**Reload Alertmanager:**\n```\ncurl -X POST %s/-/reload\n```\n\n", match.AlertManagerURL))
 	b.WriteString("**Actions:**\n")
-	b.WriteString(fmt.Sprintf("- `/alertmanager rotate %s` — rotate webhook URL (URL changes, paste the new YAML)\n", match.Name))
-	b.WriteString(fmt.Sprintf("- `/alertmanager remove %s` — delete the receiver and its webhook\n", match.Name))
+	b.WriteString(fmt.Sprintf("- `/alertmanager config rotate %s` — rotate webhook URL (URL changes, paste the new YAML)\n", match.Name))
+	b.WriteString(fmt.Sprintf("- `/alertmanager config remove %s` — delete the receiver and its webhook\n", match.Name))
 	return b.String(), nil
 }
 
-// resolvedChannel is the outcome of resolveOrCreateChannel. teamName/channelName
-// are the CANONICAL names read back from the resolved Mattermost objects, not the
-// caller's raw arguments — callers persist these (CL-39) so a stored receiver
-// never carries a name that Mattermost itself wouldn't accept on lookup.
-type resolvedChannel struct {
-	channelID   string
-	teamName    string
-	channelName string
-	created     bool // this call brought the channel into existence
-}
-
-// resolveOrCreateChannel maps team-slug + channel-slug → resolvedChannel,
-// creating the channel if missing. When private is true a private channel is
-// created and the caller is added as a member (a private channel is invisible to
-// the caller otherwise, and the webhook is created with the caller's token, which
-// requires channel access). callerUserID may be empty for paths that only ever
-// resolve an existing channel (e.g. rotate). Used by add / add-custom / rotate.
-//
-// created reports whether THIS call brought the channel into existence (vs.
-// resolving a pre-existing one). Callers use it to roll back — delete a channel
-// they just created — when the rest of the add fails, without ever touching a
-// channel that was already there (CL-01).
-//
-// teamName/channelName are returned so callers persist the authoritative names
-// (CL-39). Storing the raw args instead was only safe because alertConfigNameRegex
-// happens to reject anything that could differ — a load-bearing guard in another
-// file that a future regex relaxation would silently defeat.
-func (p *Plugin) resolveOrCreateChannel(teamSlug, channelSlug string, private bool, callerUserID string) (resolvedChannel, error) {
+// resolveChannelID maps a stored team-slug + channel-slug to the channel ID.
+// Rotate uses it to find the channel behind an existing receiver. It never
+// creates a channel: a receiver whose channel was deleted fails here.
+func (p *Plugin) resolveChannelID(teamSlug, channelSlug string) (string, error) {
 	team, appErr := p.API.GetTeamByName(teamSlug)
 	if appErr != nil {
-		return resolvedChannel{}, fmt.Errorf("get team %q: %w", teamSlug, appErr)
+		return "", fmt.Errorf("get team %q: %w", teamSlug, appErr)
 	}
-
 	channel, appErr := p.API.GetChannelByName(team.Id, channelSlug, false)
-	if appErr == nil {
-		return resolvedChannel{channelID: channel.Id, teamName: team.Name, channelName: channel.Name, created: false}, nil
-	}
-	if appErr.StatusCode != http.StatusNotFound {
-		return resolvedChannel{}, fmt.Errorf("get channel %q: %w", channelSlug, appErr)
-	}
-
-	chanType := model.ChannelTypeOpen
-	if private {
-		chanType = model.ChannelTypePrivate
-	}
-	newChannel, appErr := p.API.CreateChannel(&model.Channel{
-		Name:        channelSlug,
-		DisplayName: channelSlug,
-		Type:        chanType,
-		TeamId:      team.Id,
-		CreatorId:   p.BotUserID,
-	})
 	if appErr != nil {
-		return resolvedChannel{}, fmt.Errorf("create channel %q: %w", channelSlug, appErr)
+		return "", fmt.Errorf("get channel %q: %w", channelSlug, appErr)
 	}
-
-	// Private channels are invisible to non-members and the webhook is created
-	// with the caller's token, so add the caller. Best-effort: a membership
-	// failure shouldn't lose the created channel — surface it via the webhook
-	// step's own error if it then fails.
-	if private && callerUserID != "" {
-		if _, mErr := p.API.AddChannelMember(newChannel.Id, callerUserID); mErr != nil {
-			p.API.LogWarn("could not add caller to new private channel", "channel", channelSlug, "err", mErr.Error())
-		}
-	}
-	return resolvedChannel{channelID: newChannel.Id, teamName: team.Name, channelName: newChannel.Name, created: true}, nil
-}
-
-// rollbackCreatedChannel archives a channel this add call just created after the
-// rest of the add failed, so a failed add can't leave an empty squatted channel
-// behind (CL-01). No-op when the channel pre-existed (created=false) — the plugin
-// must never remove a channel it didn't make. Best-effort: a failed archive is
-// logged, not surfaced, since the caller is already returning an add error.
-func (p *Plugin) rollbackCreatedChannel(created bool, channelID, teamSlug, channelSlug string) {
-	if !created || channelID == "" {
-		return
-	}
-	// HA safety: between this pod creating the channel and its add failing,
-	// another pod can resolve the same channel as existing and successfully
-	// attach a receiver to it. Archiving here would delete that live
-	// destination. Re-read the receiver list from KV (cluster-consistent, unlike
-	// this pod's in-memory snapshot) and skip the archive if anything is now
-	// bound to this team+channel — leave the empty channel for explicit cleanup
-	// rather than risk removing another pod's in-use channel.
-	fresh, err := p.loadAlertConfigsFromKV()
-	if err != nil {
-		// Fail CLOSED: if we can't read the list, we can't prove the channel is
-		// unused, so don't archive it — a transient KV/parse error during the
-		// concurrent-add window could otherwise delete another pod's live
-		// destination. Leave the (possibly empty) channel for explicit cleanup.
-		p.API.LogWarn("skipped channel rollback: could not read receiver list to confirm non-use (failing closed)", "channelID", channelID, "err", err.Error())
-		return
-	}
-	for _, c := range fresh {
-		if c.Team == teamSlug && c.Channel == channelSlug {
-			p.API.LogWarn("skipped channel rollback: a receiver is now bound to it (HA concurrent add)", "channelID", channelID)
-			return
-		}
-	}
-	if appErr := p.API.DeleteChannel(channelID); appErr != nil {
-		p.API.LogWarn("could not roll back channel created for a failed add", "channelID", channelID, "err", appErr.Error())
-	}
+	return channel.Id, nil
 }
 
 // maxConfigWriteAttempts caps the compare-and-set retry loop in

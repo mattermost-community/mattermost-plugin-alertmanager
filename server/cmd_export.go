@@ -9,11 +9,18 @@ import (
 	amconfig "github.com/prometheus/alertmanager/config"
 )
 
+// exportOptions are the parsed words of `/alertmanager format export|diff`.
+type exportOptions struct {
+	format    string // "" when not given
+	namespace string // CRD output only, validated
+	diff      bool
+}
+
 // handleExport renders fresh YAML for every receiver bound to the
 // current channel and DMs the resulting receivers.yml to the calling
 // sysadmin. Used to apply template/URL changes from a plugin upgrade
 // to existing receivers without rotating their webhook IDs (which
-// /alertmanager remove all + add would do).
+// /alertmanager config remove all + add would do).
 //
 // Sysadmin-gated because the rendered YAML embeds webhook URLs
 // (channel-bound bearer tokens). Channel-scoped: only receivers bound
@@ -21,43 +28,35 @@ import (
 //
 // Usage:
 //
-//	/alertmanager export                          # plain export
-//	/alertmanager export --diff-against-loaded    # sysadmin-only diff
+//	/alertmanager format export [standard|crd] [namespace=<ns>]
+//	/alertmanager format diff [standard|crd]       # sysadmin-only
 //
-// `--diff-against-loaded` shifts the output to a side-by-side
-// diff between the AM-loaded config (fetched live via /api/v2/status)
-// and what the plugin would emit. Useful as the answer to "I have
-// some receivers in AM YAML by hand, what would the plugin's
-// additions look like merged in?" — without the operator having to
-// guess the merge points themselves.
+// diff shifts the output to a side-by-side comparison between the
+// AM-loaded config (fetched live via /api/v2/status) and what the plugin
+// would emit. Useful as the answer to "I have some receivers in AM YAML by
+// hand, what would the plugin's additions look like merged in?" — without
+// the operator having to guess the merge points themselves.
 //
-// Output: an in-channel ephemeral summary, plus a DM from
-// @alertmanagerbot with the assembled receivers.yml (or
-// alertmanager-diff.txt when --diff-against-loaded is set).
-func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
-	fields := strings.Fields(args.Command)
-	rest := fields[2:]
-
-	// --format=standard (default, alertmanager.yml) | crd (AlertmanagerConfig).
-	format, rest := extractFlagValue(rest, "--format=")
+// Output: an in-channel ephemeral summary, plus DMs from @alertmanagerbot
+// with the assembled receivers.yml (or alertmanager-diff.txt for diff) and
+// the PrometheusRule for the runbooks those receivers cover.
+func (p *Plugin) handleExport(args *model.CommandArgs, opts exportOptions) (string, error) {
+	requestedFormat := opts.format
+	format := opts.format
 	if format == "" {
 		format = formatStandard
 	}
-	// --namespace= applies to CRD output only; defaults to monitoring.
-	namespace, rest := extractFlagValue(rest, "--namespace=")
+	namespace := opts.namespace
 	if namespace == "" {
 		namespace = defaultCRDNamespace
-	} else if err := validateCRDNamespace(namespace); err != nil {
-		return fmt.Sprintf(":warning: Invalid `--namespace`: %v", err), nil
 	}
+	diffMode := opts.diff
 
-	diffMode := containsFlag(rest, "--diff-against-loaded")
-
-	// --diff-against-loaded is sysadmin-only because it surfaces the
-	// AM-loaded YAML verbatim, which includes every receiver's
-	// webhook URL and any basic-auth creds across the org. Plain
-	// export stays channel-team-admin since it only emits the
-	// channel-scoped receivers we already manage.
+	// diff stays sysadmin-only. Output is channel-scoped,
+	// but it still prints this channel's webhook URLs (bearer tokens)
+	// taken from Alertmanager's loaded config. Plain export stays
+	// team_admin: it only emits the channel-scoped receivers the caller
+	// already manages.
 	if diffMode {
 		if err := p.requireSystemAdmin(args.UserId); err != nil {
 			return err.Error(), nil
@@ -74,23 +73,18 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	}
 
 	if diffMode {
-		return p.handleExportDiff(args, scoped)
+		return p.handleExportDiff(args, scoped, requestedFormat)
 	}
 
-	switch format {
-	case formatStandard:
-		// fall through to the file-format path below
-	case formatCRD:
+	if format == formatCRD {
 		return p.handleExportCRD(args, scoped, namespace)
-	default:
-		return fmt.Sprintf(":warning: Unknown `--format=%s`. Use `standard` (alertmanager.yml, default) or `crd` (Prometheus Operator AlertmanagerConfig).", format), nil
 	}
 
 	// Assemble the YAML for every channel-scoped receiver. Same
-	// concatenation pattern as the /alertmanager add file, but iterates
+	// concatenation pattern as the /alertmanager config add file, but iterates
 	// over existing entries rather than newly-created ones.
 	var y strings.Builder
-	y.WriteString("# Alertmanager receivers exported by /alertmanager export\n")
+	y.WriteString("# Alertmanager receivers exported by /alertmanager format export\n")
 	y.WriteString("# All receivers currently registered in plugin config for this channel.\n")
 	y.WriteString("# Hook IDs are preserved — replace the receivers: block in your\n")
 	y.WriteString("# alertmanager.yml with this content, then reload AM.\n")
@@ -102,10 +96,11 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	}
 
 	// DM both the receivers AND the matching routes as separate files.
-	// Same delivery path as /alertmanager add — ephemeral file
+	// Same delivery path as /alertmanager config add — ephemeral file
 	// attachments are unreliable in Mattermost, DMs persist normally.
 	routesYAML := assembleRoutesYAML(scoped)
-	dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(scoped), "")
+	rules, rulesReason := p.rulesFileForChannel(namespace, scoped, formatStandard)
+	dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(scoped), "", rules)
 	if dmErr != nil {
 		return fmt.Sprintf(
 			":warning: Couldn't DM the assembled YAML (%v). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n%s```\n",
@@ -121,29 +116,35 @@ func (p *Plugin) handleExport(args *model.CommandArgs) (string, error) {
 	}
 	b.WriteString("```\n\n")
 	b.WriteString("Open your DM with the bot to download `alertmanager-receivers.yml`. Replace the `receivers:` block in your `alertmanager.yml` with the file contents, then reload Alertmanager. Hook IDs are preserved — no webhook rotation involved.\n")
+	b.WriteString("\n:information_source: _Template re-rendered at export time — may differ from what's currently loaded in Alertmanager if templates changed since these receivers were created. Run `/alertmanager config validate` to confirm the live AM state._\n")
 
-	// Discoverability hint for the diff flag. Sysadmin-only feature,
+	b.WriteString(rulesReply(rules, rulesReason, true))
+
+	// Discoverability hint for diff. Sysadmin-only feature,
 	// so the tip is conditional on the calling user actually being
 	// a sysadmin — no point teasing a command the caller can't run.
 	if p.requireSystemAdmin(args.UserId) == nil {
 		b.WriteString("\n")
-		b.WriteString(":bulb: **Sysadmin tip:** run `/alertmanager export --diff-against-loaded` to see a side-by-side diff between Alertmanager's currently-loaded config and what this export would add. Useful before pasting into a hand-maintained `alertmanager.yml`.\n")
+		b.WriteString(":bulb: **Sysadmin tip:** run `/alertmanager format diff` to compare Alertmanager's loaded config with what this channel would add.\n")
 	}
 	return b.String(), nil
 }
 
-// handleExportDiff is the --diff-against-loaded path. Fetches AM's
+// handleExportDiff is the format diff path. Fetches AM's
 // currently-loaded config via /api/v2/status, identifies which of
 // the channel's receivers are new vs already present, and renders a
-// unified-diff-style output showing what the plugin would add.
+// channel-scoped diff showing only this channel's section.
 //
-// Sysadmin-only: the loaded AM config includes every receiver in
-// the org (not just the calling channel's), including their webhook
-// URLs and any basic-auth creds. This is intentional for v1 — the
-// reviewer specifically asked for "raw" output to evaluate. A
-// future iteration will scope the displayed output to the calling
-// channel only and redact other-channel secrets.
-func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig) (string, error) {
+// With no format, auto-detects Prometheus Operator CRD mode: if AM's loaded
+// config contains receivers with namespaced names (<ns>/mattermost-
+// alertmanager-<hash>/<receiver-name>) matching any of this channel's
+// receivers, CRD mode activates and the "already loaded" check matches on the
+// third path segment instead of the full name. An explicit format ("crd" or
+// "standard") skips detection and compares against that deployment form.
+//
+// Sysadmin-only: the diff includes webhook URLs (channel-bound bearer
+// tokens) for this channel's receivers.
+func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig, format string) (string, error) {
 	groups := groupByAMURL(scoped)
 	var diffOutput strings.Builder
 	var summary strings.Builder
@@ -163,12 +164,36 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 			continue
 		}
 
-		// Identify additions: receivers in our channel's scope whose
-		// `name:` doesn't appear in AM's loaded YAML.
+		// Build the set of this channel's receiver names for CRD
+		// detection, filtering, and route extraction.
+		ownNames := make(map[string]bool, len(g.Receivers))
+		for _, ac := range g.Receivers {
+			ownNames[ac.Name] = true
+		}
+
+		// Auto-detect Prometheus Operator CRD mode: the Operator namespaces
+		// receiver names as <ns>/<alertmanagerconfig-name>/<receiver-name>.
+		// If any of this channel's receivers appear in that namespaced form,
+		// switch to CRD-aware matching for toAdd detection and route extraction.
+		crdMode := detectCRDMode(entry.ConfigBody, ownNames)
+		switch format {
+		case formatCRD:
+			crdMode = true
+			diffOutput.WriteString("Format: **crd** (requested). Matching receivers as `<namespace>/mattermost-alertmanager-.../<name>`.\n\n")
+		case formatStandard:
+			crdMode = false
+			diffOutput.WriteString("Format: **standard** (requested). Matching receivers by their plain name.\n\n")
+		default:
+			if crdMode {
+				diffOutput.WriteString("Detection: **CRD mode** (Prometheus Operator — channel receivers found as `<namespace>/mattermost-alertmanager-.../<name>`)\n\n")
+			}
+		}
+
+		// Identify additions using CRD-aware name matching.
 		var toAdd []alertConfig
 		var alreadyLoaded []string
 		for _, ac := range g.Receivers {
-			if strings.Contains(entry.ConfigBody, "name: "+ac.Name) {
+			if receiverLoadedInAM(entry.ConfigBody, ac.Name, crdMode) {
 				alreadyLoaded = append(alreadyLoaded, ac.Name)
 				continue
 			}
@@ -181,11 +206,13 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 		fmt.Fprintf(&diffOutput, "  Would be added:       %d\n\n", len(toAdd))
 
 		if len(toAdd) == 0 {
+			// Show what AM currently has for this channel (channel-scoped).
+			diffOutput.WriteString(buildChannelScopedDiff(entry.ConfigBody, ownNames, crdMode, "", ""))
 			diffOutput.WriteString("No additions needed for this backend.\n\n")
 			continue
 		}
 
-		// Render the receivers + routes we'd add, then build the diff.
+		// Render the receivers + routes that would be added.
 		var newRecvs, newRoutes strings.Builder
 		for _, ac := range toAdd {
 			newRecvs.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
@@ -193,34 +220,35 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 		}
 		newRoutes.WriteString(assembleRoutesYAML(toAdd))
 
-		diffText, mergedYAML := buildDiffAgainstLoaded(entry.ConfigBody, newRecvs.String(), newRoutes.String())
-
-		// Schema validation runs on the UN-redacted merged YAML so we
-		// catch real schema issues regardless of what we'll mask in
-		// the display.
+		// Validation: run on the flat-merged config. In CRD mode this is
+		// advisory — the actual apply path is kubectl, not paste — but a
+		// schema error still signals a real problem with the receiver/route
+		// structure regardless of deployment method.
+		_, mergedYAML := buildDiffAgainstLoaded(entry.ConfigBody, newRecvs.String(), newRoutes.String())
 		if err := validateMergedConfig(mergedYAML); err != nil {
-			fmt.Fprintf(&diffOutput, "Validation: :x: merged config would NOT load.\n  Error: %s\n  Do NOT paste this into alertmanager.yml as-is — fix the underlying issue first.\n\n", err.Error())
+			fmt.Fprintf(&diffOutput, "Validation: :x: merged config would NOT load.\n  Error: %s\n", err.Error())
+			if crdMode {
+				diffOutput.WriteString("  (CRD mode: this validates the flat equivalent — apply the AlertmanagerConfig via kubectl for your actual deployment.)\n")
+			}
+			diffOutput.WriteString("  Do NOT paste this into alertmanager.yml as-is — fix the underlying issue first.\n\n")
 		} else {
-			diffOutput.WriteString("Validation: :white_check_mark: merged config parses cleanly via alertmanager/config. Safe to paste.\n\n")
+			if crdMode {
+				diffOutput.WriteString("Validation: :white_check_mark: flat-equivalent config parses cleanly. For CRD deployments, apply via `kubectl apply` — use `/alertmanager format export crd` to get the AlertmanagerConfig YAML.\n\n")
+			} else {
+				diffOutput.WriteString("Validation: :white_check_mark: merged config parses cleanly via alertmanager/config. Safe to paste.\n\n")
+			}
 		}
 
-		// Redact other channels' secrets in the diff display. The
-		// caller can see their own channel's receivers in the clear
-		// (they own those URLs and need them for the paste); every
-		// other channel's webhook URLs / passwords / vendor tokens
-		// get masked.
-		ownNames := make(map[string]bool, len(g.Receivers))
-		for _, ac := range g.Receivers {
-			ownNames[ac.Name] = true
-		}
-		diffText = redactOtherChannelsInDiff(diffText, ownNames)
-
-		diffOutput.WriteString(diffText)
+		// Channel-scoped diff: only this channel's section. Context lines
+		// show what AM currently has for this channel; + lines are additions.
+		// Own-channel webhook URLs are shown in the clear — the sysadmin
+		// needs them to verify correctness. No other channels' data appears.
+		channelDiff := buildChannelScopedDiff(entry.ConfigBody, ownNames, crdMode, newRecvs.String(), newRoutes.String())
+		diffOutput.WriteString(channelDiff)
 		diffOutput.WriteString("\n")
 	}
 
-	// DM the raw diff as a file. Keep the in-channel response light:
-	// a count + pointer to the DM.
+	// DM the channel-scoped diff as a file.
 	dm, appErr := p.API.GetDirectChannel(p.BotUserID, args.UserId)
 	if appErr != nil {
 		return fmt.Sprintf(":warning: Couldn't open DM channel: %v", appErr), nil
@@ -232,7 +260,7 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 	post := &model.Post{
 		UserId:    p.BotUserID,
 		ChannelId: dm.Id,
-		Message:   fmt.Sprintf("Diff against loaded Alertmanager config (channel: %s).\n\n_Raw output, no redaction — review before sharing._", args.ChannelId),
+		Message:   fmt.Sprintf("Channel-scoped diff against loaded Alertmanager config (channel: %s).\n\nOnly this channel's receivers and routes are shown — no other channels' data.", args.ChannelId),
 		FileIds:   []string{info.Id},
 	}
 	if _, postErr := p.API.CreatePost(post); postErr != nil {
@@ -240,9 +268,279 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 	}
 
 	summary.WriteString(fmt.Sprintf("Total additions across all backends: **%d**\n\n", totalAdds))
-	summary.WriteString(fmt.Sprintf("Diff DM'd as `alertmanager-diff.txt` from `@%s`. Open the DM to download.\n\n", webhookUsername))
-	summary.WriteString(":lock: Other channels' webhook URLs, passwords, and vendor tokens in the diff are shown as `<REDACTED>`. Your channel's additions are un-redacted so you can paste them into `alertmanager.yml`. Schema validation runs on the un-redacted merge in-memory, so the validation result reflects the real config — not the redacted display.")
+	summary.WriteString(fmt.Sprintf("Channel-scoped diff DM'd as `alertmanager-diff.txt` from `@%s`. Open the DM to download.\n\n", webhookUsername))
+	summary.WriteString(":information_source: Output is scoped to this channel only — context lines show what AM currently has for this channel; `+` lines show what would be added. Schema validation runs against the flat-merge in-memory regardless of deployment mode.")
 	return summary.String(), nil
+}
+
+// detectCRDMode returns true if AM's loaded config contains any receiver
+// whose name follows the Prometheus Operator CRD naming pattern
+// <namespace>/<alertmanagerconfig-name>/<receiver-name> where the third
+// path segment matches a receiver name owned by this channel.
+func detectCRDMode(loadedYAML string, ownNames map[string]bool) bool {
+	for line := range strings.SplitSeq(loadedYAML, "\n") {
+		m := receiverNameLineRegex.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		name := strings.Trim(m[1], `"'`)
+		parts := strings.SplitN(name, "/", 3)
+		if len(parts) == 3 && ownNames[parts[2]] {
+			return true
+		}
+	}
+	return false
+}
+
+// receiverLoadedInAM checks whether a receiver name is present in AM's loaded
+// config. Match the full name on each `- name:` line. A substring check treats
+// a shorter channel as already loaded when a longer one exists
+// (x--sre-alerts vs x--sre-alerts-prod), and the diff then drops the addition.
+// In CRD mode it also matches the namespaced form by comparing only the third
+// slash-delimited segment (<ns>/<config-name>/<receiver-name>).
+func receiverLoadedInAM(loadedYAML, name string, crdMode bool) bool {
+	for line := range strings.SplitSeq(loadedYAML, "\n") {
+		m := receiverNameLineRegex.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		loadedName := strings.Trim(m[1], `"'`)
+		if loadedName == name {
+			return true
+		}
+		if !crdMode {
+			continue
+		}
+		parts := strings.SplitN(loadedName, "/", 3)
+		if len(parts) == 3 && parts[2] == name {
+			return true
+		}
+	}
+	return false
+}
+
+// extractReceiverBlocks parses the receivers: section of loadedYAML and
+// returns the raw YAML lines (bare list items, no receivers: header) for
+// every receiver whose name passes the keep function. Multi-line receiver
+// blocks (with nested slack_configs, etc.) are extracted intact.
+func extractReceiverBlocks(loadedYAML string, keep func(name string) bool) string {
+	lines := strings.Split(loadedYAML, "\n")
+	inReceivers := false
+	var currentBlock []string
+	currentName := ""
+	dashIndent := -1
+	var result []string
+
+	flush := func() {
+		if currentName != "" && keep(currentName) && len(currentBlock) > 0 {
+			result = append(result, currentBlock...)
+		}
+		currentBlock = nil
+		currentName = ""
+	}
+
+	for _, line := range lines {
+		body := strings.TrimLeft(line, " \t")
+		indent := len(line) - len(body)
+		trimmed := strings.TrimRight(line, " \t")
+
+		if !inReceivers {
+			if strings.HasPrefix(trimmed, "receivers:") {
+				inReceivers = true
+			}
+			continue
+		}
+
+		// Exit on any non-indented, non-sequence, non-comment line other
+		// than "receivers:" itself. In standard AM configs the receivers:
+		// block runs to the next top-level key (route:, global:, etc.).
+		if indent == 0 && body != "" && !strings.HasPrefix(body, "- ") && !strings.HasPrefix(body, "#") && !strings.HasPrefix(body, "receivers:") {
+			flush()
+			inReceivers = false
+			continue
+		}
+
+		// New receiver list item detected by the "- name:" pattern.
+		// Only treat it as a new item if it's at the same indent as prior
+		// receiver items — guards against nested "- name:" in sub-configs.
+		if m := receiverNameLineRegex.FindStringSubmatch(line); m != nil {
+			if dashIndent == -1 {
+				dashIndent = indent
+			}
+			if indent == dashIndent {
+				flush()
+				currentName = strings.Trim(m[1], `"'`)
+				currentBlock = []string{line}
+				continue
+			}
+		}
+
+		if currentName != "" {
+			currentBlock = append(currentBlock, line)
+		}
+	}
+	flush()
+
+	if len(result) == 0 {
+		return ""
+	}
+	return strings.Join(result, "\n")
+}
+
+// extractRouteItems returns the raw YAML lines for every top-level route item
+// in loadedYAML whose receiver: field matches a receiver in ownNames.
+// In CRD mode, matches on the third slash-segment of namespaced receiver names.
+// Each returned item includes its full multi-line block (matchers, receiver,
+// continue, etc.) but not nested sub-route blocks from other channels.
+func extractRouteItems(loadedYAML string, ownNames map[string]bool, crdMode bool) []string {
+	lines := strings.Split(loadedYAML, "\n")
+	inRoute := false
+	inRoutes := false
+	routesIndent := -1
+	itemIndent := -1
+	var currentItem []string
+	var result []string
+
+	routeOwned := func(item []string) bool {
+		for _, l := range item {
+			body := strings.TrimSpace(l)
+			if !strings.HasPrefix(body, "receiver:") {
+				continue
+			}
+			rName := strings.TrimSpace(strings.TrimPrefix(body, "receiver:"))
+			rName = strings.Trim(rName, `"'`)
+			if ownNames[rName] {
+				return true
+			}
+			if crdMode {
+				parts := strings.SplitN(rName, "/", 3)
+				if len(parts) == 3 && ownNames[parts[2]] {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	flush := func() {
+		if len(currentItem) > 0 && routeOwned(currentItem) {
+			result = append(result, currentItem...)
+		}
+		currentItem = nil
+	}
+
+	for _, line := range lines {
+		body := strings.TrimLeft(line, " \t")
+		indent := len(line) - len(body)
+		trimmed := strings.TrimRight(line, " \t")
+
+		if !inRoute {
+			if strings.HasPrefix(trimmed, "route:") {
+				inRoute = true
+			}
+			continue
+		}
+		if !inRoutes {
+			// Only capture the FIRST routes: under route: (same guard as
+			// buildDiffAgainstLoaded — prevents nested sub-route blocks from
+			// overwriting routesIndent).
+			if inRoute && strings.HasPrefix(body, "routes:") {
+				inRoutes = true
+				routesIndent = indent
+			}
+			continue
+		}
+
+		// Exit routes block at a non-sequence, non-comment sibling of routes:.
+		if len(trimmed) > 0 && indent <= routesIndent && !strings.HasPrefix(body, "- ") && !strings.HasPrefix(body, "#") {
+			flush()
+			break
+		}
+
+		// New route item: "- " at the item indent level.
+		if strings.HasPrefix(body, "- ") {
+			if itemIndent == -1 {
+				itemIndent = indent
+			}
+			if indent == itemIndent {
+				flush()
+				currentItem = []string{line}
+				continue
+			}
+		}
+
+		if len(currentItem) > 0 {
+			currentItem = append(currentItem, line)
+		}
+	}
+	flush()
+
+	return result
+}
+
+// buildChannelScopedDiff produces a diff showing only this channel's section:
+// currently-loaded receivers/routes as context lines (  prefix), new
+// additions as (+ prefix). Unlike buildDiffAgainstLoaded which shows the full
+// AM config as context, this is scoped to the calling channel only.
+func buildChannelScopedDiff(loadedYAML string, ownNames map[string]bool, crdMode bool, newReceivers, newRoutes string) string {
+	keep := func(name string) bool {
+		if ownNames[name] {
+			return true
+		}
+		if crdMode {
+			parts := strings.SplitN(name, "/", 3)
+			return len(parts) == 3 && ownNames[parts[2]]
+		}
+		return false
+	}
+
+	loadedRecv := extractReceiverBlocks(loadedYAML, keep)
+	loadedRouteLines := extractRouteItems(loadedYAML, ownNames, crdMode)
+
+	var b strings.Builder
+
+	b.WriteString("--- receivers (this channel) ---\n")
+	if loadedRecv != "" {
+		for line := range strings.SplitSeq(strings.TrimRight(loadedRecv, "\n"), "\n") {
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if newReceivers != "" {
+		b.WriteString("+ # ---- plugin additions: receivers ----\n")
+		for addLine := range strings.SplitSeq(strings.TrimRight(newReceivers, "\n"), "\n") {
+			b.WriteString("+ ")
+			b.WriteString(addLine)
+			b.WriteString("\n")
+		}
+	}
+	if loadedRecv == "" && newReceivers == "" {
+		b.WriteString("  (none)\n")
+	}
+
+	b.WriteString("\n--- routes (this channel) ---\n")
+	if len(loadedRouteLines) > 0 {
+		for _, line := range loadedRouteLines {
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	newRoutesBody := routesBodyOnly(newRoutes)
+	if newRoutesBody != "" {
+		b.WriteString("+ # ---- plugin additions: routes ----\n")
+		for addLine := range strings.SplitSeq(strings.TrimRight(newRoutesBody, "\n"), "\n") {
+			b.WriteString("+ ")
+			b.WriteString(addLine)
+			b.WriteString("\n")
+		}
+	}
+	if len(loadedRouteLines) == 0 && newRoutesBody == "" {
+		b.WriteString("  (none)\n")
+	}
+
+	return b.String()
 }
 
 // buildDiffAgainstLoaded produces unified-diff-style output showing
@@ -271,17 +569,26 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig)
 func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDisplay, mergedYAML string) {
 	var b, m strings.Builder
 
+	// Strip the "routes:" header key and comment preamble that
+	// assembleRoutesYAML emits. In the diff context we insert items
+	// INTO an existing route.routes: block, not start a new parallel
+	// one — including the key would create a duplicate routes: mapping
+	// entry inside route:, which the YAML parser rejects.
+	newRoutes = routesBodyOnly(newRoutes)
+
 	loadedLines := strings.Split(loadedYAML, "\n")
 
 	// First pass: emit loaded lines, marking where we'll insert.
 	// We find the END of the receivers: block (first top-level key
 	// after `receivers:` OR EOF) and the END of the route.routes:
-	// block (first sibling-or-shallower key after `routes:`).
+	// block (first sibling key at routesIndent OR shallower, after
+	// all sequence items have been consumed).
 	receiversEndIdx := -1
 	routesEndIdx := -1
 	inReceivers := false
 	inRoute := false
 	inRoutes := false
+	var routesIndent int
 
 	for i, line := range loadedLines {
 		trim := strings.TrimRight(line, " \t")
@@ -291,12 +598,17 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 			receiversEndIdx = i
 			inReceivers = false
 		}
-		// Detect transitions out of routes: when we dedent back to
-		// route:'s level or shallower.
-		if inRoutes && len(trim) > 0 && !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "\t\t") {
-			routesEndIdx = i
-			inRoutes = false
-			inRoute = false
+		// Detect transitions out of routes: when we see a line at or
+		// shallower than routesIndent that isn't a sequence item ("- ")
+		// or comment. This finds the END of the list, not the start.
+		if inRoutes && len(trim) > 0 {
+			lineTrimmed := strings.TrimLeft(line, " \t")
+			lineIndent := len(line) - len(lineTrimmed)
+			if lineIndent <= routesIndent && !strings.HasPrefix(lineTrimmed, "- ") && !strings.HasPrefix(lineTrimmed, "#") {
+				routesEndIdx = i
+				inRoutes = false
+				inRoute = false
+			}
 		}
 
 		if strings.HasPrefix(trim, "receivers:") {
@@ -305,8 +617,14 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 		if strings.HasPrefix(trim, "route:") {
 			inRoute = true
 		}
-		if inRoute && strings.HasPrefix(strings.TrimLeft(line, " \t"), "routes:") {
+		// Only capture the FIRST routes: key seen under route: — nested
+		// route items can also have their own routes: sub-blocks, and
+		// re-entering here would overwrite routesIndent with the wrong
+		// (deeper) indent level, causing insertion inside a sub-route
+		// instead of at the top-level route.routes: list.
+		if inRoute && !inRoutes && strings.HasPrefix(strings.TrimLeft(line, " \t"), "routes:") {
 			inRoutes = true
+			routesIndent = len(line) - len(strings.TrimLeft(line, " \t"))
 		}
 	}
 	// Boundary case: section ran to EOF.
@@ -395,6 +713,32 @@ func buildDiffAgainstLoaded(loadedYAML, newReceivers, newRoutes string) (diffDis
 	return b.String(), m.String()
 }
 
+// routesBodyOnly strips the comment preamble and "routes:" header key from
+// assembleRoutesYAML output, returning only the bare YAML sequence items.
+// buildDiffAgainstLoaded uses this because it inserts items INTO an existing
+// route.routes: block — not alongside it — so the "routes:" key must not
+// appear in the inserted content.
+func routesBodyOnly(routesYAML string) string {
+	if routesYAML == "" {
+		return ""
+	}
+	lines := strings.Split(routesYAML, "\n")
+	var out []string
+	inBody := false
+	for _, line := range lines {
+		if !inBody {
+			if strings.HasPrefix(strings.TrimLeft(line, " \t"), "- ") {
+				inBody = true
+				out = append(out, line)
+			}
+			// Skip comments, blank lines, and the "routes:" header.
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // redactSensitiveLineRegex matches a YAML line setting one of the
 // sensitive AM-config keys to a quoted-or-unquoted scalar. Captures
 // the leading whitespace + key + ":" so we can substitute just the
@@ -427,9 +771,11 @@ var redactSensitiveLineRegex = regexp.MustCompile(`(?i)^(\s+(?:-\s+)?(?:[a-z0-9_
 var redactFlowStyleValueRegex = regexp.MustCompile(`(?i)((?:[a-z0-9_]*(?:password|passwd|secret|token|api[_-]?key|credential|service_key|routing_key)[a-z0-9_]*|[a-z0-9_]*url)\s*:\s*)("(?:[^"\\]|\\.)*"|'[^']*'|[^,}\]\s]+)`)
 
 // receiverNameLineRegex captures the receiver name on a `- name: foo`
-// list entry. Used by redactOtherChannelsInDiff to track which
-// receiver block we're currently inside while walking the diff.
-var receiverNameLineRegex = regexp.MustCompile(`^\s+-\s+name:\s+([^\s]+)`)
+// list entry. \s* (not \s+) allows matching at indent-0 for raw AM YAML
+// as well as diff-prefixed lines (which always have at least 2 chars of
+// prefix stripped before the body is matched). Used by detectCRDMode,
+// extractReceiverBlocks, and redactOtherChannelsInDiff.
+var receiverNameLineRegex = regexp.MustCompile(`^\s*-\s+name:\s+([^\s]+)`)
 
 // redactOtherChannelsInDiff masks sensitive values (api_url, password,
 // vendor-specific keys) in the diff DISPLAY for receivers that don't

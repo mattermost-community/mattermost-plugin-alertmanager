@@ -34,7 +34,7 @@ receivers whose webhook hasn't been rotated within this many days.
 Default `0` = feature disabled.
 
 Reminder-only — the plugin never auto-rotates. Per-receiver opt-in
-mandatory via `on` flag on `/alertmanager add`. See
+mandatory via `on` flag on `/alertmanager config add`. See
 [`ROTATION.md`](ROTATION.md) for the full playbook.
 
 Recommended values:
@@ -52,8 +52,8 @@ actually rotates that frequently.
 ### `AlertManagerCABundle`
 
 PEM-encoded CA certificates used when the plugin queries
-Alertmanager's REST API (`/alertmanager status`, `alerts`,
-`silences`, `expire_silence`, route simulation). Concatenate
+Alertmanager's REST API (`/alertmanager alerts status`, `alerts`,
+`silence list`, `silence expire`, route simulation). Concatenate
 multiple certs in one block. Leave empty to trust only system CAs.
 
 This setting only affects the plugin's outbound calls TO
@@ -70,7 +70,7 @@ Mattermost-side and use whatever TLS Mattermost is configured with.
 
 SSRF destination allowlist for the plugin's outbound Alertmanager calls. A team
 admin supplies the Alertmanager URL and the Mattermost server then connects to it
-(inventory probes, `validate`, `alerts`/`silences`/`status`), so an unrestricted
+(inventory probes, `config validate`, `alerts`, `alerts status`, `silence list`), so an unrestricted
 URL is an SSRF primitive. The guard runs at **connect time against the resolved
 IP**, so a hostname that resolves to a blocked address (incl. DNS rebinding) is
 caught, not just literal IPs.
@@ -110,6 +110,25 @@ a previous good allowlist is live it is kept (a typo can't silently widen egress
 if none is (e.g. first load / server start), **all** Alertmanager egress is denied
 until the setting is fixed — it never falls back to allowing public destinations.
 
+### `ServiceSettings.AllowedUntrustedInternalConnections`
+
+This is a Mattermost server setting, not a plugin setting. It is the
+other direction from `AlertManagerAllowedCIDRs`.
+
+`AlertManagerAllowedCIDRs` is the plugin calling Alertmanager
+(inventory, `validate`, `alerts`, `silence`).
+`AllowedUntrustedInternalConnections` is Alertmanager calling
+Mattermost: the `api_url` in the generated receiver is an incoming
+webhook, and Mattermost refuses that POST when the peer address is
+private unless the host is listed here.
+
+Set it to the host Alertmanager uses to reach Mattermost. For an
+in-cluster Service that is usually the Service DNS name, for example
+`mattermost.mattermost.svc.cluster.local`. A public `SiteURL` that
+Alertmanager reaches through ingress does not need this entry. The
+websocket-drop runbook mentions the same setting because Mattermost's
+own outbound calls hit the same check.
+
 ### `MetricsToken`
 
 When set, exposes Prometheus-format metrics at
@@ -125,8 +144,8 @@ new token, stores it, and reveals it once in an ephemeral reply along
 with a ready-to-paste `scrape_config`:
 
 ```
-/alertmanager metrics-token generate   # sysadmin-only; rotates the token
-/alertmanager metrics-token            # status only — does not rotate or reveal
+/alertmanager admin metrics-token generate   # sysadmin-only; rotates the token
+/alertmanager admin metrics-token            # status only — does not rotate or reveal
 ```
 
 Or generate one yourself and paste it into the setting:
@@ -151,8 +170,8 @@ scrape_configs:
 ### `AssembledYAMLTTLHours`
 
 The bot DMs sysadmins the assembled `alertmanager-receivers.yml` +
-`alertmanager-routes.yml` files after every `/alertmanager add` and
-`/alertmanager rotate all --overdue`. Those files contain
+`alertmanager-routes.yml` files after every `/alertmanager config add` and
+`/alertmanager config rotate all overdue`. Those files contain
 channel-bound webhook URLs (bearer tokens by URL).
 
 This setting controls how many hours the DM'd files persist before
@@ -172,8 +191,8 @@ there is no System Console field to hand-edit it.
 
 > **Breaking change / upgrade note.** Earlier builds stored this list in the
 > plugin config map (`alertconfigsjson`). The move to the KV store is a clean
-> break with **no automatic migration** — after upgrading, `/alertmanager list`
-> starts empty and you re-create receivers with `/alertmanager add`. The old
+> break with **no automatic migration** — after upgrading, `/alertmanager config list`
+> starts empty and you re-create receivers with `/alertmanager config add`. The old
 > config value is ignored (and the underlying Mattermost webhooks it referenced
 > are orphaned — delete them under System Console → Integrations → Incoming
 > Webhooks if you're not re-adding). This is intentional; the plugin is not
@@ -207,7 +226,7 @@ The stored JSON shape is:
   appended path lands under the prefix.
 - **A query string or fragment is rejected** — including a bare trailing `?`
   or `#`. Either terminates the base URL early and silently truncates the
-  appended API path onto a different endpoint, so `/alertmanager add` refuses
+  appended API path onto a different endpoint, so `/alertmanager config add` refuses
   them.
 - **Scheme must be `http://` or `https://`**, a host is required, and the host
   and any path are held to a strict character grammar (blocks shell/CSV
@@ -217,15 +236,15 @@ The stored JSON shape is:
 
 A value that bypasses these (a direct KV write, say) is **neutered on load**,
 not rejected: a hard failure would stop the whole plugin loading. The bad URL is
-blanked, disabling only that receiver's `alerts`/`status`/`silences` queries —
+blanked, disabling only that receiver's `alerts`, `alerts status`, and `silence list` queries —
 alert *delivery* is unaffected (it runs through the Mattermost webhook, not this
 URL).
 
 ## What the plugin generates
 
-When you run `/alertmanager add <team> <channel> <am-url> [set] [on]`:
+When you run `/alertmanager config add <am-url> [set] [on]`:
 
-1. Resolves the destination channel (auto-creates if missing).
+1. Takes the channel you ran it in as the destination. It must be a team channel, not a DM or group message.
 2. Mints an ephemeral PAT for the calling sysadmin, uses it to
    create one Mattermost incoming webhook per receiver in the chosen
    set, revokes the PAT.
@@ -238,8 +257,8 @@ When you run `/alertmanager add <team> <channel> <am-url> [set] [on]`:
 
 The plugin handles `slack_configs` blocks and the matching `routes:`
 entries. Hook IDs are baked into the rendered `api_url` values; the
-plugin remembers them so future `/alertmanager rotate` or
-`/alertmanager remove` can find the right webhook to act on.
+plugin remembers them so future `/alertmanager config rotate` or
+`/alertmanager config remove` can find the right webhook to act on.
 
 ## What your `alertmanager.yml` needs around the plugin's output
 
@@ -254,7 +273,7 @@ global:
 # REQUIRED — top-level routing
 route:
   receiver: default-fallback   # catch-all for unrouted alerts (must exist below)
-  group_by: ['alertname', 'cluster']
+  group_by: ['alertname', 'namespace', 'pod']
   group_wait: 30s              # delay before first notification
   group_interval: 5m           # delay between notifications for same group
   repeat_interval: 4h          # repeat if still firing (4h+ for prod)
@@ -288,7 +307,7 @@ inhibit_rules:
 
 | Field | Why |
 |---|---|
-| `route.group_by` | Without grouping you get one notification per alert per evaluation cycle = spam |
+| `route.group_by` | `['alertname', 'namespace', 'pod']`. Without grouping, every evaluation cycle posts separately. `namespace` and `pod` keep two pods of the same alertname as two posts. Alerts that lack those labels stay one post. The plugin writes this on each generated route. |
 | `route.group_wait` | Lets AM coalesce a burst of related alerts into one notification |
 | `route.group_interval` | Throttles updates to a still-firing group |
 | `route.repeat_interval` | Controls re-notification cadence (4h+ for production; shorter for dev/testing) |
@@ -303,7 +322,7 @@ inhibit_rules:
 
 ## Custom (non-runbook) receivers
 
-The `/alertmanager add` flow binds receivers to shipped **runbooks**: the
+The `/alertmanager config add` flow binds receivers to shipped **runbooks**: the
 plugin emits a `runbook=<slug>` route and your Prometheus rule sets that
 `runbook` label so the alert lands in the right channel with the runbook's
 diagnostics inline.
@@ -312,7 +331,7 @@ Sometimes you have an alert with **no runbook** — a bespoke rule you wrote
 that doesn't map to the shipped catalog. For that, use `add-custom`:
 
 ```
-/alertmanager add-custom <team> <channel> <am-url> <name>
+/alertmanager config add-custom <am-url> <name> [standard|crd] [on]
 ```
 
 This creates a single receiver named `<name>--<team>-<channel>` with its own
@@ -327,11 +346,11 @@ differ from `add`:
 
 ### Wiring the route (the one manual step)
 
-Run `/alertmanager export`. The DM'd config includes the receiver block plus a
+Run `/alertmanager format export`. The DM'd config includes the receiver block plus a
 commented route stub:
 
 ```yaml
-# Custom (non-runbook) receivers — created via /alertmanager add-custom.
+# Custom (non-runbook) receivers — created via /alertmanager config add-custom.
 # The plugin cannot know which labels your custom alerts carry, so no
 # matcher is generated. Uncomment each block and fill in the matcher(s)
 # your Prometheus rules actually emit, then paste under `route.routes:`.
@@ -349,12 +368,12 @@ route composes cleanly with the others.
 > the *receiver* is loaded in Alertmanager (the inventory "OK" badge) but it
 > **cannot** confirm any route actually targets it. If you never add the matcher,
 > the receiver exists and looks healthy yet receives zero alerts. After wiring,
-> use `/alertmanager validate --simulate <labels>` to confirm an alert with your
+> use `/alertmanager config validate simulate <labels>` to confirm an alert with your
 > labels dispatches to the custom receiver.
 
-### Prometheus Operator (`--format=crd`)
+### Prometheus Operator (`crd`)
 
-`/alertmanager export --format=crd` emits the custom receiver into the
+`/alertmanager format export crd` emits the custom receiver into the
 `AlertmanagerConfig` (so its Secret + receiver exist), but — like the file
 format — generates **no** route for it. The plugin's generated CR gates entry on
 the `runbook` label a custom alert doesn't carry, so a custom receiver can't be
@@ -403,22 +422,23 @@ expect at least `namespace` and `pod` (for compute, application,
 storage runbooks) plus the runbook-specific label like `instance` /
 `job` / `service`. Security runbooks differ — several use apiserver /
 Falco labels (e.g. `k8s_ns_name`, `job`) instead. See the
-corresponding `runbooks/*.md` file, or run `/alertmanager docs
-requirements` for the full per-alert metric / label / tooling matrix.
+corresponding `runbooks/*.md` file, or the
+[alert requirements](ALERT_REQUIREMENTS.md) page for the full per-alert
+metric / label / tooling matrix.
 
 If a label is missing on an incoming alert, the template falls back
 to leaving the placeholder text in place — operators see
 `<namespace>` rather than a substituted value. Validate with:
 
 ```
-/alertmanager validate --simulate runbook=<slug> namespace=<ns> pod=<pod>
+/alertmanager config validate simulate runbook=<slug> namespace=<ns> pod=<pod>
 ```
 
 That walks AM's route tree against your label set without firing a
 real alert.
 
 `samples/prometheus-rules.yaml` ships a complete rule set covering
-all 30 runbooks with the correct label patterns. Use it as a
+all 36 runbooks with the correct label patterns. Use it as a
 starting point.
 
 ## Receiver naming convention
@@ -446,22 +466,22 @@ duplicate names on save, not by the separator.
 ## Fan-out: one alert, multiple channels
 
 To deliver the same runbook to multiple channels (e.g., CPU alerts
-to both team channel AND oncall pager), run `/alertmanager add`
-once per destination:
+to both team channel AND oncall pager), run `/alertmanager config add`
+once in each destination channel:
 
 ```
-/alertmanager add testing alert-slo-channel http://alertmanager:9093 compute
-/alertmanager add testing oncall-critical http://alertmanager:9093 compute
+/alertmanager config add http://alertmanager:9093 compute
+/alertmanager config add http://alertmanager:9093 compute
 ```
 
-The plugin creates 6 receivers in each channel, all
+The plugin creates 9 receivers in each channel, all
 channel-suffixed:
 
 - `high-cpu-usage--alert-slo-channel`
 - `high-cpu-usage--oncall-critical`
 - (and the rest of the compute set, in both)
 
-`/alertmanager export` (or the next `/alertmanager add` DM)
+`/alertmanager format export` (or the next `/alertmanager config add` DM)
 produces a routes block like:
 
 ```yaml
@@ -481,36 +501,36 @@ unconditionally — each runbook's matcher is unique, so `continue`
 only changes behavior in the fan-out case, where it fixes the
 otherwise-dead second route.
 
-## Channel auto-creation
+## Destination channel
 
-The destination channel doesn't have to exist before you run
-`/alertmanager add`. If missing, the plugin creates it as an open
-channel under the named team. The bot user (`@alertmanagerbot`) is
-the channel creator. The plugin doesn't add anyone else to the
-channel — that's a Mattermost admin concern after creation.
+`/alertmanager config add` and `config add-custom` bind receivers to the channel
+you run them in. Create the channel first, public or private, then run the
+command there. The plugin never creates channels, and it rejects direct and
+group messages. You need to be a team admin of that channel's team, or a
+system admin.
 
 ## Multiple Alertmanagers
 
 The plugin supports multiple AM backends as independent
-registrations:
+registrations. Run each command in its own channel:
 
 ```
-/alertmanager add testing alerts-east http://alertmanager.east.example.com:9093 compute
-/alertmanager add testing alerts-west http://alertmanager.west.example.com:9093 compute
+/alertmanager config add http://alertmanager.east.example.com:9093 compute
+/alertmanager config add http://alertmanager.west.example.com:9093 compute
 ```
 
-Each gets its own channel binding. `/alertmanager status` (when
+Each gets its own channel binding. `/alertmanager alerts status` (when
 invoked in either channel) queries the AM URL bound to that
 channel's receivers. Independent error handling — failure on one
 doesn't affect the other.
 
 For one Mattermost serving multiple Alertmanagers reachable via
 different network paths (e.g., one MM serving K8s clusters in
-different VPCs), use the per-receiver host override:
+different VPCs), use the per-receiver host override. Run each command in its own channel:
 
 ```
-/alertmanager add testing alerts-east http://am.east:9093 compute --webhook-host=http://mattermost.east.svc:8065
-/alertmanager add testing alerts-west http://am.west:9093 compute --webhook-host=http://mattermost.west.svc:8065
+/alertmanager config add http://am.east:9093 compute webhook-host=http://mattermost.east.svc:8065
+/alertmanager config add http://am.west:9093 compute webhook-host=http://mattermost.west.svc:8065
 ```
 
 The override takes precedence over the global `WebhookHost` setting
@@ -537,18 +557,18 @@ Three commands cover the common verification paths:
 
 ```
 # Cheap, read-only — checks AM reachable + receivers loaded in AM
-/alertmanager validate
+/alertmanager config validate
 
 # Route simulation — walks AM's loaded route tree against a label set,
 # reports which receivers would catch the alert. No alert fired.
-/alertmanager validate --simulate runbook=high-cpu-usage severity=critical
+/alertmanager config validate simulate runbook=high-cpu-usage severity=critical
 
 # Diff your channel's assembled YAML against what AM has loaded,
 # with schema validation via prometheus/alertmanager/config.Load
-/alertmanager export --diff-against-loaded
+/alertmanager format diff
 ```
 
-The `--diff-against-loaded` mode catches undefined-receiver
+The `format diff` command catches undefined-receiver
 references, malformed matchers, and route tree errors before the
 operator pastes new YAML and reloads AM.
 

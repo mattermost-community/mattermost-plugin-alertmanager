@@ -80,7 +80,7 @@ func (p *Plugin) handleMetricsToken(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf(
 			"**Metrics endpoint token:** %s\n\n**Endpoint:** `%s`\n\n"+
 				"To mint a new token (or rotate the current one) and get a ready-to-paste "+
-				"Prometheus config, run:\n\n```\n/alertmanager metrics-token generate\n```\n"+
+				"Prometheus config, run:\n\n```\n/alertmanager admin metrics-token generate\n```\n"+
 				":warning: Generating **rotates** the token — any Prometheus already scraping this endpoint must be updated with the new value.",
 			state, url,
 		), nil

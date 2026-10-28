@@ -41,6 +41,7 @@ type rawConfiguration struct {
 	AlertManagerCABundle     string
 	AlertManagerAllowedCIDRs string
 	MetricsToken             string
+	ImageRegistryAllowlist   string
 	WebhookRotationDays      int
 }
 
@@ -58,6 +59,7 @@ func (r rawConfiguration) toConfigMap() map[string]any {
 		"alertmanagercabundle":     r.AlertManagerCABundle,
 		"alertmanagerallowedcidrs": r.AlertManagerAllowedCIDRs,
 		"metricstoken":             r.MetricsToken,
+		"imageregistryallowlist":   r.ImageRegistryAllowlist,
 		"webhookrotationdays":      r.WebhookRotationDays,
 	}
 }
@@ -74,7 +76,7 @@ const kvKeyAlertConfigs = "alertconfigs:v1"
 // each entry re-verifies its team on the next config change — so an unbounded
 // list turns each subsequent write into an O(N) tax (O(N^2) to build up), bloats
 // the cluster-broadcast KV value, and slows the reconciler. Set far above any
-// real deployment (30 runbooks across a generous channel count) so genuine use
+// real deployment (36 runbooks across a generous channel count) so genuine use
 // never hits it, but a scripted flood is stopped. Enforced in the add path.
 const maxReceivers = 2000
 
@@ -115,7 +117,7 @@ type configuration struct {
 // uses (the random hook-id in the URL). The plugin owns no shared secrets.
 //
 // Webhook sharing (v1.0.3+): multiple alertConfig entries may share a single
-// WebhookID when they were created in the same /alertmanager add invocation.
+// WebhookID when they were created in the same /alertmanager config add invocation.
 // Group adds (e.g., `add ... compute`) produce N receivers all pointing at
 // one Mattermost webhook. Individual slug adds (e.g., `add ... high-cpu-usage`)
 // produce a single receiver with its own webhook. The GroupName field
@@ -135,13 +137,13 @@ type alertConfig struct {
 	//   - Category set keyword: "all", "compute", "application",
 	//     "database", "networking", "observability", "storage"
 	//   - Runbook slug: "high-cpu-usage", etc. — set when the receiver
-	//     was created via an individual /alertmanager add <slug> call
+	//     was created via an individual /alertmanager config add <slug> call
 	//   - Empty: legacy receiver from v1.0.0-v1.0.2 before group webhooks
 	//     existed. Treated as individual for backwards compatibility.
 	GroupName string `json:"groupName,omitempty"`
 
 	// Custom marks a generic (non-runbook) receiver created via
-	// /alertmanager add-custom. Its base slug is a user-chosen name rather than
+	// /alertmanager config add-custom. Its base slug is a user-chosen name rather than
 	// a runbook slug, so the plugin does NOT auto-generate a `runbook=<slug>`
 	// route for it — the user wires the matcher manually (see assembleRoutesYAML,
 	// which emits a commented stub for these). Runbook diagnostics/links are
@@ -150,7 +152,7 @@ type alertConfig struct {
 
 	// WebhookHostOverride lets a sysadmin pin a per-receiver host that
 	// takes precedence over the global WebhookHost setting at YAML
-	// render time. Set via /alertmanager add --webhook-host=<url>.
+	// render time. Set via /alertmanager config add webhook-host=<url>.
 	// Use case: one Mattermost serving multiple K8s clusters where
 	// each cluster's Alertmanager reaches MM via a different network
 	// path. Empty = inherit global WebhookHost or fall back to SiteURL.
@@ -160,7 +162,7 @@ type alertConfig struct {
 	// REST API (used by /alertmanager alerts, silences, status). Not a
 	// Mattermost user — these are service-account credentials for the
 	// Alertmanager side. Leave empty unless your Alertmanager is behind an
-	// auth proxy. NOT exposed via the /alertmanager add slash command. Since
+	// auth proxy. NOT exposed via the /alertmanager config add slash command. Since
 	// CL-19 moved the receiver list to the KV store, the old config-JSON edit
 	// path is gone; setting these now means writing the KV entry directly.
 	// A dedicated slash flag is a possible future addition.
@@ -168,7 +170,7 @@ type alertConfig struct {
 	Password string `json:"password,omitempty"`
 
 	// LastRotatedAt is when the WebhookID was last (re)created via
-	// /alertmanager add or /alertmanager rotate. Used by the rotation
+	// /alertmanager config add or /alertmanager config rotate. Used by the rotation
 	// reminder scheduler — when the configured WebhookRotationDays
 	// elapses since this timestamp, the plugin DMs sysadmins to
 	// suggest rotation. Zero value (== time.Time{}) is treated as
@@ -186,7 +188,7 @@ type alertConfig struct {
 
 	// RotationRemindersEnabled is the per-receiver opt-in for the
 	// rotation reminder system. Set true at creation time via the
-	// optional `on` arg to /alertmanager add. When false (default),
+	// optional `on` arg to /alertmanager config add. When false (default),
 	// the reconciler skips this receiver in its reminder check even
 	// if the global WebhookRotationDays threshold passes. Two-tier
 	// design: sysadmin sets the threshold globally; channel-team-admin
@@ -222,7 +224,7 @@ func (ac *alertConfig) IsValid() error {
 	}
 	// CL-03/CL-21/CL-33: validate the URLs here so EVERY persist path — slash
 	// command and a blob written straight to the KV store — is covered, not just
-	// the /alertmanager add entry point.
+	// the /alertmanager config add entry point.
 	if err := validateAlertManagerURL(ac.AlertManagerURL); err != nil {
 		return err
 	}
@@ -282,7 +284,7 @@ var alertManagerHostRegex = regexp.MustCompile(`^[A-Za-z0-9.:-]+$`)
 var alertManagerPathRegex = regexp.MustCompile(`^[A-Za-z0-9._~/%-]+$`)
 
 // validateAlertManagerURL rejects a malformed or dangerous AlertManagerURL. The
-// value is attacker-influenceable (a team_admin sets it via /alertmanager add)
+// value is attacker-influenceable (a team_admin sets it via /alertmanager config add)
 // and later renders into a copy-paste shell command a sysadmin runs and into a
 // CSV a sysadmin opens — a cross-privilege, cross-context sink. Empty is valid
 // (the URL is only needed for the alerts/silences/status commands).
@@ -352,7 +354,7 @@ func validateAlertManagerURL(raw string) error {
 // Why neuter, not reject, on load: parseAlertConfigs's error propagates out of
 // OnConfigurationChange, and an error there stops the plugin loading AT ALL. So
 // a single bad stored value (a direct KV write, or a bug that slipped one past
-// the /alertmanager add validation) would brick the whole plugin — turning F-002
+// the /alertmanager config add validation) would brick the whole plugin — turning F-002
 // into a persistent denial of service. Sanitizing keeps the plugin up; the one
 // affected receiver's alerts/status/silences queries stop working, which is a far
 // smaller blast radius than a dead plugin. (F-002 hardening, from PR #58's review.)
@@ -387,7 +389,7 @@ func validateWebhookHost(raw string) error {
 		return nil
 	}
 	// WebhookHost is a SECOND team-admin-controllable URL (per-receiver via
-	// --webhook-host, or the global setting): it drives a server-side webhook-test
+	// webhook-host, or the global setting): it drives a server-side webhook-test
 	// POST AND is concatenated into generated `api_url:` YAML/CRD/export. So it must
 	// meet the SAME bar as validateAlertManagerURL — reject embedded credentials,
 	// literal-IP SSRF targets, YAML-breaking hostnames, and trailing '?'/'#' — or it
@@ -412,7 +414,7 @@ func validateWebhookHost(raw string) error {
 		return errors.New("WebhookHost has no host portion")
 	}
 	// SSRF check for a literal-IP host, allowlist-aware via the SAME decision the
-	// dial guard uses — so --webhook-host=http://169.254.169.254 (cloud metadata)
+	// dial guard uses — so webhook-host=http://169.254.169.254 (cloud metadata)
 	// or a non-allowlisted private IP is rejected at save, not just at dial.
 	if ip := net.ParseIP(host); ip != nil {
 		if err := alertmanager.CheckDestinationIP(ip); err != nil {
@@ -492,7 +494,7 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 		// bad stored URL must not fail the load, or F-002 becomes a persistent DoS.
 		// Sanitize strips the exploitable parts; anything still failing the strict
 		// validateAlertManagerURL check afterwards (no scheme / no host) is inert,
-		// not hostile, so blank it. The /alertmanager add + add-custom entry points
+		// not hostile, so blank it. The /alertmanager config add + add-custom entry points
 		// still HARD-reject bad input up front, so this only fires on values that
 		// bypassed them (direct KV write, future bug). (F-002, from PR #58's review.)
 		amURL := strings.TrimRight(sanitizeAlertManagerURL(entries[i].AlertManagerURL), "/")
@@ -544,7 +546,7 @@ func parseAlertConfigs(blob string) ([]alertConfig, error) {
 // Intentional clean break, NOT a bug: the receiver list moved from the plugin
 // config map to the KV store with NO migration reader. An install upgrading from
 // a config-map build therefore comes up with an empty list and re-adds its
-// receivers via /alertmanager add. This is a deliberate dev/redeploy boundary
+// receivers via /alertmanager config add. This is a deliberate dev/redeploy boundary
 // (see the BREAKING CHANGE note and docs/CONFIGURATION.md); a migration shim was
 // explicitly out of scope. Do not "fix" this by reading the old config value.
 // clusterEventReloadConfigs is the plugin-cluster event ID that tells peer nodes
@@ -645,7 +647,7 @@ func (p *Plugin) OnConfigurationChange() error {
 	// Best-effort team verification, OUTSIDE the lock (these are network calls we
 	// don't want to hold configWriteMu across) and log-only: a since-deleted team
 	// must not brick the load (F-005) — the affected receiver is just orphaned and
-	// handled at command time. Save-time (/alertmanager add) still rejects unknown
+	// handled at command time. Save-time (/alertmanager config add) still rejects unknown
 	// teams up front.
 	if p.API != nil {
 		p.verifyTeamsExist(entries)

@@ -111,6 +111,25 @@ func IsBlockedIP(ip net.IP) bool {
 	return n.IsLoopback() || n.IsPrivate() || cgnatNet.Contains(n)
 }
 
+// suggestedAllowlistCIDR returns a ready-to-paste CIDR the operator should add
+// to AlertManagerAllowedCIDRs to permit ip.
+//
+// RFC1918 IPv4 gets a /16 (10.43.5.164 → 10.43.0.0/16). In-cluster Alertmanager
+// addresses are almost always a service ClusterIP, and that IP changes on
+// recreate; a /16 covers a typical service CIDR without asking the operator to
+// re-paste after every redeploy. Every other address gets the exact host
+// (/32 or /128): a public /16 or 127.0.0.0/16 would open far more than the
+// one destination that was blocked. Widening those is a deliberate edit.
+func suggestedAllowlistCIDR(ip net.IP) string {
+	if v4 := ip.To4(); v4 != nil {
+		if v4.IsPrivate() {
+			return fmt.Sprintf("%d.%d.0.0/16", v4[0], v4[1])
+		}
+		return v4.String() + "/32"
+	}
+	return ip.String() + "/128"
+}
+
 // CheckDestinationIP reports whether ip may be dialed for an Alertmanager call,
 // returning a descriptive error when it may not. Single source of truth for both
 // the dial-time guard and the save-time URL validation, so the two never disagree
@@ -132,7 +151,7 @@ func CheckDestinationIP(ip net.IP) error {
 	}
 	if st := allowlist.Load(); st != nil {
 		if st.denyAll {
-			return fmt.Errorf("refusing to connect to %s: AlertManagerAllowedCIDRs is set but has no usable CIDRs; all Alertmanager egress is denied until the setting is fixed", ip)
+			return fmt.Errorf("connection to %s blocked — AlertManagerAllowedCIDRs is configured but has no usable CIDRs; add %s to the setting in System Console to allow this destination", ip, suggestedAllowlistCIDR(ip))
 		}
 		if len(st.nets) > 0 {
 			for _, n := range st.nets {
@@ -140,11 +159,11 @@ func CheckDestinationIP(ip net.IP) error {
 					return nil
 				}
 			}
-			return fmt.Errorf("refusing to connect to %s: not in the configured Alertmanager allowlist (AlertManagerAllowedCIDRs)", ip)
+			return fmt.Errorf("connection to %s blocked by SSRF allowlist — add %s to AlertManagerAllowedCIDRs in System Console", ip, suggestedAllowlistCIDR(ip))
 		}
 	}
 	if IsBlockedIP(ip) {
-		return fmt.Errorf("refusing to connect to %s: loopback/private/internal addresses are blocked by default (SSRF guard); add its CIDR to AlertManagerAllowedCIDRs to permit an in-cluster Alertmanager", ip)
+		return fmt.Errorf("connection to %s blocked (loopback/private/internal) — add %s to AlertManagerAllowedCIDRs in System Console to permit an in-cluster Alertmanager", ip, suggestedAllowlistCIDR(ip))
 	}
 	return nil
 }

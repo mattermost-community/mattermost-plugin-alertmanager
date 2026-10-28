@@ -88,9 +88,9 @@ Useful surrounding targets: `make disable`, `make enable`, `make reset`, `make c
 Once the plugin is loaded:
 
 1. **Plugin alive:** `/alertmanager about` returns version info.
-2. **Add the canonical set:** `/alertmanager add testing alerts-smoke http://localhost:9093`. Plugin creates 30 receivers, DMs you the assembled YAML files.
+2. **Add the canonical set:** from `~alerts-smoke`, run `/alertmanager config add http://localhost:9093`. Plugin creates 36 receivers, DMs you the assembled YAML files.
 3. **Verify webhooks created:** Open System Console → Integrations → Incoming Webhooks → see entries named `<category>--testing-alerts-smoke` (the webhook name mirrors the receiver format `<base>--<team>-<channel>`).
-4. **List receivers in the channel:** `/alertmanager list` from `~alerts-smoke`. Should show all 30 in a table.
+4. **List receivers in the channel:** `/alertmanager config list` from `~alerts-smoke`. Should show all 36 in a table.
 5. **Detail card for one:** `/alertmanager config high-cpu-usage` from `~alerts-smoke`. Should show metadata + slack_configs YAML.
 6. **Test the post path:**
    ```bash
@@ -100,8 +100,8 @@ Once the plugin is loaded:
      -d '{"text": "Smoke test from curl", "channel": "alerts-smoke"}'
    ```
    Post lands in `~alerts-smoke` as `@alertmanagerbot`.
-7. **Re-export:** `/alertmanager export` should produce the same receivers + routes YAML as the original add.
-8. **Bulk cleanup:** `/alertmanager remove all --force` deletes all 30 receivers and their webhooks.
+7. **Re-export:** `/alertmanager format export` should produce the same receivers + routes YAML as the original add.
+8. **Bulk cleanup:** `/alertmanager config remove all force` deletes all 36 receivers and their webhooks.
 
 ## Verifying persisted state
 
@@ -114,10 +114,10 @@ mmctl config get PluginSettings.Plugins.com\.mattermost\.alertmanager
 # Or restart the plugin and see if state survives — the definitive test
 mmctl plugin disable com.mattermost.alertmanager
 mmctl plugin enable com.mattermost.alertmanager
-# wait ~5s, then run /alertmanager list in any channel
+# wait ~5s, then run /alertmanager config list in any channel
 ```
 
-If `/alertmanager list` still shows your entries after the disable/enable cycle, save persisted.
+If `/alertmanager config list` still shows your entries after the disable/enable cycle, save persisted.
 
 ## Troubleshooting
 
@@ -129,7 +129,7 @@ If `/alertmanager list` still shows your entries after the disable/enable cycle,
 
 ### `Permission denied` on `CreateUserAccessToken`
 
-The plugin mints an ephemeral PAT for the calling sysadmin to authenticate Client4 calls (the only API path Mattermost exposes for webhook CRUD). If your install has Personal Access Tokens globally disabled at System Console → Integrations → Integration Management → Enable Personal Access Tokens, the plugin can't mint the PAT and `/alertmanager add` will fail.
+The plugin mints an ephemeral PAT for the calling sysadmin to authenticate Client4 calls (the only API path Mattermost exposes for webhook CRUD). If your install has Personal Access Tokens globally disabled at System Console → Integrations → Integration Management → Enable Personal Access Tokens, the plugin can't mint the PAT and `/alertmanager config add` will fail.
 
 **Fix:** enable PATs in System Console. They're enabled by default in fresh installs.
 
@@ -144,19 +144,19 @@ The plugin mints an ephemeral PAT for the calling sysadmin to authenticate Clien
 
 The webhook already has the bot username and icon URL stored on its database row; these toggles control whether Mattermost honors them at post time. If they're stuck at false despite the plugin's attempt to flip them, check MM logs for `"could not enable integration override settings"` to see the underlying error.
 
-### `context deadline exceeded` on `/alertmanager status` / `alerts` / `silences`
+### `context deadline exceeded` on `/alertmanager alerts`, `alerts status`, or `silence list`
 
 **Cause:** the receiver's `alertManagerURL` is `http://localhost:9093` (or `127.0.0.1`). Inside the Mattermost container, `localhost` resolves to the Mattermost container itself, not the host or sibling Docker containers. So the plugin's outbound HTTP call to Alertmanager goes nowhere.
 
 The same issue applies in reverse: the `slack_configs.api_url` value in your `alertmanager.yml` must use `host.docker.internal:8065` (Docker) or the cluster-internal MM service URL (K8s) to reach Mattermost from inside the Alertmanager container.
 
-**Fix for the api_url side:** set the `WebhookHost` plugin setting (System Console → Plugins → Alertmanager) to the cross-container or cluster-internal MM URL, then re-run `/alertmanager export` to get fresh YAML with corrected URLs. Paste into alertmanager.yml, reload AM.
+**Fix for the api_url side:** set the `WebhookHost` plugin setting (System Console → Plugins → Alertmanager) to the cross-container or cluster-internal MM URL, then re-run `/alertmanager format export` to get fresh YAML with corrected URLs. Paste into alertmanager.yml, reload AM.
 
 **Fix for the alertManagerURL side:** re-add the receiver with the correct AM URL:
 
 ```
-/alertmanager remove all --force
-/alertmanager add <team> <channel> http://host.docker.internal:9093 [set]
+/alertmanager config remove all force
+/alertmanager config add http://host.docker.internal:9093 [set]
 ```
 
 If you're running Mattermost directly on the host (not in Docker/K8s), `localhost` is fine for both sides.
@@ -192,7 +192,7 @@ docker run --rm -v mattermost_mm-plugins:/p busybox ls -la /p/com.mattermost.ale
 
 ## Embedded docs
 
-The contents of this `docs/` directory are embedded into the plugin binary via `go:embed` (see `docs_embed.go` at the repo root). `/alertmanager docs <topic>` serves the embedded content rather than reading from disk, so the docs in the binary always match the binary's behavior.
+The contents of this `docs/` directory are embedded into the plugin binary via `go:embed` (see `docs_embed.go` at the repo root). `make render-docs` turns them into the HTML site under `public/help/`, which `/alertmanager docs` links to. The embedded copy stays in the binary so the docs match the binary's behavior.
 
 When editing docs:
 

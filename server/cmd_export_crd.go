@@ -10,16 +10,16 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-// CRD export path (`/alertmanager export --format=crd` and `add --format=crd`).
+// CRD export path (`/alertmanager format export crd` and `config add ... crd`).
 // Groups channel-scoped receivers by their shared webhook (the plugin's
 // one-webhook-per-group model), and emits, per group, a Secret + an
 // AlertmanagerConfig (v1alpha1). See docs/KUBERNETES.md.
 
 // defaultCRDNamespace is where the generated Secret + AlertmanagerConfig land
-// unless overridden with --namespace=. kube-prometheus-stack's default.
+// unless overridden with namespace=. kube-prometheus-stack's default.
 const defaultCRDNamespace = "monitoring"
 
-// Output formats accepted by the `--format=` flag on add/export.
+// Output formats accepted by the format words on add and export.
 const (
 	formatStandard = "standard" // flat alertmanager.yml
 	formatCRD      = "crd"      // Prometheus Operator AlertmanagerConfig
@@ -29,7 +29,7 @@ const (
 // label — lowercase alphanumerics and '-', starting and ending alphanumeric.
 var crdNamespaceRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
-// validateCRDNamespace rejects a user-supplied --namespace that isn't a valid
+// validateCRDNamespace rejects a user-supplied namespace= that isn't a valid
 // Kubernetes namespace. The value comes straight from the slash-command args
 // and flows into generated AlertmanagerConfig/Secret manifests
 // (metadata.namespace), so an unvalidated value could yield broken or injected
@@ -149,7 +149,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 	for i, url := range order {
 		g := groups[url]
 		// Suffix disambiguates when one channel has receivers across multiple
-		// shared webhooks (multiple /alertmanager add groups).
+		// shared webhooks (multiple /alertmanager config add groups).
 		suffix := ""
 		if len(order) > 1 {
 			suffix = fmt.Sprintf("-%d", i+1)
@@ -186,12 +186,15 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 	return out.String(), len(order)
 }
 
-// handleExportCRD is the `export --format=crd` path: assemble the
-// AlertmanagerConfig + Secret manifest for the channel's receivers and DM it.
+// handleExportCRD is the `format export crd` path: assemble the
+// AlertmanagerConfig + Secret manifest for the channel's receivers and DM it,
+// with the PrometheusRule for the runbooks those receivers cover attached to
+// the same message.
 func (p *Plugin) handleExportCRD(args *model.CommandArgs, scoped []alertConfig, namespace string) (string, error) {
 	manifest, crCount := p.assembleCRDManifest(scoped, namespace)
+	rules, rulesReason := p.rulesFileForChannel(namespace, scoped, formatCRD)
 
-	if err := p.dmCRDBundle(args.UserId, manifest, crCount, namespace); err != nil {
+	if err := p.dmCRDBundle(args.UserId, manifest, crCount, namespace, rules); err != nil {
 		// DM failed — inline the manifest so the operator config isn't lost.
 		return fmt.Sprintf(
 			":warning: Couldn't DM the manifest (%v). Inline copy below — review and `kubectl apply -n %s`:\n\n```yaml\n%s```\n",
@@ -202,14 +205,17 @@ func (p *Plugin) handleExportCRD(args *model.CommandArgs, scoped []alertConfig, 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(":page_facing_up: Exported %d receiver(s) as **%d AlertmanagerConfig(s)** (v1alpha1) to your DM with `@%s`.\n\n", len(scoped), crCount, webhookUsername))
 	b.WriteString(fmt.Sprintf("Open the DM, review `alertmanager-config.yaml`, then `kubectl apply -n %s -f alertmanager-config.yaml`. The Secret carries the webhook URL and the file is auto-deleted after the configured TTL.\n\n", namespace))
-	b.WriteString(":book: Details + operator gotchas: `/alertmanager docs kubernetes`.\n")
+	b.WriteString(fmt.Sprintf(":book: Details + operator gotchas: [Kubernetes guide](%s).\n", p.helpPageURL("KUBERNETES.md")))
+
+	b.WriteString(rulesReply(rules, rulesReason, true))
 	return b.String(), nil
 }
 
 // dmCRDBundle DMs the assembled CRD manifest as a single file, with kubectl
 // apply guidance. Mirrors dmYAMLBundle's delivery + auto-delete tracking (the
-// manifest embeds webhook URLs in the Secret, so it's TTL-cleaned too).
-func (p *Plugin) dmCRDBundle(userID, manifest string, crCount int, namespace string) error {
+// manifest embeds webhook URLs in the Secret, so it's TTL-cleaned too). A
+// non-nil rules file rides in the same post.
+func (p *Plugin) dmCRDBundle(userID, manifest string, crCount int, namespace string, rules *rulesFile) error {
 	dm, appErr := p.API.GetDirectChannel(p.BotUserID, userID)
 	if appErr != nil {
 		return fmt.Errorf("open DM with user: %w", appErr)
@@ -224,13 +230,21 @@ func (p *Plugin) dmCRDBundle(userID, manifest string, crCount int, namespace str
 	msg.WriteString(fmt.Sprintf("Assembled **%d AlertmanagerConfig(s)** + their Secret(s) for this channel (Prometheus Operator, v1alpha1).\n\n", crCount))
 	msg.WriteString(fmt.Sprintf("Review `alertmanager-config.yaml`, then apply into the `%s` namespace:\n\n", namespace))
 	msg.WriteString(fmt.Sprintf("```\nkubectl apply -n %s -f alertmanager-config.yaml\n```\n", namespace))
-	msg.WriteString("\nThe Secret carries the webhook URL — this file is auto-deleted after the configured TTL. See `/alertmanager docs kubernetes`.")
+	msg.WriteString("\nThe Secret carries the webhook URL — this message and its files are auto-deleted after the configured TTL. See the [Kubernetes guide](" + p.helpPageURL("KUBERNETES.md") + ").")
+
+	fileIds := []string{info.Id}
+	if rules != nil {
+		if id := p.attachRules(dm.Id, rules); id != "" {
+			fileIds = append(fileIds, id)
+			msg.WriteString(rules.section())
+		}
+	}
 
 	post := &model.Post{
 		UserId:    p.BotUserID,
 		ChannelId: dm.Id,
 		Message:   msg.String(),
-		FileIds:   []string{info.Id},
+		FileIds:   fileIds,
 	}
 	created, appErr := p.API.CreatePost(post)
 	if appErr != nil {

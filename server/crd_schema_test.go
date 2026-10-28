@@ -13,7 +13,7 @@ import (
 //
 // Offline by design: the schema is vendored at build/crd-schemas/ (see that
 // dir's README) rather than fetched from the datreeio catalog at run time, so
-// this works in air-gapped CI. Only the AlertmanagerConfig is checked — the
+// this works with no network in CI. Only the AlertmanagerConfig is checked — the
 // companion Secret is core/v1 (would need the remote default schema store) and
 // is already covered by TestRenderWebhookSecretIsValidYAML.
 //
