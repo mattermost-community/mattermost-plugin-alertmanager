@@ -13,7 +13,7 @@ for at least 5 minutes. The alert fires on:
 ```promql
 histogram_quantile(0.95,
   sum by (le, handler) (
-    rate(mattermost_api_time_elapsed_seconds_bucket[5m])
+    rate(mattermost_api_time_bucket[5m])
   )
 ) > 1
 ```
@@ -54,7 +54,7 @@ kubectl logs -n <namespace> -l app=mattermost --since=15m \
 #   go out recently?
 histogram_quantile(0.99,
   sum by (le, handler) (
-    rate(mattermost_api_time_elapsed_seconds_bucket[10m])
+    rate(mattermost_api_time_bucket[10m])
   )
 )
 ```
@@ -85,7 +85,7 @@ kubectl logs -n <namespace> -l app=mattermost --since=15m \
 # p99 DB store time — a spike here explains API latency.
 histogram_quantile(0.99,
   sum by (le) (
-    rate(mattermost_db_store_time_elapsed_seconds_bucket[5m])
+    rate(mattermost_db_store_time_bucket[5m])
   )
 )
 ```
@@ -148,7 +148,7 @@ likely. Increase the limit or add replicas.
 
 ## Required Prometheus labels
 
-This runbook uses only the `handler` label from the `mattermost_api_time_elapsed_seconds_bucket` metric, which Mattermost exports automatically when metrics are enabled. No additional labels needed.
+This runbook uses only the `handler` label from the `mattermost_api_time_bucket` metric, which Mattermost exports automatically when metrics are enabled. No additional labels needed.
 
 Enable Mattermost metrics: `ServiceSettings.EnableMetrics: true` in `config.json`.
 

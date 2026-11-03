@@ -14,6 +14,10 @@ type exportOptions struct {
 	format    string // "" when not given
 	namespace string // CRD output only, validated
 	diff      bool
+
+	mattermost  bool   // `format rules mattermost`: the group's rules, not the full samples
+	mmNamespace string // mattermost only: namespace Mattermost runs in
+	mmName      string // mattermost only: Mattermost custom resource name
 }
 
 // handleExport renders fresh YAML for every receiver bound to the

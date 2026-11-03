@@ -175,6 +175,9 @@ func validateCustomReceiverName(rawName, team, channel string) (fullName string,
 	if strings.Contains(name, "--") {
 		return "", fmt.Errorf("name %q must not contain `--` (that's the reserved slug/team-channel separator)", name)
 	}
+	if name == packReceiverSlug || name == legacyPackReceiverSlug {
+		return "", fmt.Errorf("name %q is reserved for the Mattermost alerts — use `/alertmanager config add <am-url> %s mm-namespace=<ns>` instead", name, mattermostGroup)
+	}
 	if slices.Contains(runbookSlugs(), name) {
 		return "", fmt.Errorf("name %q is a runbook slug — use `/alertmanager config add <am-url> %s` for the runbook flow, or pick a different custom name", name, name)
 	}

@@ -35,6 +35,10 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts exportOptions) 
 		namespace = defaultCRDNamespace
 	}
 
+	if opts.mattermost {
+		return p.handleMattermostRules(args.UserId, namespace, opts)
+	}
+
 	if opts.format == formatCRD {
 		return p.handleRulesOperator(args.UserId, namespace)
 	}
@@ -54,6 +58,47 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts exportOptions) 
 			"⚠️ Every threshold is a demo-cluster placeholder — tune to your traffic and SLOs before production. The `runbook:` label on each rule is the join key that routes it to the matching runbook in chat.",
 		viewURL, rawURL, crdURL,
 	), nil
+}
+
+// handleMattermostRules DMs the `mattermost` group's rules as a plain rules file
+// or a PrometheusRule manifest. With mm-namespace it adds the operator's rules
+// for that install. It carries no secrets.
+func (p *Plugin) handleMattermostRules(userID, namespace string, opts exportOptions) (string, error) {
+	var target *mattermostTarget
+	if opts.mmNamespace != "" || opts.mmName != "" {
+		t, err := newMattermostTarget(opts.mmNamespace, opts.mmName)
+		if err != nil {
+			return fmt.Sprintf(":warning: %v", err), nil
+		}
+		target = &t
+	}
+	format := opts.format
+	if format == "" {
+		format = formatStandard
+	}
+	rules, err := p.mattermostRulesFile(namespace, target, format)
+	if err != nil {
+		return fmt.Sprintf(":warning: Could not build the rules: %v", err), nil
+	}
+
+	dm, appErr := p.API.GetDirectChannel(p.BotUserID, userID)
+	if appErr != nil {
+		return fmt.Sprintf(":warning: Could not open bot DM channel: %v", appErr.Error()), nil
+	}
+	fileID := p.attachRules(dm.Id, rules)
+	if fileID == "" {
+		return ":warning: Could not upload the rules file.", nil
+	}
+	post := &model.Post{
+		UserId:    p.BotUserID,
+		ChannelId: dm.Id,
+		Message:   "Mattermost alert rules." + rules.section(),
+		FileIds:   []string{fileID},
+	}
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		return fmt.Sprintf(":warning: Could not send DM: %v", appErr.Error()), nil
+	}
+	return fmt.Sprintf(":page_facing_up: **Sent `%s` (%d rules) to your DM with `@%s`.** Apply it:\n\n%s", rules.name, rules.count, webhookUsername, rules.apply), nil
 }
 
 // handleRulesOperator generates a PrometheusRule CRD manifest from the
@@ -252,15 +297,22 @@ type rulesFile struct {
 	scope  string // "the `compute` add", "this channel"
 	format string // formatStandard or formatCRD
 	apply  string // markdown telling the user how to apply it
+	tail   string // overrides the default overlap warning in section()
 }
 
 // section is the part of the combined DM message that describes the rules file.
 func (r *rulesFile) section() string {
-	return fmt.Sprintf(
-		"\n\n**Prometheus rules** for %s (%d rule(s), %s) are in `%s`.\n\n%s\n\n"+
-			"Apply it once. Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. "+
+	warning := fmt.Sprintf(
+		"Apply it once. Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. "+
 			"Adjust the `release` label to your Helm release name. Thresholds are demo placeholders.",
-		r.scope, r.count, rulesKind(r.format), r.name, r.apply, prometheusRuleObject,
+		prometheusRuleObject,
+	)
+	if r.tail != "" {
+		warning = "Apply it once. " + r.tail + " Adjust the `release` label to your Helm release name."
+	}
+	return fmt.Sprintf(
+		"\n\n**Prometheus rules** for %s (%d rule(s), %s) are in `%s`.\n\n%s\n\n%s",
+		r.scope, r.count, rulesKind(r.format), r.name, r.apply, warning,
 	)
 }
 
@@ -281,10 +333,17 @@ func (p *Plugin) rulesFileForAdd(namespace, groupName string, slugs []string, fo
 // have no sample rules, so a channel with only those returns nil and a reason.
 func (p *Plugin) rulesFileForChannel(namespace string, scoped []alertConfig, format string) (*rulesFile, string) {
 	var slugs []string
+	hasPack := false
 	for _, c := range scoped {
-		if !c.Custom {
+		switch {
+		case c.Pack != "":
+			hasPack = true
+		case !c.Custom:
 			slugs = append(slugs, receiverBaseSlug(c.Name))
 		}
+	}
+	if len(slugs) == 0 && hasPack {
+		return nil, ":information_source: No rules file: the plugin does not keep the Mattermost namespace or name for the Mattermost operator alerts receiver. Run `/alertmanager format rules " + mattermostGroup + " mm-namespace=<ns>` for its rules."
 	}
 	if len(slugs) == 0 {
 		return nil, ":information_source: No rules file: this channel has only custom receivers, and the sample rules are written for the shipped runbooks. Write the Prometheus rule for your own alert and give it the labels your route matches."
@@ -317,6 +376,13 @@ func dnsLabel(s string) string {
 // buildRulesFile filters the sample rules to slugs. For crd it wraps them in a
 // PrometheusRule named name; for standard it keeps the plain rules file.
 func (p *Plugin) buildRulesFile(namespace, name, scope string, slugs []string, format string) (*rulesFile, error) {
+	return p.buildRulesFileWithExtra(namespace, name, scope, slugs, format, "", 0)
+}
+
+// buildRulesFileWithExtra is buildRulesFile plus extra rule groups appended to
+// the filtered samples. extraGroups is a `groups:` body without the key itself
+// and holds extraCount rules.
+func (p *Plugin) buildRulesFileWithExtra(namespace, name, scope string, slugs []string, format, extraGroups string, extraCount int) (*rulesFile, error) {
 	rawBytes, err := root.SamplesFS.ReadFile("samples/prometheus-rules.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read sample rules: %w", err)
@@ -334,7 +400,8 @@ func (p *Plugin) buildRulesFile(namespace, name, scope string, slugs []string, f
 		return nil, err
 	}
 
-	rules := &rulesFile{name: name + ".yaml", count: n, scope: scope, format: format}
+	filtered += extraGroups
+	rules := &rulesFile{name: name + ".yaml", count: n + extraCount, scope: scope, format: format}
 	if format == formatCRD {
 		rules.data = []byte(buildPrometheusRuleManifest(filtered, namespace, name))
 		rules.apply = fmt.Sprintf("```\nkubectl apply -n %s -f %s\n```", namespace, rules.name)

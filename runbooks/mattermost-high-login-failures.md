@@ -11,11 +11,10 @@ The number of failed Mattermost login attempts has spiked above the
 threshold in a short window. The alert fires on:
 
 ```promql
-increase(mattermost_login_10sec_users_with_failed_logins[10m]) > 10
+sum(increase(mattermost_login_logins_fail_total[10m])) > 10
 ```
 
-This counts distinct users with failed logins in rolling 10-second
-windows, summed over 10 minutes. A handful of failed logins is normal
+This counts failed login attempts across all servers over 10 minutes. A handful of failed logins is normal
 (users forget passwords). A sharp spike is not.
 
 ## Quick diagnostics
@@ -49,7 +48,7 @@ kubectl logs -n ingress-nginx deploy/ingress-nginx-controller --since=15m \
 # READ: a flat baseline with a sudden spike = attack or user lockout
 #   event (e.g., a sync that changed all passwords). A gradual climb
 #   = misconfigured SSO or a slow credential sweep.
-rate(mattermost_login_10sec_users_with_failed_logins[5m])
+sum(rate(mattermost_login_logins_fail_total[5m]))
 ```
 
 ## Diagnostic steps
@@ -151,7 +150,7 @@ mmctl user convert --mfa-required <username>
 
 ## Required Prometheus labels
 
-The `mattermost_login_10sec_users_with_failed_logins` metric is a gauge
+The `mattermost_login_logins_fail_total` metric is a counter
 exported by Mattermost when metrics are enabled. No additional labels
 are needed for this alert.
 

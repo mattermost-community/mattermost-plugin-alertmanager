@@ -66,7 +66,7 @@ The diagnostic content above is parsed from the embedded runbook file
 [`runbooks/high-cpu-usage.md`](runbooks/high-cpu-usage.md) at YAML-render
 time. Placeholders like `<namespace>` and `<pod>` are substituted by
 Alertmanager at alert delivery time using the alert's actual labels.
-Each of the 36 shipped runbooks (compute / application / database /
+Each of the 35 shipped runbooks (compute / application / database /
 mattermost / storage / networking / observability / security) follows
 the same WHERE / WHAT / READ structure.
 
