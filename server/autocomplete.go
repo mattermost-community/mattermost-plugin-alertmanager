@@ -94,20 +94,15 @@ func mattermostPackItems(parsed, userInput string) []model.AutocompleteListItem 
 	if !slices.ContainsFunc(words, func(w string) bool { return strings.EqualFold(w, mattermostGroup) }) {
 		return items
 	}
-	if slices.ContainsFunc(words, func(w string) bool { return strings.HasPrefix(strings.ToLower(w), mmNamespaceFlag) }) {
+	if slices.ContainsFunc(words, isMMNamespaceWord) {
 		return items
 	}
 
 	item := mmNamespaceFlag
-	if typed := strings.Fields(userInput); len(typed) > 0 && !strings.HasSuffix(userInput, " ") &&
-		strings.HasPrefix(strings.ToLower(typed[len(typed)-1]), mmNamespaceFlag) {
+	if typed := strings.Fields(userInput); len(typed) > 0 && !strings.HasSuffix(userInput, " ") && isMMNamespaceWord(typed[len(typed)-1]) {
 		item = typed[len(typed)-1]
 	}
-	return append(items, model.AutocompleteListItem{
-		Item:     item,
-		Hint:     "<namespace>",
-		HelpText: "Optional. The namespace your Mattermost runs in, for example mm-namespace=mattermost. Adds the alerts the Mattermost Operator generates, with their Prometheus rules.",
-	})
+	return append(items, mmNamespaceItem(item))
 }
 
 func mattermostPackFetchURL() string {

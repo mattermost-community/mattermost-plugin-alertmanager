@@ -63,13 +63,8 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	config.AddCommand(model.NewAutocompleteData("list", "", "List receivers bound to this channel. Type a receiver name after config for its detail card."))
 
-	formatItems := []model.AutocompleteListItem{
-		{Item: formatStandard, HelpText: "Plain alertmanager.yml receivers and routes. Paste into a file-based Alertmanager (config file, Docker, VM)."},
-		{Item: formatCRD, HelpText: "Prometheus Operator objects (an AlertmanagerConfig and a Secret, plus a PrometheusRule for any runbooks) to kubectl apply. Use this with kube-prometheus-stack. namespace= sets where they go, default monitoring."},
-	}
-
 	formatExport := model.NewAutocompleteData("export", "[standard|crd]", "DM this channel's receivers and routes, plus the Prometheus rules for their runbooks")
-	formatExport.AddStaticListArgument("Format (default standard).", false, formatItems)
+	formatExport.AddStaticListArgument("Format (default standard).", false, formatItems())
 	format.AddCommand(formatExport)
 
 	formatDiff := model.NewAutocompleteData("diff", "[standard|crd]", "Diff this channel's Alertmanager config against what Alertmanager loaded (sysadmin)")
@@ -119,11 +114,9 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "security", HelpText: "Unexpected image, API auth spike, privileged container, shell-in-container, RBAC escalation, security tooling down (6) — one shared webhook"},
 		{Item: "storage", HelpText: "PV full, disk fill rate (2) — one shared webhook"},
 	})
-	add.AddStaticListArgument("Optional: format of the config DM'd to you (default standard)", false, formatItems)
-	add.AddDynamicListArgument("Only for mattermost: the namespace Mattermost runs in", mattermostPackFetchURL(), false)
-	add.AddStaticListArgument("Optional: enable webhook rotation reminders for these receivers", false, []model.AutocompleteListItem{
-		{Item: "on", HelpText: "Remind sysadmins to rotate these webhooks once they are older than System Console → WebhookRotationDays. Without it, these receivers are never reminded. Applies to this channel only."},
-	})
+	for range addOptionSlots {
+		add.AddDynamicListArgument("Optional: format (standard or crd), mm-namespace=<ns> for mattermost, then on", addOptionsFetchURL(), true)
+	}
 	config.AddCommand(add)
 
 	// add-custom: one generic (non-runbook) receiver with a user-chosen name.
@@ -132,10 +125,9 @@ func getAutocompleteData() *model.AutocompleteData {
 	addCustom := model.NewAutocompleteData("add-custom", "[am-url] [name] [standard|crd] [on]", "Create ONE generic (non-runbook) receiver in THIS channel with a custom name. No auto route — you wire the matcher manually. (sysadmin/team_admin)")
 	addCustom.AddStaticListArgument(amURLPrompt, false, amURLItems)
 	addCustom.AddTextArgument("Custom receiver name: lowercase [a-z0-9_-], no `--`, not a runbook slug, category set, or standard/crd/on. Full name becomes `<name>--<team>-<channel>` (max 190 chars).", "[name]", "")
-	addCustom.AddStaticListArgument("Optional: format of the config DM'd to you (default standard)", false, formatItems)
-	addCustom.AddStaticListArgument("Optional: enable webhook rotation reminders for this receiver", false, []model.AutocompleteListItem{
-		{Item: "on", HelpText: "Remind sysadmins to rotate this webhook once it is older than System Console → WebhookRotationDays. Without it, this receiver is never reminded."},
-	})
+	for range addCustomOptionSlots {
+		addCustom.AddDynamicListArgument("Optional: format (standard or crd), then on", addOptionsFetchURL(), true)
+	}
 	config.AddCommand(addCustom)
 
 	allowlist := model.NewAutocompleteData("allowlist", "[add|remove] [prefix]", "Extra registry prefixes for UnexpectedContainerImage. Included in the next format rules crd file. Sysadmin.")
@@ -148,7 +140,11 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	root.AddCommand(model.NewAutocompleteData("docs", "", "Link to the documentation site, runbook library, and sample rules"))
 
-	root.AddCommand(model.NewAutocompleteData("help", "[command]", "Show help. Type help after any command for more detail."))
+	help := model.NewAutocompleteData("help", "[command]", "Show help. Type help after any command for more detail.")
+	for range helpPathSlots {
+		help.AddDynamicListArgument("A command to get help for, for example config add", helpTopicsFetchURL(), true)
+	}
+	root.AddCommand(help)
 
 	metricsToken := model.NewAutocompleteData("metrics-token", "[generate]", "Show status of the Prometheus /metrics bearer token, or `generate` to mint+reveal a new one with a ready-to-paste scrape_config (sysadmin)")
 	metricsToken.AddStaticListArgument("Optional: `generate` rotates + reveals a new token; omit to just show status", false, []model.AutocompleteListItem{
@@ -231,6 +227,7 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	config.AddCommand(validate)
 
+	addHelpWord(root)
 	sortTypeahead(root)
 	return root
 }

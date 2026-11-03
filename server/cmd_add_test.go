@@ -157,8 +157,8 @@ func TestCurrentChannelDestination(t *testing.T) {
 }
 
 // TestAddAutocompleteHasNoTeamOrChannel pins the channel-implied design: the
-// typeahead offers the URL first, then target, format, and rotation, and has no
-// dynamic team or channel lists.
+// typeahead offers the URL first, then the target (or custom name), then the
+// trailing options, and has no dynamic team or channel lists.
 func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 	var config *model.AutocompleteData
 	for _, c := range getAutocompleteData().SubCommands {
@@ -166,7 +166,7 @@ func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 			config = c
 		}
 	}
-	for _, trigger := range []string{"add", "add-custom"} {
+	for trigger, slots := range map[string]int{"add": addOptionSlots, "add-custom": addCustomOptionSlots} {
 		var node *model.AutocompleteData
 		for _, c := range config.SubCommands {
 			if c.Trigger == trigger {
@@ -176,37 +176,16 @@ func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 		if node == nil {
 			t.Fatalf("config %s missing from typeahead", trigger)
 		}
-		for _, a := range node.Arguments {
-			if a.Type != model.AutocompleteArgTypeDynamicList {
-				continue
-			}
-			// The mattermost namespace hover is the only dynamic list.
-			if dyn, ok := a.Data.(*model.AutocompleteDynamicListArg); !ok || trigger != "add" || dyn.FetchURL != mattermostPackFetchURL() {
-				t.Errorf("config %s still has a dynamic list argument: %q", trigger, a.HelpText)
-			}
+		if len(node.Arguments) != 2+slots {
+			t.Fatalf("config %s has %d args, want am-url, target/name and %d option slots", trigger, len(node.Arguments), slots)
 		}
-	}
-
-	// format is the argument after the URL (and target, for add). add also
-	// carries the mattermost namespace hover after format.
-	for trigger, wantArgs := range map[string]int{"add": 5, "add-custom": 4} {
-		var node *model.AutocompleteData
-		for _, c := range config.SubCommands {
-			if c.Trigger == trigger {
-				node = c
-			}
+		if node.Arguments[0].Type != model.AutocompleteArgTypeStaticList {
+			t.Errorf("config %s first arg must be the Alertmanager URL list", trigger)
 		}
-		if len(node.Arguments) != wantArgs {
-			t.Fatalf("config %s has %d args, want %d (am-url, target/name, format, [mm-namespace hover for add], on)", trigger, len(node.Arguments), wantArgs)
-		}
-		format, ok := node.Arguments[2].Data.(*model.AutocompleteStaticListArg)
-		if !ok || len(format.PossibleArguments) != 2 ||
-			format.PossibleArguments[0].Item != "crd" || format.PossibleArguments[1].Item != "standard" {
-			t.Fatalf("config %s third arg should list crd and standard, got %#v", trigger, node.Arguments[2].Data)
-		}
-		for _, it := range format.PossibleArguments {
-			if it.HelpText == "" {
-				t.Errorf("config %s format %q needs a hover explanation", trigger, it.Item)
+		for _, a := range node.Arguments[2:] {
+			dyn, ok := a.Data.(*model.AutocompleteDynamicListArg)
+			if !ok || dyn.FetchURL != addOptionsFetchURL() || !a.Required {
+				t.Errorf("config %s option slot must be a required dynamic list on the add-options path: %+v", trigger, a)
 			}
 		}
 	}
