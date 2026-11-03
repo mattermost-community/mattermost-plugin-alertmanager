@@ -145,3 +145,61 @@ func TestHelpWordOnLeafCommands(t *testing.T) {
 		t.Fatalf("config add must offer help after the command, got %v", urls)
 	}
 }
+
+func TestRulesOptionItems(t *testing.T) {
+	const rules = "/alertmanager format rules "
+	groups := itemNames(rulesGroupItems())
+	first := slices.Concat(groups, []string{"help"})
+	cases := []struct {
+		name, parsed, input string
+		want                []string
+	}{
+		{"nothing yet: groups only", rules, rules, first},
+		{"group chosen: crd and standard", rules + "security ", rules + "security ", []string{"crd", "standard"}},
+		{"format chosen: groups", rules + "crd ", rules + "crd ", groups},
+		{"group and format: nothing left", rules + "security crd ", rules + "security crd ", []string{}},
+		{"mattermost: namespace before the format", rules + "mattermost ", rules + "mattermost ", []string{"mm-namespace="}},
+		{"mattermost, namespace given: format last", rules + "mattermost mm-namespace=x ", rules + "mattermost mm-namespace=x ", []string{"crd", "standard"}},
+		{"mattermost and format: namespace", rules + "mattermost crd ", rules + "mattermost crd ", []string{"mm-namespace="}},
+		{"format then mattermost: namespace", rules + "crd mattermost ", rules + "crd mattermost ", []string{"mm-namespace="}},
+		{"namespace typed once", rules + "mattermost crd mm-namespace=x ", rules + "mattermost crd mm-namespace=x ", []string{}},
+		{"partial namespace is echoed", rules + "mattermost crd ", rules + "mattermost crd mm-namespace=ma", []string{"mm-namespace=ma"}},
+		{"partial namespace keeps the format option", rules + "mattermost ", rules + "mattermost mm-namespace=ma", []string{"mm-namespace=ma", "crd", "standard"}},
+		{"runbook slug counts as a group", rules + "high-cpu-usage ", rules + "high-cpu-usage ", []string{"crd", "standard"}},
+		{"free slug is consumed", rules, rules + "high-cpu-usage crd", slices.Concat(first, []string{"crd", "standard", "high-cpu-usage"})},
+		{"finished flag is consumed", rules + "security ", rules + "security namespace=monitoring crd", []string{"crd", "standard", "namespace=monitoring"}},
+		{"another command", "/alertmanager format export ", "/alertmanager format export ", []string{}},
+		{"no parsed text", "", "", []string{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := itemNames(rulesOptionItems(c.parsed, c.input))
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestFormatRulesAutocompleteUsesRulesOptions(t *testing.T) {
+	var rules *model.AutocompleteData
+	for _, format := range getAutocompleteData().SubCommands {
+		if format.Trigger != "format" {
+			continue
+		}
+		for _, sub := range format.SubCommands {
+			if sub.Trigger == "rules" {
+				rules = sub
+			}
+		}
+	}
+	if rules == nil || len(rules.Arguments) != rulesOptionSlots {
+		t.Fatalf("format rules should have %d option slots, got %+v", rulesOptionSlots, rules)
+	}
+	for _, arg := range rules.Arguments {
+		list, ok := arg.Data.(*model.AutocompleteDynamicListArg)
+		if !ok || !arg.Required || list.FetchURL != rulesOptionsFetchURL() {
+			t.Fatalf("slot = %+v", arg)
+		}
+	}
+}

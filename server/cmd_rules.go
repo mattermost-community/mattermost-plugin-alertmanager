@@ -35,8 +35,8 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts exportOptions) 
 		namespace = defaultCRDNamespace
 	}
 
-	if opts.mattermost {
-		return p.handleMattermostRules(args.UserId, namespace, opts)
+	if opts.target != "" {
+		return p.handleTargetRules(args.UserId, namespace, opts)
 	}
 
 	if opts.format == formatCRD {
@@ -60,25 +60,17 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts exportOptions) 
 	), nil
 }
 
-// handleMattermostRules DMs the `mattermost` group's rules as a plain rules file
-// or a PrometheusRule manifest. With mm-namespace it adds the operator's rules
-// for that install. It carries no secrets.
-func (p *Plugin) handleMattermostRules(userID, namespace string, opts exportOptions) (string, error) {
-	var target *mattermostTarget
-	if opts.mmNamespace != "" || opts.mmName != "" {
-		t, err := newMattermostTarget(opts.mmNamespace, opts.mmName)
-		if err != nil {
-			return fmt.Sprintf(":warning: %v", err), nil
-		}
-		target = &t
-	}
+// handleTargetRules DMs the rules for one group or runbook as a plain rules file
+// or a PrometheusRule manifest. For `mattermost`, mm-namespace adds the
+// operator's rules for that install. It carries no secrets.
+func (p *Plugin) handleTargetRules(userID, namespace string, opts exportOptions) (string, error) {
 	format := opts.format
 	if format == "" {
 		format = formatStandard
 	}
-	rules, err := p.mattermostRulesFile(namespace, target, format)
-	if err != nil {
-		return fmt.Sprintf(":warning: Could not build the rules: %v", err), nil
+	rules, errMsg := p.rulesForTarget(namespace, format, opts)
+	if errMsg != "" {
+		return errMsg, nil
 	}
 
 	dm, appErr := p.API.GetDirectChannel(p.BotUserID, userID)
@@ -92,13 +84,44 @@ func (p *Plugin) handleMattermostRules(userID, namespace string, opts exportOpti
 	post := &model.Post{
 		UserId:    p.BotUserID,
 		ChannelId: dm.Id,
-		Message:   "Mattermost alert rules." + rules.section(),
+		Message:   "Alert rules." + rules.section(),
 		FileIds:   []string{fileID},
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
 		return fmt.Sprintf(":warning: Could not send DM: %v", appErr.Error()), nil
 	}
 	return fmt.Sprintf(":page_facing_up: **Sent `%s` (%d rules) to your DM with `@%s`.** Apply it:\n\n%s", rules.name, rules.count, webhookUsername, rules.apply), nil
+}
+
+// rulesForTarget builds the rules file for opts.target. errMsg is a user-facing
+// message when it cannot.
+func (p *Plugin) rulesForTarget(namespace, format string, opts exportOptions) (rules *rulesFile, errMsg string) {
+	if opts.target == mattermostGroup {
+		var target *mattermostTarget
+		if opts.mmNamespace != "" || opts.mmName != "" {
+			t, err := newMattermostTarget(opts.mmNamespace, opts.mmName)
+			if err != nil {
+				return nil, fmt.Sprintf(":warning: %v", err)
+			}
+			target = &t
+		}
+		built, err := p.mattermostRulesFile(namespace, target, format)
+		if err != nil {
+			return nil, fmt.Sprintf(":warning: Could not build the rules: %v", err)
+		}
+		return built, ""
+	}
+
+	group, slugs, err := resolveAddTarget(opts.target)
+	if err != nil {
+		return nil, fmt.Sprintf(":warning: %v", err)
+	}
+	rules, err = p.rulesFileForAdd(namespace, group, slugs, format)
+	if err != nil {
+		return nil, fmt.Sprintf(":warning: Could not build the rules: %v", err)
+	}
+	rules.scope = "`" + group + "`"
+	return rules, ""
 }
 
 // handleRulesOperator generates a PrometheusRule CRD manifest from the

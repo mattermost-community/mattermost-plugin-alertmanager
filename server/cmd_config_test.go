@@ -190,8 +190,8 @@ func TestAutocompleteTreeShape(t *testing.T) {
 		}
 	}
 
-	// rules also carries the mattermost namespace hover.
-	for verb, want := range map[string]int{"export": 1, "diff": 1, "rules": 2} {
+	// rules takes a group, a format and the mattermost flags, one hover each.
+	for verb, want := range map[string]int{"export": 1, "diff": 1, "rules": rulesOptionSlots} {
 		if got := len(child(child(root, "format"), verb).Arguments); got != want {
 			t.Errorf("format %s has %d args, want %d", verb, got, want)
 		}
