@@ -35,6 +35,10 @@ func (p *Plugin) ServeHTTP(_ *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleAutocompleteValidateTargets(w, r, userID)
 	case mattermostPackPath:
 		p.handleAutocompleteMattermostPack(w, r)
+	case addOptionsPath:
+		p.handleAutocompleteAddOptions(w, r)
+	case helpTopicsPath:
+		p.handleAutocompleteHelpTopics(w, r)
 	default:
 		http.NotFound(w, r)
 	}
