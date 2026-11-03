@@ -74,13 +74,10 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	format.AddCommand(formatDiff)
 
-	formatRules := model.NewAutocompleteData("rules", "[standard|crd|mattermost]", "The sample Prometheus alerting rules only")
-	formatRules.AddStaticListArgument("Format (default standard).", false, []model.AutocompleteListItem{
-		{Item: formatStandard, HelpText: "Links to view the 36 sample rules in your browser or download them as a plain Prometheus rules file."},
-		{Item: formatCRD, HelpText: "DM a ready-to-apply PrometheusRule (monitoring.coreos.com/v1) with all 36 rules, for Prometheus Operator. namespace=<ns> sets where it goes, default monitoring."},
-		{Item: mattermostGroup, HelpText: "DM the mattermost group's rules. Add mm-namespace=<ns> to include the 13 rules the Mattermost Operator generates for that install; add crd for a PrometheusRule."},
-	})
-	formatRules.AddDynamicListArgument("Only for mattermost: the namespace Mattermost runs in", mattermostPackFetchURL(), false)
+	formatRules := model.NewAutocompleteData("rules", "[standard|crd] [group]", "The sample Prometheus alerting rules, all of them or one group's")
+	for range rulesOptionSlots {
+		formatRules.AddDynamicListArgument("Optional: standard or crd, a group or runbook for just its rules, mm-namespace=<ns> for mattermost", rulesOptionsFetchURL(), true)
+	}
 	format.AddCommand(formatRules)
 
 	acknowledge := model.NewAutocompleteData("acknowledge", "[add|remove] [name]", "Hide a receiver from the AM-only inventory warning. Does not mute alerts. Sysadmin.")

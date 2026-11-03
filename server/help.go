@@ -288,10 +288,10 @@ var helpRegistry = []helpTopic{
 	{
 		Path:        "format rules",
 		Summary:     "Get the sample Prometheus alert rules",
-		Usage:       "/alertmanager format rules [standard|crd|mattermost] [namespace=<ns>] [mm-namespace=<ns>] [mm-name=<cr>]",
-		Description: "Rules only, all 36 of them, not limited to this channel. For this channel's rules together with its config, use `format export`. With `mattermost` you get only that group's rules, plus the Mattermost Operator's own rules for one install when you add `mm-namespace`.",
+		Usage:       "/alertmanager format rules [standard|crd] [group|runbook] [namespace=<ns>] [mm-namespace=<ns>] [mm-name=<cr>]",
+		Description: "Rules only, all 36 of them unless you name a group, not limited to this channel. For this channel's rules together with its config, use `format export`. A group or runbook name gives you just those rules as one PrometheusRule named `mattermost-alertmanager-rules-<group>`, the same object `config add` sends. With `mattermost` you also get the Mattermost Operator's own rules for one install when you add `mm-namespace`.",
 		Options: []helpOption{
-			{"mattermost", "DM the `mattermost` group's rules. Add `crd` for a PrometheusRule."},
+			{"<group|runbook>", "DM only that group's rules, for example `security`, or one runbook's, for example `high-cpu-usage`. Use `all` for every group. Add `crd` for a PrometheusRule."},
 			{"mm-namespace=<ns>", "`mattermost` only, optional. The namespace Mattermost runs in. Adds the 13 rules the Mattermost Operator generates, filled in for your install."},
 			{"mm-name=<cr>", "`mattermost` only. The Mattermost custom resource name. Default `mattermost`."},
 			{"standard", "Links to browse the rules in your browser or download a plain Prometheus rules file. The default."},
@@ -302,6 +302,8 @@ var helpRegistry = []helpTopic{
 		Examples: []string{
 			"/alertmanager format rules",
 			"/alertmanager format rules crd namespace=monitoring",
+			"/alertmanager format rules security crd",
+			"/alertmanager format rules all crd",
 			"/alertmanager format rules mattermost crd mm-namespace=mattermost-crimson",
 		},
 	},

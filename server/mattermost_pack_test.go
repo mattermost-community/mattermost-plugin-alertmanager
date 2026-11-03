@@ -398,13 +398,13 @@ func TestParseFormatArgsPack(t *testing.T) {
 	if msg != "" {
 		t.Fatalf("unexpected message: %s", msg)
 	}
-	if !opts.mattermost || opts.format != formatCRD || opts.mmNamespace != "chat" || opts.mmName != "mm" || opts.namespace != "monitoring" {
+	if opts.target != mattermostGroup || opts.format != formatCRD || opts.mmNamespace != "chat" || opts.mmName != "mm" || opts.namespace != "monitoring" {
 		t.Fatalf("opts = %+v", opts)
 	}
 	if _, msg := parseFormatArgs([]string{"mm-namespace=chat"}); !strings.Contains(msg, "only apply") {
 		t.Fatalf("mm-namespace without mattermost must be refused, got %q", msg)
 	}
-	if opts, msg := parseFormatArgs([]string{"mattermost"}); msg != "" || !opts.mattermost || opts.mmNamespace != "" {
+	if opts, msg := parseFormatArgs([]string{"mattermost"}); msg != "" || opts.target != mattermostGroup || opts.mmNamespace != "" {
 		t.Fatalf("plain mattermost must be accepted: %+v %q", opts, msg)
 	}
 }
@@ -514,5 +514,76 @@ func TestPackCRDObjectsDoNotCollideWithRunbookGroup(t *testing.T) {
 	}
 	if fmt.Sprint(names(packOnly)) == "" {
 		t.Fatal("no objects rendered")
+	}
+}
+
+func TestParseFormatArgsTargets(t *testing.T) {
+	cases := []struct {
+		name       string
+		words      []string
+		wantTarget string
+		wantFormat string
+		wantMsg    string
+	}{
+		{"group then format", []string{"security", "crd"}, "security", formatCRD, ""},
+		{"format then group", []string{"crd", "security"}, "security", formatCRD, ""},
+		{"group alone", []string{"compute"}, "compute", "", ""},
+		{"runbook slug", []string{"high-cpu-usage", "crd"}, "high-cpu-usage", formatCRD, ""},
+		{"all is the full set", []string{"all", "crd"}, "", formatCRD, ""},
+		{"case insensitive", []string{"Security", "CRD"}, "security", formatCRD, ""},
+		{"two targets", []string{"security", "compute"}, "", "", "Too many words"},
+		{"two formats", []string{"crd", "standard"}, "", "", "Too many words"},
+		{"unknown word", []string{"nope"}, "", "", "Unknown format or target"},
+		{"mm flag on another group", []string{"security", "mm-namespace=chat"}, "", "", "only apply"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts, msg := parseFormatArgs(c.words)
+			if c.wantMsg != "" {
+				if !strings.Contains(msg, c.wantMsg) {
+					t.Fatalf("msg = %q, want one containing %q", msg, c.wantMsg)
+				}
+				return
+			}
+			if msg != "" || opts.target != c.wantTarget || opts.format != c.wantFormat {
+				t.Fatalf("opts = %+v msg = %q", opts, msg)
+			}
+		})
+	}
+}
+
+func TestRulesForTargetIsPerGroup(t *testing.T) {
+	p := rulesTestPlugin()
+
+	rules, msg := p.rulesForTarget("monitoring", formatCRD, exportOptions{target: "security"})
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	if rules.name != prometheusRuleObject+"-security.yaml" {
+		t.Fatalf("name = %q", rules.name)
+	}
+	plain, msg := p.rulesForTarget("monitoring", formatStandard, exportOptions{target: "security"})
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	alerts := ruleAlertNames(t, plain.data)
+	if len(alerts) == 0 || len(alerts) != rules.count || slices.Contains(alerts, "MattermostAPIHighLatency") || slices.Contains(alerts, "HighCPUUsage") {
+		t.Fatalf("security rules = %v (count %d)", alerts, rules.count)
+	}
+	if !strings.Contains(rules.section(), "`security`") {
+		t.Fatalf("section should name the group:\n%s", rules.section())
+	}
+
+	one, msg := p.rulesForTarget("monitoring", formatStandard, exportOptions{target: "high-cpu-usage"})
+	if msg != "" || one.count == 0 || one.count >= rules.count+len(scaffoldSets["compute"]) {
+		t.Fatalf("single runbook rules: %+v %q", one, msg)
+	}
+
+	mm, msg := p.rulesForTarget("monitoring", formatCRD, exportOptions{target: mattermostGroup})
+	if msg != "" || mm.count != len(scaffoldSets[mattermostGroup]) {
+		t.Fatalf("mattermost without a namespace: %+v %q", mm, msg)
+	}
+	if _, msg = p.rulesForTarget("monitoring", formatCRD, exportOptions{target: mattermostGroup, mmNamespace: "Bad_NS"}); !strings.Contains(msg, "mm-namespace") {
+		t.Fatalf("bad namespace message = %q", msg)
 	}
 }

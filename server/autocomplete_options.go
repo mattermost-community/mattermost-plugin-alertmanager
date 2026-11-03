@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	addOptionsPath = "/autocomplete/add-options"
-	helpTopicsPath = "/autocomplete/help-topics"
+	addOptionsPath   = "/autocomplete/add-options"
+	helpTopicsPath   = "/autocomplete/help-topics"
+	rulesOptionsPath = "/autocomplete/rules-options"
 )
 
 // Mattermost lists the next suggestion of every optional argument together, so
@@ -25,10 +26,16 @@ const (
 	addOptionSlots       = 6
 	addCustomOptionSlots = 4
 	helpPathSlots        = 3
+	// A group, a format, mm-namespace and namespace=, with one to spare.
+	rulesOptionSlots = 5
 )
 
 func addOptionsFetchURL() string {
 	return fmt.Sprintf("/plugins/%s%s", Manifest.Id, addOptionsPath)
+}
+
+func rulesOptionsFetchURL() string {
+	return fmt.Sprintf("/plugins/%s%s", Manifest.Id, rulesOptionsPath)
 }
 
 func helpTopicsFetchURL() string {
@@ -204,12 +211,16 @@ func (p *Plugin) writeAutocompleteItems(w http.ResponseWriter, what string, item
 	}
 }
 
+func helpWordItem() model.AutocompleteListItem {
+	return model.AutocompleteListItem{Item: "help", HelpText: "Show help for this command: its options, who can run it, and examples."}
+}
+
 // addHelpWord lets a command take a trailing `help`, which the server already
 // accepts (`config add help` is the same as `help config add`). Commands whose
 // first argument is free text are left alone, since Mattermost would not offer
 // a list there.
 func addHelpWord(n *model.AutocompleteData) {
-	helpItem := model.AutocompleteListItem{Item: "help", HelpText: "Show help for this command: its options, who can run it, and examples."}
+	helpItem := helpWordItem()
 	for _, c := range n.SubCommands {
 		addHelpWord(c)
 	}
@@ -229,4 +240,92 @@ func addHelpWord(n *model.AutocompleteData) {
 		return
 	}
 	list.PossibleArguments = append(list.PossibleArguments, helpItem)
+}
+
+func rulesFormatItems() []model.AutocompleteListItem {
+	return []model.AutocompleteListItem{
+		{Item: formatCRD, HelpText: "DM a ready-to-apply PrometheusRule (monitoring.coreos.com/v1) for Prometheus Operator. namespace=<ns> sets where it goes, default monitoring."},
+		{Item: formatStandard, HelpText: "Plain Prometheus rules file. With no group, links to browse or download the 36 sample rules."},
+	}
+}
+
+func rulesGroupItems() []model.AutocompleteListItem {
+	var items []model.AutocompleteListItem
+	for _, name := range scaffoldSetNames() {
+		help := "DM only the " + name + " group's rules."
+		switch name {
+		case "all":
+			help = "Every group's rules, all 36. Same as leaving the group out."
+		case mattermostGroup:
+			help = "DM the mattermost group's rules. Add mm-namespace=<ns> to include the 13 rules the Mattermost Operator generates for that install."
+		}
+		items = append(items, model.AutocompleteListItem{Item: name, HelpText: help})
+	}
+	return items
+}
+
+// rulesOptionItems returns the next option of `format rules`: a group, then
+// mm-namespace for the mattermost group, then the format last. As with `config add`, a
+// word being typed gets every option not yet used so Mattermost can match it by
+// prefix.
+func rulesOptionItems(parsed, userInput string) []model.AutocompleteListItem {
+	empty := []model.AutocompleteListItem{}
+	words, ok := commandWords(parsed)
+	// words: trigger, format, rules, ...
+	if !ok || len(words) < 3 || !strings.EqualFold(words[1], "format") || !strings.EqualFold(words[2], "rules") {
+		return empty
+	}
+	args := words[3:]
+	isFormat := func(w string) bool { return strings.EqualFold(w, formatStandard) || strings.EqualFold(w, formatCRD) }
+	hasFormat := slices.ContainsFunc(args, isFormat)
+	targetIdx := slices.IndexFunc(args, func(w string) bool { return !isFormat(w) && isRulesTarget(strings.ToLower(w)) })
+	hasMM := slices.ContainsFunc(args, isMMNamespaceWord)
+
+	var remaining [][]model.AutocompleteListItem
+	if targetIdx < 0 {
+		groups := rulesGroupItems()
+		if len(args) == 0 {
+			groups = append(groups, helpWordItem())
+		}
+		remaining = append(remaining, groups)
+	}
+	if targetIdx >= 0 && strings.EqualFold(args[targetIdx], mattermostGroup) && !hasMM {
+		remaining = append(remaining, []model.AutocompleteListItem{mmNamespaceItem(mmNamespaceFlag)})
+	}
+	if !hasFormat {
+		remaining = append(remaining, rulesFormatItems())
+	}
+
+	cur, complete := typedWord(parsed, userInput)
+	if cur == "" {
+		if len(remaining) == 0 {
+			return empty
+		}
+		return remaining[0]
+	}
+
+	var items []model.AutocompleteListItem
+	for _, group := range remaining {
+		for _, it := range group {
+			if it.Item == mmNamespaceFlag && isMMNamespaceWord(cur) {
+				it = mmNamespaceItem(cur)
+			}
+			items = append(items, it)
+		}
+	}
+	// A finished flag such as namespace=monitoring, or a runbook slug in place of
+	// a group, is not in any list, but Mattermost only moves on once it is read.
+	known := slices.ContainsFunc(items, func(it model.AutocompleteListItem) bool { return strings.EqualFold(it.Item, cur) })
+	if complete && !known && (strings.Contains(cur, "=") || (targetIdx < 0 && isRulesTarget(strings.ToLower(cur)))) {
+		items = append(items, model.AutocompleteListItem{Item: cur})
+	}
+	if items == nil {
+		return empty
+	}
+	return items
+}
+
+func (p *Plugin) handleAutocompleteRulesOptions(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	p.writeAutocompleteItems(w, "rules options", rulesOptionItems(q.Get("parsed"), q.Get("user_input")))
 }
