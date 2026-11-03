@@ -190,9 +190,10 @@ func TestAutocompleteTreeShape(t *testing.T) {
 		}
 	}
 
-	for _, verb := range []string{"export", "diff", "rules"} {
-		if got := len(child(child(root, "format"), verb).Arguments); got != 1 {
-			t.Errorf("format %s has %d args, want 1 format list", verb, got)
+	// rules also carries the mattermost namespace hover.
+	for verb, want := range map[string]int{"export": 1, "diff": 1, "rules": 2} {
+		if got := len(child(child(root, "format"), verb).Arguments); got != want {
+			t.Errorf("format %s has %d args, want %d", verb, got, want)
 		}
 	}
 }

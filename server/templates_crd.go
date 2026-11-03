@@ -75,13 +75,13 @@ metadata:
     alertmanager-config: "true"
 spec:
   route:
-    # Top-level receiver is the fallback for any runbook in this group that
-    # lacks a sub-route below — never let a labelled alert vanish silently.
+    # Top-level receiver is the fallback for any alert in this group that
+    # lacks a sub-route below — never let a matched alert vanish silently.
     receiver: {{FALLBACK}}
-    # Gate on the group's known runbooks (not runbook=~".+", which leaks other
+    # Gate on the group's known alerts (not runbook=~".+", which leaks other
     # categories in). Update alongside routes: below.
     matchers:
-      - name: runbook
+      - name: {{PARENT_LABEL}}
         value: "{{PARENT_MATCH}}"
         matchType: "=~"
     # alertname alone merges every pod into one post. namespace and pod
@@ -103,6 +103,7 @@ type crdReceiverSpec struct {
 	runbookDefaultURL string // plugin-hosted runbook fallback URL
 	iconURL           string // bot avatar URL
 	custom            bool   // add-custom (non-runbook) receiver: no auto route, no runbook link
+	pack              string // alert pack: routes on alertname instead of a runbook label
 }
 
 // indentBlock prefixes every non-empty line of s with prefix. Blank lines stay
@@ -183,12 +184,25 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 	var subroutes, receivers strings.Builder
 	slugs := make([]string, 0, len(specs))
 	var customNames []string
+	packMatch := ""
 
 	for _, s := range specs {
 		// The fallback receiver (no runbook slug) gets no sub-route and a
 		// simple body — it is only the parent route's catch-all.
 		if s.slug == "" {
 			receivers.WriteString(renderCRDFallbackReceiver(s))
+			continue
+		}
+		if s.pack != "" {
+			match, err := packAlertRegex()
+			if err != nil {
+				continue
+			}
+			packMatch = match
+			fmt.Fprintf(&subroutes,
+				"      - matchers: [{name: alertname, value: %q, matchType: \"=~\"}]\n        receiver: %s\n        continue: true\n",
+				match, s.name)
+			receivers.WriteString(renderCRDReceiver(s))
 			continue
 		}
 		if s.custom {
@@ -235,9 +249,13 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 	// alert and dumps it into this group's fallback receiver (broad auto-routing).
 	// Use a sentinel no real slug (nor an absent label) can match, so the CR stays
 	// inert until the operator wires a route for the custom receiver.
-	parentMatch := "^__mm_no_runbook_routes__$"
+	parentLabel, parentMatch := "runbook", "^__mm_no_runbook_routes__$"
 	if len(slugs) > 0 {
 		parentMatch = "^(" + strings.Join(slugs, "|") + ")$"
+	}
+	// A pack has no runbook label, so its CR gates on the pack's alert names.
+	if packMatch != "" {
+		parentLabel, parentMatch = "alertname", packMatch
 	}
 
 	// Emit the routes: key. With live sub-routes, list them under `routes:`. A
@@ -245,7 +263,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 	// spec.route.routes as an array; a comment-only body would decode to null and
 	// fail schema validation) and keep the editable stub as trailing comments.
 	routesBlock := "    routes:\n" + subroutes.String()
-	if len(slugs) == 0 {
+	if len(slugs) == 0 && packMatch == "" {
 		routesBlock = "    routes: []\n" + subroutes.String()
 	}
 
@@ -254,6 +272,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		"{{CR_NAME}}", crName,
 		"{{NAMESPACE}}", namespace,
 		"{{FALLBACK}}", fallbackReceiver,
+		"{{PARENT_LABEL}}", parentLabel,
 		"{{PARENT_MATCH}}", parentMatch,
 		"{{ROUTES_BLOCK}}", routesBlock,
 		"{{RECEIVERS}}", receivers.String(),

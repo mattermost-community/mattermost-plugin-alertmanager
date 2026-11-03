@@ -82,6 +82,9 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf(":warning: Invalid `namespace`: %v", err), nil
 	}
 
+	mmNamespace, rest := extractFlagValue(rest, mmNamespaceFlag)
+	mmName, rest := extractFlagValue(rest, mmNameFlag)
+
 	format, rotationOptIn, positional := splitAddWords(rest)
 
 	if len(positional) < 1 || len(positional) > 2 {
@@ -107,6 +110,23 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	}
 	if len(slugs) == 0 {
 		return ":warning: Target `" + target + "` resolved to zero runbooks. Either the embedded runbook list is empty or the category map is misconfigured.", nil
+	}
+
+	// mm-namespace turns the operator alerts on for the `mattermost` group: one
+	// extra receiver claims them by alertname. Without it the group is the
+	// runbook alerts only.
+	var mmTarget *mattermostTarget
+	runbookSlugs := slugs
+	if mmNamespace != "" || mmName != "" {
+		if groupName != mattermostGroup {
+			return fmt.Sprintf(":warning: `mm-namespace` and `mm-name` only apply to the `%s` target.", mattermostGroup), nil
+		}
+		t, tErr := newMattermostTarget(mmNamespace, mmName)
+		if tErr != nil {
+			return fmt.Sprintf(":warning: %v\n\n%s", tErr, addUsageMessage()), nil
+		}
+		mmTarget = &t
+		slugs = append(slices.Clone(slugs), packReceiverSlug)
 	}
 
 	dest, msg := p.currentChannelDestination(args)
@@ -183,6 +203,8 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 					AlertManagerURL:          amURL,
 					WebhookID:                sharedHookID,
 					GroupName:                groupName,
+					Custom:                   slug == packReceiverSlug,
+					Pack:                     packFor(slug),
 					WebhookHostOverride:      webhookHostOverride,
 					LastRotatedAt:            now,
 					RotationRemindersEnabled: rotationOptIn,
@@ -279,7 +301,13 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 		// The receivers only route alerts. The matching sample rules ride in the
 		// same DM so one message holds everything to apply.
-		rules, rulesErr := p.rulesFileForAdd(namespace, groupName, slugs, format)
+		var rules *rulesFile
+		var rulesErr error
+		if mmTarget != nil {
+			rules, rulesErr = p.mattermostRulesFile(namespace, mmTarget, format)
+		} else {
+			rules, rulesErr = p.rulesFileForAdd(namespace, groupName, runbookSlugs, format)
+		}
 		rulesReason := ""
 		if rulesErr != nil {
 			p.API.LogWarn("scaffold: couldn't build the rules file for this group", "err", rulesErr.Error(), "group", groupName)
@@ -354,7 +382,7 @@ type scaffoldResult struct {
 // have to read source to use it.
 func addUsageMessage() string {
 	var b strings.Builder
-	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>]`\n\n")
+	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>]`\n\n")
 	b.WriteString("Run it in the channel that should receive the alerts. Creates Mattermost incoming webhook(s) for the chosen target, all bound to this channel.\n")
 	b.WriteString("- **Group target** (e.g. `compute`, `all`): one shared webhook serves every receiver in the set.\n")
 	b.WriteString("- **Individual slug target** (e.g. `high-cpu-usage`): one dedicated webhook for that one receiver.\n")
@@ -374,11 +402,13 @@ func addUsageMessage() string {
 		b.WriteString(fmt.Sprintf("| `%s` | %d | %s |\n", name, len(slugs), strings.Join(slugs, ", ")))
 	}
 
+	b.WriteString(fmt.Sprintf("\n**Mattermost alerts:** `%s` creates the runbook receivers. Add `mm-namespace=<ns>`, the namespace Mattermost runs in, to also create one receiver for the alerts the Mattermost Operator generates (they carry no `runbook` label, so its route matches alert names). The matching Prometheus rules come in the same DM. `all` never includes them.\n", mattermostGroup))
 	b.WriteString("\n**Individual slug targets:** any runbook slug. Run `/alertmanager docs` for the runbook library link.\n\n")
 	b.WriteString("**Optional args:**\n")
 	b.WriteString("- `standard` (default) or `crd` — format of the config DM'd to you. `standard` is `alertmanager.yml` receivers and routes. `crd` is a Prometheus Operator AlertmanagerConfig plus Secret.\n")
 	b.WriteString("- `on` — opt these receivers in to webhook rotation reminders (see `WebhookRotationDays` in System Console)\n")
 	b.WriteString("- `webhook-host=<url>` — override the host portion of the rendered `api_url` for the multi-cluster pattern\n")
+	b.WriteString(fmt.Sprintf("- `mm-namespace=<ns>` and `mm-name=<cr>` — `%s` only: where Mattermost runs, and its custom resource name (default `%s`)\n", mattermostGroup, defaultMattermostName))
 	return b.String()
 }
 

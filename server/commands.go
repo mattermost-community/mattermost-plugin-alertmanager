@@ -79,11 +79,13 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	format.AddCommand(formatDiff)
 
-	formatRules := model.NewAutocompleteData("rules", "[standard|crd]", "The sample Prometheus alerting rules only")
+	formatRules := model.NewAutocompleteData("rules", "[standard|crd|mattermost]", "The sample Prometheus alerting rules only")
 	formatRules.AddStaticListArgument("Format (default standard).", false, []model.AutocompleteListItem{
 		{Item: formatStandard, HelpText: "Links to view the 36 sample rules in your browser or download them as a plain Prometheus rules file."},
 		{Item: formatCRD, HelpText: "DM a ready-to-apply PrometheusRule (monitoring.coreos.com/v1) with all 36 rules, for Prometheus Operator. namespace=<ns> sets where it goes, default monitoring."},
+		{Item: mattermostGroup, HelpText: "DM the mattermost group's rules. Add mm-namespace=<ns> to include the 13 rules the Mattermost Operator generates for that install; add crd for a PrometheusRule."},
 	})
+	formatRules.AddDynamicListArgument("Only for mattermost: the namespace Mattermost runs in", mattermostPackFetchURL(), false)
 	format.AddCommand(formatRules)
 
 	acknowledge := model.NewAutocompleteData("acknowledge", "[add|remove] [name]", "Hide a receiver from the AM-only inventory warning. Does not mute alerts. Sysadmin.")
@@ -104,20 +106,21 @@ func getAutocompleteData() *model.AutocompleteData {
 	}
 	const amURLPrompt = "Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own."
 
-	add := model.NewAutocompleteData("add", "[am-url] [target] [standard|crd] [on]", "Create receivers in THIS channel for a group set OR individual runbook slug. One shared webhook per group; individual slugs get their own. (sysadmin/team_admin)")
+	add := model.NewAutocompleteData("add", "[am-url] [target] [standard|crd] [on]", "Create receivers in THIS channel for a group set or an individual runbook slug. One shared webhook per group; individual slugs get their own. (sysadmin/team_admin)")
 	add.AddStaticListArgument(amURLPrompt, false, amURLItems)
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
 		{Item: "all", HelpText: "Every embedded runbook (default — 35 receivers in one shared webhook)"},
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
 		{Item: "compute", HelpText: "CPU, memory, throttling, pod, deployment, node, image-pull, scheduling alerts (9) — one shared webhook"},
 		{Item: "database", HelpText: "Connectivity, replication lag, query latency, connection saturation (4) — one shared webhook"},
-		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate (5) — one shared webhook. Requires Mattermost metrics enabled."},
+		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate (5) — one shared webhook. Requires Mattermost metrics enabled. Add mm-namespace=<ns> to also get the 13 alerts the Mattermost Operator generates."},
 		{Item: "networking", HelpText: "Ingress 5xx, cert expiry, DNS failure (3) — one shared webhook"},
 		{Item: "observability", HelpText: "Prometheus scrape down, Alertmanager notify fail (2) — one shared webhook"},
 		{Item: "security", HelpText: "Unexpected image, API auth spike, privileged container, shell-in-container, RBAC escalation, security tooling down (6) — one shared webhook"},
 		{Item: "storage", HelpText: "PV full, disk fill rate (2) — one shared webhook"},
 	})
 	add.AddStaticListArgument("Optional: format of the config DM'd to you (default standard)", false, formatItems)
+	add.AddDynamicListArgument("Only for mattermost: the namespace Mattermost runs in", mattermostPackFetchURL(), false)
 	add.AddStaticListArgument("Optional: enable webhook rotation reminders for these receivers", false, []model.AutocompleteListItem{
 		{Item: "on", HelpText: "Remind sysadmins to rotate these webhooks once they are older than System Console → WebhookRotationDays. Without it, these receivers are never reminded. Applies to this channel only."},
 	})

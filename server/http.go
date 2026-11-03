@@ -33,6 +33,8 @@ func (p *Plugin) ServeHTTP(_ *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleAdminInventory(w, r, userID)
 	case validateTargetsPath:
 		p.handleAutocompleteValidateTargets(w, r, userID)
+	case mattermostPackPath:
+		p.handleAutocompleteMattermostPack(w, r)
 	default:
 		http.NotFound(w, r)
 	}

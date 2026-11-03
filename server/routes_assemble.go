@@ -37,9 +37,13 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	// receivers (add-custom): the plugin can't know what labels a custom alert
 	// carries, so custom receivers get a COMMENTED matcher stub the user fills
 	// in manually rather than a live route.
-	var customEntries []alertConfig
+	var customEntries, packEntries []alertConfig
 	grouped := make(map[string][]alertConfig)
 	for _, ac := range entries {
+		if ac.Pack != "" {
+			packEntries = append(packEntries, ac)
+			continue
+		}
 		if ac.Custom {
 			customEntries = append(customEntries, ac)
 			continue
@@ -70,7 +74,8 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	// route. A bare `routes:` with nothing but comments underneath is invalid
 	// YAML; when every receiver is custom we emit only the commented stubs,
 	// which the user pastes under their own existing `routes:`.
-	if len(slugs) > 0 {
+	packRoutes := packRoutesYAML(packEntries)
+	if len(slugs) > 0 || packRoutes != "" {
 		b.WriteString("routes:\n")
 		for _, slug := range slugs {
 			group := grouped[slug]
@@ -81,6 +86,7 @@ func assembleRoutesYAML(entries []alertConfig) string {
 				b.WriteString("    group_by: ['alertname', 'namespace', 'pod']\n")
 			}
 		}
+		b.WriteString(packRoutes)
 	}
 
 	if len(customEntries) > 0 {

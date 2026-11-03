@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -41,6 +42,10 @@ func (p *Plugin) handleRemove(args *model.CommandArgs) (string, error) {
 	// with non-nil slug lists are the actual categories; nil entries
 	// (standard, all) are aliases handled elsewhere.
 	if slugs, ok := scaffoldSets[target]; ok && slugs != nil {
+		if target == mattermostGroup {
+			// The operator alerts belong to this group, so removing it takes them too.
+			slugs = append(slices.Clone(slugs), packReceiverSlug, legacyPackReceiverSlug)
+		}
 		return p.handleRemoveSet(args, target, slugs, force)
 	}
 	return p.handleRemoveOne(args, fields[2])

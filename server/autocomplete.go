@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-const validateTargetsPath = "/autocomplete/validate-targets"
+const (
+	validateTargetsPath = "/autocomplete/validate-targets"
+	mattermostPackPath  = "/autocomplete/mattermost-pack"
+)
 
 // setHelpText is the hover text for a group offered by validate.
 var setHelpText = map[string]string{
@@ -67,4 +72,44 @@ func (p *Plugin) channelGroupItems(channelID string) []model.AutocompleteListIte
 
 func validateTargetsFetchURL() string {
 	return fmt.Sprintf("/plugins/%s%s", Manifest.Id, validateTargetsPath)
+}
+
+// handleAutocompleteMattermostPack offers `mm-namespace=` only once the
+// command being typed targets the mattermost group. Mattermost sends
+// everything already parsed in `parsed` and the whole line in `user_input`.
+// While the user types the value, the partial word is echoed back so the hover
+// stays on screen.
+func (p *Plugin) handleAutocompleteMattermostPack(w http.ResponseWriter, r *http.Request) {
+	items := mattermostPackItems(r.URL.Query().Get("parsed"), r.URL.Query().Get("user_input"))
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(items); err != nil {
+		p.API.LogWarn("autocomplete: could not write mattermost pack flag", "err", err.Error())
+	}
+}
+
+func mattermostPackItems(parsed, userInput string) []model.AutocompleteListItem {
+	items := []model.AutocompleteListItem{}
+	words := strings.Fields(parsed)
+	if !slices.ContainsFunc(words, func(w string) bool { return strings.EqualFold(w, mattermostGroup) }) {
+		return items
+	}
+	if slices.ContainsFunc(words, func(w string) bool { return strings.HasPrefix(strings.ToLower(w), mmNamespaceFlag) }) {
+		return items
+	}
+
+	item := mmNamespaceFlag
+	if typed := strings.Fields(userInput); len(typed) > 0 && !strings.HasSuffix(userInput, " ") &&
+		strings.HasPrefix(strings.ToLower(typed[len(typed)-1]), mmNamespaceFlag) {
+		item = typed[len(typed)-1]
+	}
+	return append(items, model.AutocompleteListItem{
+		Item:     item,
+		Hint:     "<namespace>",
+		HelpText: "Optional. The namespace your Mattermost runs in, for example mm-namespace=mattermost. Adds the alerts the Mattermost Operator generates, with their Prometheus rules.",
+	})
+}
+
+func mattermostPackFetchURL() string {
+	return fmt.Sprintf("/plugins/%s%s", Manifest.Id, mattermostPackPath)
 }

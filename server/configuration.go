@@ -149,6 +149,11 @@ type alertConfig struct {
 	// naturally empty since no runbook backs the name.
 	Custom bool `json:"custom,omitempty"`
 
+	// Pack names the alert set a Custom receiver was created for (today only
+	// packReceiverSlug). Its receiver carries no runbook label, so its route
+	// matches that set's alert names instead of a runbook slug.
+	Pack string `json:"pack,omitempty"`
+
 	// WebhookHostOverride lets a sysadmin pin a per-receiver host that
 	// takes precedence over the global WebhookHost setting at YAML
 	// render time. Set via /alertmanager config add webhook-host=<url>.

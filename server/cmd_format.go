@@ -23,16 +23,30 @@ func parseFormatArgs(words []string) (exportOptions, string) {
 		}
 		opts.namespace = namespace
 	}
-	if len(rest) > 1 {
+	opts.mmNamespace, rest = extractFlagValue(rest, mmNamespaceFlag)
+	opts.mmName, rest = extractFlagValue(rest, mmNameFlag)
+
+	words = make([]string, 0, len(rest))
+	for _, word := range rest {
+		if strings.EqualFold(word, mattermostGroup) {
+			opts.mattermost = true
+			continue
+		}
+		words = append(words, word)
+	}
+	if len(words) > 1 {
 		return opts, ":warning: Too many words. Use `standard` or `crd`, and optionally `namespace=<ns>`."
 	}
-	if len(rest) == 1 {
-		switch f := strings.ToLower(rest[0]); f {
+	if len(words) == 1 {
+		switch f := strings.ToLower(words[0]); f {
 		case formatStandard, formatCRD:
 			opts.format = f
 		default:
-			return opts, fmt.Sprintf(":warning: Unknown format `%s`. Use `standard` or `crd`.", rest[0])
+			return opts, fmt.Sprintf(":warning: Unknown format `%s`. Use `standard` or `crd`.", words[0])
 		}
+	}
+	if !opts.mattermost && (opts.mmNamespace != "" || opts.mmName != "") {
+		return opts, fmt.Sprintf(":warning: `mm-namespace` and `mm-name` only apply to `%s`.", mattermostGroup)
 	}
 	return opts, ""
 }
@@ -42,6 +56,9 @@ func parseFormatArgs(words []string) (exportOptions, string) {
 //	format export [standard|crd] [namespace=<ns>]   this channel's config plus its rules
 //	format diff [standard|crd]                      Alertmanager config only, against what is loaded
 //	format rules [standard|crd] [namespace=<ns>]    the sample Prometheus rules only
+//	format rules mattermost [mm-namespace=<ns>] [mm-name=<cr>] [standard|crd] [namespace=<ns>]
+//	                                                the mattermost group's rules, plus the operator's
+//	                                                Mattermost rules when mm-namespace is given
 func (p *Plugin) handleFormatGroup(args *model.CommandArgs) (string, error) {
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
@@ -55,6 +72,9 @@ func (p *Plugin) handleFormatGroup(args *model.CommandArgs) (string, error) {
 	opts, msg := parseFormatArgs(fields[3:])
 	if msg != "" {
 		return msg, nil
+	}
+	if opts.mattermost && verb != "rules" {
+		return fmt.Sprintf(":warning: `%s` only applies to `format rules`.", mattermostGroup), nil
 	}
 	switch verb {
 	case "export":
