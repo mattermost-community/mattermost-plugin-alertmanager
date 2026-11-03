@@ -15,7 +15,7 @@ type exportOptions struct {
 	namespace string // CRD output only, validated
 	diff      bool
 
-	mattermost  bool   // `format rules mattermost`: the group's rules, not the full samples
+	target      string // `format rules <target>`: one group or runbook, "" for the full samples
 	mmNamespace string // mattermost only: namespace Mattermost runs in
 	mmName      string // mattermost only: Mattermost custom resource name
 }
