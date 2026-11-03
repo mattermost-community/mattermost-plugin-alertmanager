@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.4.17...v1.5.0) (2026-11-03)
+
+> **⚠️ BREAKING — command syntax.** Every `--flag` is gone. Switches are now bare words
+> (`force`, `prune`, `overdue`, `end-to-end`, `simulate`, `webhook-test`) and values are
+> `key=value` (`namespace=`, `webhook-host=`, `severity=`). The old `--` spellings are
+> rejected with a message showing the new form. `config export`, `config diff` and `rules`
+> now reply with a pointer to the `format` group. Update any saved runbooks or scripts.
+
+### Features
+
+* `/alertmanager format` command group: `format export [standard|crd]` (this channel's config and rules), `format diff [standard|crd]` (Alertmanager config only, sysadmin) and `format rules`.
+* `format rules <group|runbook|all> [standard|crd]` sends only one group's rules (or one runbook's) as a PrometheusRule named `mattermost-alertmanager-rules-<group>`, the same object `config add` sends. Without a group you still get all 36.
+* `mattermost` target: `config add <am-url> mattermost [crd] [mm-namespace=<ns>] [mm-name=<cr>]` creates the five Mattermost runbook receivers. With `mm-namespace` it also creates one `mattermost-server` receiver for the 13 alerts the Mattermost Operator generates, with one merged PrometheusRule (18 alerts) for that install. `config remove mattermost force` removes both.
+* Config and Prometheus rules arrive in one DM for `config add` and `format export`, in both standard and CRD formats.
+* Channel-scoped `format diff` with Prometheus Operator CRD auto-detect.
+* Autocomplete shows one option at a time after `config add` and `format rules`, `config validate` lists only the groups present in the channel, and every command accepts a trailing `help` with typeahead.
+* Docs: kube-prometheus-stack control-plane alerts and the `release` label selector gotcha.
+
+### Security
+
+* `silence expire` only ends silences created from the calling channel with `silence create`. A team admin can no longer end another team's silence on a shared Alertmanager. Silences created before this version have no record and must be ended in Alertmanager.
+* Dependency updates (x/net 0.61, x/crypto 0.58, otel, grpc 1.85, alertmanager 0.34.1, goldmark 1.8.7) and pinned GitHub Actions bumps. The standing `GO-2026-5932` finding stays open on purpose.
+
+### Bug Fixes
+
+* Removed the license-expiry alert and its runbook. Mattermost has no license-expiry metric, so the rule never fired.
+* Stale metric names fixed in the Mattermost runbooks.
+* `PersistentVolumeFull` join and the Bitnami registry allowlist for `UnexpectedContainerImage`, with promtool unit tests.
+* SSRF hints and channel-scoped diff matching are more precise.
+
 ## [1.4.17](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.2.0...v1.4.17) (2026-08-20)
 
 Rolls up the `add-custom` feature (previously drafted as 1.3.0, never tagged) plus a

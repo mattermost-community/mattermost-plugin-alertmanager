@@ -90,6 +90,8 @@ jobs:
           mkdir -p "${{ runner.temp }}/pack-rules"
           RENDER_PACK_RULES_DIR="${{ runner.temp }}/pack-rules" \
             go test -run TestWritePackRulesForPromtool -count=1 ./server/...
+          # The test writes 0600 files. The promtool container runs as another user.
+          chmod 0644 "${{ runner.temp }}/pack-rules"/*.yaml
           docker run --rm --entrypoint promtool \
             -v "${{ runner.temp }}/pack-rules":/w -w /w \
             prom/prometheus:v3.5.0 \
