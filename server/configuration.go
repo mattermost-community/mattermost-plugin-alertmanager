@@ -76,7 +76,7 @@ const kvKeyAlertConfigs = "alertconfigs:v1"
 // each entry re-verifies its team on the next config change — so an unbounded
 // list turns each subsequent write into an O(N) tax (O(N^2) to build up), bloats
 // the cluster-broadcast KV value, and slows the reconciler. Set far above any
-// real deployment (36 runbooks across a generous channel count) so genuine use
+// real deployment (35 runbooks across a generous channel count) so genuine use
 // never hits it, but a scripted flood is stopped. Enforced in the add path.
 const maxReceivers = 2000
 
@@ -149,6 +149,11 @@ type alertConfig struct {
 	// which emits a commented stub for these). Runbook diagnostics/links are
 	// naturally empty since no runbook backs the name.
 	Custom bool `json:"custom,omitempty"`
+
+	// Pack names the alert set a Custom receiver was created for (today only
+	// packReceiverSlug). Its receiver carries no runbook label, so its route
+	// matches that set's alert names instead of a runbook slug.
+	Pack string `json:"pack,omitempty"`
 
 	// WebhookHostOverride lets a sysadmin pin a per-receiver host that
 	// takes precedence over the global WebhookHost setting at YAML

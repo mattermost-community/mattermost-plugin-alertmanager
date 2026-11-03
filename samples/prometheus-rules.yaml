@@ -710,7 +710,7 @@ groups:
         expr: |
           histogram_quantile(0.95,
             sum by (le, handler) (
-              rate(mattermost_api_time_elapsed_seconds_bucket[5m])
+              rate(mattermost_api_time_bucket[5m])
             )
           ) > 1
         for: 5m
@@ -724,11 +724,10 @@ groups:
 
       # MattermostHighLoginFailures — spike in failed login attempts.
       # This is the earliest signal of a credential stuffing or brute force
-      # attack. mattermost_login_10sec_users_with_failed_logins is a gauge
-      # tracking distinct users with failures in the last 10 seconds.
+      # attack. mattermost_login_logins_fail_total counts failed attempts.
       - alert: MattermostHighLoginFailures
         expr: |
-          increase(mattermost_login_10sec_users_with_failed_logins[10m]) > 10
+          sum(increase(mattermost_login_logins_fail_total[10m])) > 10
         for: 0m
         labels:
           severity: warning
@@ -762,7 +761,7 @@ groups:
         expr: |
           histogram_quantile(0.99,
             sum by (le) (
-              rate(mattermost_db_store_time_elapsed_seconds_bucket[5m])
+              rate(mattermost_db_store_time_bucket[5m])
             )
           ) > 0.5
         for: 5m
@@ -779,9 +778,9 @@ groups:
       # Common causes: DB connectivity loss, plugin panic, bad deployment.
       - alert: MattermostHighErrorRate
         expr: |
-          sum(rate(mattermost_api_calls_total{status_code=~"5.."}[5m]))
+          sum(rate(mattermost_api_time_count{status_code=~"5.."}[5m]))
           /
-          sum(rate(mattermost_api_calls_total[5m]))
+          sum(rate(mattermost_api_time_count[5m]))
           > 0.05
         for: 5m
         labels:
@@ -791,22 +790,3 @@ groups:
         annotations:
           summary: "Mattermost 5xx error rate > 5% ({{ $value | printf \"%.1f%%\" }})"
           description: "More than 5% of Mattermost API calls are returning server errors. Users see intermittent message and channel failures."
-
-      # MattermostLicenseExpiringSoon — Enterprise license expires in < 30 days.
-      # On expiry, Mattermost reverts to Team Edition: LDAP, SAML, guest accounts,
-      # compliance exports, and HA are all disabled. This is a planned, avoidable
-      # outage — renew well before the threshold.
-      # Note: this metric is absent on Team Edition. If absent() fires for
-      # mattermost_license_expire_date, metrics are disabled or the server is
-      # already running Team Edition.
-      - alert: MattermostLicenseExpiringSoon
-        expr: |
-          (mattermost_license_expire_date - time()) / 86400 < 30
-        for: 0m
-        labels:
-          severity: warning
-          category: mattermost
-          runbook: mattermost-license-expiring-soon
-        annotations:
-          summary: "Mattermost license expires in {{ $value | printf \"%.0f\" }} days"
-          description: "The Mattermost Enterprise license expires soon. On expiry, LDAP, SAML, and other enterprise features are disabled. Renew at customers.mattermost.com."

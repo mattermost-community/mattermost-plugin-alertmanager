@@ -53,18 +53,21 @@ func TestRemovedAddSyntaxMessage(t *testing.T) {
 func TestAddRejectsBeforeAnySideEffect(t *testing.T) {
 	p := &Plugin{}
 	cases := map[string]string{
-		"/alertmanager config add":                                       "Usage",
-		"/alertmanager config add a b c d":                               "Usage",
-		"/alertmanager config add ops alerts http://am:9093 compute":     "no longer arguments",
-		"/alertmanager config add not-a-url":                             "Invalid Alertmanager URL",
-		"/alertmanager config add http://am:9093 no-such-runbook":        "unknown target",
-		"/alertmanager config add-custom":                                "Usage",
-		"/alertmanager config add-custom ops alerts http://am:9093 slo":  "no longer arguments",
-		"/alertmanager config add-custom not-a-url slo":                  "Invalid Alertmanager URL",
-		"/alertmanager config add-custom http://am:9093 a b":             "Usage",
-		"/alertmanager config add-custom http://am:9093 crd":             "Usage",
-		"/alertmanager config add-custom http://am:9093 slo namespace=B": "Invalid `namespace`",
-		"/alertmanager config add http://am:9093 compute namespace=B_d!": "Invalid `namespace`",
+		"/alertmanager config add":                                               "Usage",
+		"/alertmanager config add a b c d":                                       "Usage",
+		"/alertmanager config add ops alerts http://am:9093 compute":             "no longer arguments",
+		"/alertmanager config add not-a-url":                                     "Invalid Alertmanager URL",
+		"/alertmanager config add http://am:9093 no-such-runbook":                "unknown target",
+		"/alertmanager config add-custom":                                        "Usage",
+		"/alertmanager config add-custom ops alerts http://am:9093 slo":          "no longer arguments",
+		"/alertmanager config add-custom not-a-url slo":                          "Invalid Alertmanager URL",
+		"/alertmanager config add-custom http://am:9093 a b":                     "Usage",
+		"/alertmanager config add-custom http://am:9093 crd":                     "Usage",
+		"/alertmanager config add-custom http://am:9093 slo namespace=B":         "Invalid `namespace`",
+		"/alertmanager config add http://am:9093 compute namespace=B_d!":         "Invalid `namespace`",
+		"/alertmanager config add http://am:9093 compute mm-namespace=chat":      "only apply to the `mattermost` target",
+		"/alertmanager config add http://am:9093 mattermost mm-namespace=Bad_NS": "mm-namespace",
+		"/alertmanager config add http://am:9093 mattermost-operator":            "unknown target",
 	}
 	for cmd, want := range cases {
 		got := p.executeCommand(&model.CommandArgs{Command: cmd, ChannelId: "c1", UserId: "u1"})
@@ -174,14 +177,19 @@ func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 			t.Fatalf("config %s missing from typeahead", trigger)
 		}
 		for _, a := range node.Arguments {
-			if a.Type == model.AutocompleteArgTypeDynamicList {
+			if a.Type != model.AutocompleteArgTypeDynamicList {
+				continue
+			}
+			// The mattermost namespace hover is the only dynamic list.
+			if dyn, ok := a.Data.(*model.AutocompleteDynamicListArg); !ok || trigger != "add" || dyn.FetchURL != mattermostPackFetchURL() {
 				t.Errorf("config %s still has a dynamic list argument: %q", trigger, a.HelpText)
 			}
 		}
 	}
 
-	// format is the argument after the URL (and target, for add).
-	for trigger, wantArgs := range map[string]int{"add": 4, "add-custom": 4} {
+	// format is the argument after the URL (and target, for add). add also
+	// carries the mattermost namespace hover after format.
+	for trigger, wantArgs := range map[string]int{"add": 5, "add-custom": 4} {
 		var node *model.AutocompleteData
 		for _, c := range config.SubCommands {
 			if c.Trigger == trigger {
@@ -189,7 +197,7 @@ func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 			}
 		}
 		if len(node.Arguments) != wantArgs {
-			t.Fatalf("config %s has %d args, want %d (am-url, target/name, format, on)", trigger, len(node.Arguments), wantArgs)
+			t.Fatalf("config %s has %d args, want %d (am-url, target/name, format, [mm-namespace hover for add], on)", trigger, len(node.Arguments), wantArgs)
 		}
 		format, ok := node.Arguments[2].Data.(*model.AutocompleteStaticListArg)
 		if !ok || len(format.PossibleArguments) != 2 ||

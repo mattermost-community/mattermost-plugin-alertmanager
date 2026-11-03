@@ -14,7 +14,7 @@ The 99th-percentile Mattermost database store operation time has exceeded
 ```promql
 histogram_quantile(0.99,
   sum by (le) (
-    rate(mattermost_db_store_time_elapsed_seconds_bucket[5m])
+    rate(mattermost_db_store_time_bucket[5m])
   )
 ) > 0.5
 ```
@@ -178,9 +178,9 @@ known index fixes or query optimizations in newer releases.
 
 ## Required Prometheus labels
 
-`mattermost_db_store_time_elapsed_seconds_bucket` is a histogram exported
-by Mattermost when metrics are enabled. The `store` label on the metric
-identifies which store operation was slow — add `by (le, store)` to the
+`mattermost_db_store_time_bucket` is a histogram exported
+by Mattermost when metrics are enabled. The `method` label on the metric
+identifies which store operation was slow — add `by (le, method)` to the
 PromQL to break it down per operation.
 
 ## Related runbooks

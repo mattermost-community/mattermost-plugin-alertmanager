@@ -130,3 +130,90 @@ func TestModeWords(t *testing.T) {
 		t.Fatal("stripModes must not modify its input")
 	}
 }
+
+func packItemNames(parsed, userInput string) []string {
+	var out []string
+	for _, it := range mattermostPackItems(parsed, userInput) {
+		out = append(out, it.Item)
+	}
+	return out
+}
+
+func TestMattermostPackOffersNamespaceFlagOnlyForMattermost(t *testing.T) {
+	const add = "/alertmanager config add http://am:9093 "
+	cases := []struct {
+		name, parsed, input string
+		want                []string
+	}{
+		{"mattermost target", add + "mattermost ", add + "mattermost ", []string{"mm-namespace="}},
+		{"mattermost then format", add + "mattermost crd ", add + "mattermost crd ", []string{"mm-namespace="}},
+		{"format rules", "/alertmanager format rules mattermost ", "/alertmanager format rules mattermost ", []string{"mm-namespace="}},
+		{"case insensitive", add + "Mattermost ", add + "Mattermost ", []string{"mm-namespace="}},
+		{"other group", add + "compute ", add + "compute ", []string{}},
+		{"format rules other word", "/alertmanager format rules crd ", "/alertmanager format rules crd ", []string{}},
+		{"all", add + "all ", add + "all ", []string{}},
+		{"already typed", add + "mattermost mm-namespace=x ", add + "mattermost mm-namespace=x ", []string{}},
+		{"echoes the partial value", add + "mattermost crd ", add + "mattermost crd mm-namespace=matt", []string{"mm-namespace=matt"}},
+		{"unrelated partial word", add + "mattermost ", add + "mattermost cr", []string{"mm-namespace="}},
+		{"no parsed text", "", "", []string{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := packItemNames(c.parsed, c.input)
+			if got == nil {
+				got = []string{}
+			}
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestMattermostPackHandlerReturnsJSONList(t *testing.T) {
+	p := &Plugin{}
+	req := httptest.NewRequest(http.MethodGet, mattermostPackPath+"?parsed=/alertmanager+config+add+u+mattermost+&user_input=/alertmanager+config+add+u+mattermost+", http.NoBody)
+	rec := httptest.NewRecorder()
+	p.handleAutocompleteMattermostPack(rec, req)
+
+	var items []model.AutocompleteListItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if len(items) != 1 || items[0].Item != mmNamespaceFlag || items[0].HelpText == "" {
+		t.Fatalf("got %+v", items)
+	}
+
+	rec = httptest.NewRecorder()
+	p.handleAutocompleteMattermostPack(rec, httptest.NewRequest(http.MethodGet, mattermostPackPath+"?parsed=/alertmanager+config+add+u+all+", http.NoBody))
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("non-pack should be an empty JSON list, got %q", rec.Body.String())
+	}
+}
+
+func TestMattermostPackFlagIsRegisteredOnAddAndRules(t *testing.T) {
+	for _, path := range [][]string{{"config", "add"}, {"format", "rules"}} {
+		node := getAutocompleteData()
+		for _, trigger := range path {
+			var next *model.AutocompleteData
+			for _, sc := range node.SubCommands {
+				if sc.Trigger == trigger {
+					next = sc
+				}
+			}
+			if next == nil {
+				t.Fatalf("missing %v", path)
+			}
+			node = next
+		}
+		found := false
+		for _, arg := range node.Arguments {
+			if arg.Type == model.AutocompleteArgTypeDynamicList {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%v has no dynamic list for %s", path, mmNamespaceFlag)
+		}
+	}
+}
