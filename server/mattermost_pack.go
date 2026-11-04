@@ -25,6 +25,7 @@ const (
 	defaultMattermostName       = "mattermost"
 	mmNamespaceFlag             = "mm-namespace="
 	mmNameFlag                  = "mm-name="
+	mmServiceFlag               = "mm-service="
 )
 
 // Operator defaults for prometheusRule.thresholds. Keep in step with the
@@ -49,11 +50,12 @@ var (
 type mattermostTarget struct {
 	namespace string
 	name      string
+	service   string // the `service` label the metrics carry, as Prometheus scrapes it
 }
 
 // newMattermostTarget validates the namespace and CR name before they reach a
 // PromQL string. An empty name means the operator's usual CR name.
-func newMattermostTarget(namespace, name string) (mattermostTarget, error) {
+func newMattermostTarget(namespace, name, service string) (mattermostTarget, error) {
 	if namespace == "" {
 		return mattermostTarget{}, fmt.Errorf("`mm-namespace=<ns>` is required: the namespace your Mattermost runs in")
 	}
@@ -66,7 +68,21 @@ func newMattermostTarget(namespace, name string) (mattermostTarget, error) {
 	if len(name) > 63 || !mattermostCRName.MatchString(name) {
 		return mattermostTarget{}, fmt.Errorf("invalid `mm-name` %q: use the Mattermost custom resource name (lowercase letters, digits and '-')", name)
 	}
-	return mattermostTarget{namespace: namespace, name: name}, nil
+	if service == "" {
+		service = name + "-metrics"
+	}
+	if len(service) > 63 || !mattermostCRName.MatchString(service) {
+		return mattermostTarget{}, fmt.Errorf("invalid `mm-service` %q: use the Service name Prometheus puts in the `service` label (lowercase letters, digits and '-')", service)
+	}
+	return mattermostTarget{namespace: namespace, name: name, service: service}, nil
+}
+
+// kindFor is the receiver kind a scaffold add gives the receiver for slug.
+func kindFor(slug string) receiverKind {
+	if slug == packReceiverSlug {
+		return kindPack
+	}
+	return kindRunbook
 }
 
 // packFor returns the alertConfig.Pack value for a receiver slug.
@@ -124,7 +140,7 @@ func renderMattermostOperatorRules(t mattermostTarget) (string, error) {
 
 	out := strings.NewReplacer(
 		"__NAMESPACE__", t.namespace,
-		"__SERVICE__", t.name+"-metrics",
+		"__SERVICE__", t.service,
 		// Deployment pods are <name>-<replicaset-hash>-<suffix>. The anchored
 		// pattern keeps "mm" from matching a differently named "mm-test".
 		"__POD_SELECTOR__", t.name+"-[^-]+-[^-]+",
@@ -155,11 +171,15 @@ func percentFraction(percent int) string {
 // mattermostRulesFile builds the rules for the `mattermost` group. With a target
 // it appends the operator's alerts for that install. namespace is where the
 // PrometheusRule object lands, not where Mattermost runs.
-func (p *Plugin) mattermostRulesFile(namespace string, t *mattermostTarget, format string) (*rulesFile, error) {
-	name := prometheusRuleObject + "-" + mattermostGroup
-	slugs := scaffoldSets[mattermostGroup]
+func (p *Plugin) mattermostRulesFile(rc rulesContext, t *mattermostTarget) (*rulesFile, error) {
+	spec := rulesSpec{
+		rulesContext: rc,
+		name:         prometheusRuleObject + "-" + mattermostGroup,
+		scope:        "the `mattermost` group",
+		slugs:        scaffoldSets[mattermostGroup],
+	}
 	if t == nil {
-		return p.buildRulesFile(namespace, name, "the `mattermost` group", slugs, format)
+		return p.buildRules(spec)
 	}
 
 	body, err := renderMattermostOperatorRules(*t)
@@ -170,18 +190,16 @@ func (p *Plugin) mattermostRulesFile(namespace string, t *mattermostTarget, form
 	if err != nil {
 		return nil, err
 	}
-	scope := fmt.Sprintf("the `mattermost` group and Mattermost `%s/%s`", t.namespace, t.name)
-	rules, err := p.buildRulesFileWithExtra(namespace, name, scope, slugs, format, strings.TrimPrefix(body, "groups:\n"), len(names))
-	if err != nil {
-		return nil, err
-	}
-	rules.tail = fmt.Sprintf(
+	spec.scope = fmt.Sprintf("the `mattermost` group and Mattermost `%s/%s`", t.namespace, t.name)
+	spec.extraGroups = strings.TrimPrefix(body, "groups:\n")
+	spec.extraCount = len(names)
+	spec.tail = fmt.Sprintf(
 		"Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. "+
 			"The `mattermost.*` groups are the rules the Mattermost Operator generates: once your operator creates its own PrometheusRule, remove them from this file. "+
 			"MattermostHighErrorRate and MattermostHighLoginFailures overlap the operator's HTTP error and login alerts.",
 		prometheusRuleObject,
 	)
-	return rules, nil
+	return p.buildRules(spec)
 }
 
 // packRoutesYAML renders the live alertname route for each pack receiver, ready to

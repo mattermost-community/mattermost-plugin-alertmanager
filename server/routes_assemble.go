@@ -40,16 +40,15 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	var customEntries, packEntries []alertConfig
 	grouped := make(map[string][]alertConfig)
 	for _, ac := range entries {
-		if ac.Pack != "" {
+		switch ac.resolvedKind() {
+		case kindPack:
 			packEntries = append(packEntries, ac)
-			continue
-		}
-		if ac.Custom {
+		case kindCustom:
 			customEntries = append(customEntries, ac)
-			continue
+		case kindRunbook:
+			slug := receiverBaseSlug(ac.Name)
+			grouped[slug] = append(grouped[slug], ac)
 		}
-		slug := receiverBaseSlug(ac.Name)
-		grouped[slug] = append(grouped[slug], ac)
 	}
 
 	slugs := make([]string, 0, len(grouped))
@@ -140,7 +139,7 @@ func (p *Plugin) assembleReceiversYAML(newEntries []alertConfig, results []scaff
 			y.WriteString(fmt.Sprintf("# WARN: created result for %q has no matching entry — skipping\n\n", r.Slug))
 			continue
 		}
-		rendered := renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL, entry.Custom)
+		rendered := renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL, entry.resolvedKind())
 		y.WriteString(rendered)
 		y.WriteString("\n")
 	}

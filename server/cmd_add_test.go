@@ -6,6 +6,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 )
 
 type channelLookupAPI struct {
@@ -50,8 +51,21 @@ func TestRemovedAddSyntaxMessage(t *testing.T) {
 	}
 }
 
-func TestAddRejectsBeforeAnySideEffect(t *testing.T) {
+// sysadminPlugin is a plugin whose caller passes every access check, so a test
+// can reach the handler it is about.
+func sysadminPlugin(api plugin.API) *Plugin {
 	p := &Plugin{}
+	p.API = &sysadminAPI{API: api}
+	p.client = pluginapi.NewClient(p.API, nil)
+	return p
+}
+
+type sysadminAPI struct{ plugin.API }
+
+func (f *sysadminAPI) HasPermissionTo(string, *model.Permission) bool { return true }
+
+func TestAddRejectsBeforeAnySideEffect(t *testing.T) {
+	p := sysadminPlugin(&channelLookupAPI{channels: map[string]*model.Channel{"c1": {Id: "c1", Type: model.ChannelTypeOpen, TeamId: "t1"}}})
 	cases := map[string]string{
 		"/alertmanager config add":                                               "Usage",
 		"/alertmanager config add a b c d":                                       "Usage",
@@ -81,9 +95,7 @@ func TestAddRejectsBeforeAnySideEffect(t *testing.T) {
 // are consumed as words rather than mistaken for the target: each command gets
 // past argument parsing and stops at the destination check.
 func TestAddFormatAndOnAreWordsInAnyOrder(t *testing.T) {
-	dm := &channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}}
-	p := &Plugin{}
-	p.API = dm
+	p := sysadminPlugin(&channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}})
 	for _, cmd := range []string{
 		"/alertmanager config add http://am:9093",
 		"/alertmanager config add http://am:9093 crd",
@@ -99,9 +111,7 @@ func TestAddFormatAndOnAreWordsInAnyOrder(t *testing.T) {
 }
 
 func TestAddCustomFormatAndOnAreWords(t *testing.T) {
-	dm := &channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}}
-	p := &Plugin{}
-	p.API = dm
+	p := sysadminPlugin(&channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}})
 	for _, cmd := range []string{
 		"/alertmanager config add-custom http://am:9093 slo",
 		"/alertmanager config add-custom http://am:9093 slo crd",
@@ -128,9 +138,8 @@ func TestSplitAddWords(t *testing.T) {
 
 func TestCurrentChannelDestination(t *testing.T) {
 	api := &channelLookupAPI{channels: map[string]*model.Channel{
-		"dm":   {Id: "dm", Type: model.ChannelTypeDirect},
-		"gm":   {Id: "gm", Type: model.ChannelTypeGroup},
-		"open": {Id: "open", Name: "alerts", TeamId: "t1", Type: model.ChannelTypeOpen},
+		"dm": {Id: "dm", Type: model.ChannelTypeDirect},
+		"gm": {Id: "gm", Type: model.ChannelTypeGroup},
 	}}
 	p := &Plugin{}
 	p.API = api
@@ -144,7 +153,6 @@ func TestCurrentChannelDestination(t *testing.T) {
 		{"unknown channel", "missing", "Could not look up this channel"},
 		{"direct message", "dm", "direct or group message"},
 		{"group message", "gm", "direct or group message"},
-		{"team channel reaches the permission check", "open", "plugin not fully initialized"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

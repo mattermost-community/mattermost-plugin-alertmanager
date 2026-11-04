@@ -84,6 +84,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	mmNamespace, rest := extractFlagValue(rest, mmNamespaceFlag)
 	mmName, rest := extractFlagValue(rest, mmNameFlag)
+	mmService, rest := extractFlagValue(rest, mmServiceFlag)
 
 	format, rotationOptIn, positional := splitAddWords(rest)
 
@@ -117,11 +118,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// runbook alerts only.
 	var mmTarget *mattermostTarget
 	runbookSlugs := slugs
-	if mmNamespace != "" || mmName != "" {
+	if mmNamespace != "" || mmName != "" || mmService != "" {
 		if groupName != mattermostGroup {
-			return fmt.Sprintf(":warning: `mm-namespace` and `mm-name` only apply to the `%s` target.", mattermostGroup), nil
+			return fmt.Sprintf(":warning: `mm-namespace`, `mm-name` and `mm-service` only apply to the `%s` target.", mattermostGroup), nil
 		}
-		t, tErr := newMattermostTarget(mmNamespace, mmName)
+		t, tErr := newMattermostTarget(mmNamespace, mmName, mmService)
 		if tErr != nil {
 			return fmt.Sprintf(":warning: %v\n\n%s", tErr, addUsageMessage()), nil
 		}
@@ -203,7 +204,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 					AlertManagerURL:          amURL,
 					WebhookID:                sharedHookID,
 					GroupName:                groupName,
-					Custom:                   slug == packReceiverSlug,
+					Kind:                     kindFor(slug),
 					Pack:                     packFor(slug),
 					WebhookHostOverride:      webhookHostOverride,
 					LastRotatedAt:            now,
@@ -239,7 +240,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 				p.API.LogWarn("scaffold rollback: could not delete shared webhook (orphan may remain)", "webhook", redactHookID(sharedHookID), "err", delErr.Error())
 				warn = webhookRollbackWarning(webhookDisplayNameFor(groupName, team, channel))
 			}
-			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v%s", err, warn), nil
+			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %s%s", p.amErrorText(args.UserId, err), warn), nil
 		}
 	}
 
@@ -303,10 +304,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		// same DM so one message holds everything to apply.
 		var rules *rulesFile
 		var rulesErr error
+		rc := rulesContext{namespace: namespace, format: format, allowlist: true}
 		if mmTarget != nil {
-			rules, rulesErr = p.mattermostRulesFile(namespace, mmTarget, format)
+			rules, rulesErr = p.mattermostRulesFile(rc, mmTarget)
 		} else {
-			rules, rulesErr = p.rulesFileForAdd(namespace, groupName, runbookSlugs, format)
+			rules, rulesErr = p.rulesFileForAdd(rc, groupName, runbookSlugs, "")
 		}
 		rulesReason := ""
 		if rulesErr != nil {
@@ -382,7 +384,7 @@ type scaffoldResult struct {
 // have to read source to use it.
 func addUsageMessage() string {
 	var b strings.Builder
-	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>]`\n\n")
+	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>] [mm-service=<svc>]`\n\n")
 	b.WriteString("Run it in the channel that should receive the alerts. Creates Mattermost incoming webhook(s) for the chosen target, all bound to this channel.\n")
 	b.WriteString("- **Group target** (e.g. `compute`, `all`): one shared webhook serves every receiver in the set.\n")
 	b.WriteString("- **Individual slug target** (e.g. `high-cpu-usage`): one dedicated webhook for that one receiver.\n")
@@ -408,7 +410,7 @@ func addUsageMessage() string {
 	b.WriteString("- `standard` (default) or `crd` — format of the config DM'd to you. `standard` is `alertmanager.yml` receivers and routes. `crd` is a Prometheus Operator AlertmanagerConfig plus Secret.\n")
 	b.WriteString("- `on` — opt these receivers in to webhook rotation reminders (see `WebhookRotationDays` in System Console)\n")
 	b.WriteString("- `webhook-host=<url>` — override the host portion of the rendered `api_url` for the multi-cluster pattern\n")
-	b.WriteString(fmt.Sprintf("- `mm-namespace=<ns>` and `mm-name=<cr>` — `%s` only: where Mattermost runs, and its custom resource name (default `%s`)\n", mattermostGroup, defaultMattermostName))
+	b.WriteString(fmt.Sprintf("- `mm-namespace=<ns>`, `mm-name=<cr>` and `mm-service=<svc>` — `%s` only: where Mattermost runs, its custom resource name (default `%s`), and the `service` label on its metrics (default `<cr>-metrics`)\n", mattermostGroup, defaultMattermostName))
 	return b.String()
 }
 

@@ -116,13 +116,13 @@ func TestRenderReceiverYAMLForKindCustom(t *testing.T) {
 	const fallbackURL = "https://mm.example.com/plugins/x/public/runbooks/slo-burn-rate.html"
 
 	standard := renderReceiverYAMLForKind("high-cpu-usage--ops-alerts", "http://wh", "alerts",
-		"https://mm.example.com/plugins/x/public/runbooks/high-cpu-usage.html", "http://icon", false)
+		"https://mm.example.com/plugins/x/public/runbooks/high-cpu-usage.html", "http://icon", kindRunbook)
 	if !strings.Contains(standard, "public/runbooks/high-cpu-usage.html") {
 		t.Fatalf("standard receiver must include the runbook fallback link, got:\n%s", standard)
 	}
 
 	custom := renderReceiverYAMLForKind("slo-burn-rate--ops-alerts", "http://wh", "alerts",
-		fallbackURL, "http://icon", true)
+		fallbackURL, "http://icon", kindCustom)
 	if strings.Contains(custom, fallbackURL) {
 		t.Fatalf("custom receiver must NOT include the runbook fallback link, got:\n%s", custom)
 	}
@@ -142,7 +142,7 @@ func TestRenderReceiverYAMLForKindCustom(t *testing.T) {
 func TestRenderAlertmanagerConfigCustom(t *testing.T) {
 	specs := []crdReceiverSpec{
 		{name: "alerts-fallback", channel: "alerts", secretName: "s"}, // slug=="" fallback
-		{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "alerts", secretName: "s", custom: true},
+		{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "alerts", secretName: "s", kind: kindCustom},
 		{
 			slug: "high-cpu-usage", name: "high-cpu-usage--ops-alerts", channel: "alerts", secretName: "s",
 			runbookDefaultURL: "https://mm.example.com/rb/high-cpu-usage.html",
@@ -178,7 +178,7 @@ func TestRenderAlertmanagerConfigCustom(t *testing.T) {
 func TestRenderAlertmanagerConfigCustomOnlyIsInert(t *testing.T) {
 	specs := []crdReceiverSpec{
 		{name: "alerts-fallback", channel: "alerts", secretName: "s"}, // slug=="" fallback
-		{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "alerts", secretName: "s", custom: true},
+		{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "alerts", secretName: "s", kind: kindCustom},
 	}
 	out := renderAlertmanagerConfig("cr", "monitoring", "alerts-fallback", specs)
 

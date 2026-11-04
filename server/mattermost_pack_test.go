@@ -30,7 +30,7 @@ var wantPackAlerts = []string{
 
 func testTarget(t *testing.T) mattermostTarget {
 	t.Helper()
-	target, err := newMattermostTarget("mattermost-crimson", "")
+	target, err := newMattermostTarget("mattermost-crimson", "", "")
 	if err != nil {
 		t.Fatalf("newMattermostTarget: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 }
 
 func TestRenderMattermostOperatorRulesCustomName(t *testing.T) {
-	target, err := newMattermostTarget("chat", "mm-prod")
+	target, err := newMattermostTarget("chat", "mm-prod", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +128,35 @@ func TestRenderMattermostOperatorRulesCustomName(t *testing.T) {
 	}
 	if !strings.Contains(out, `service="mm-prod-metrics"`) || !strings.Contains(out, `pod=~"mm-prod-[^-]+-[^-]+"`) {
 		t.Fatal("custom name did not reach the service and pod selector")
+	}
+}
+
+func TestMattermostServiceLabelOverride(t *testing.T) {
+	target, err := newMattermostTarget("chat", "mm", "mattermost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := renderMattermostOperatorRules(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `service="mattermost"`) || strings.Contains(out, `service="mm-metrics"`) {
+		t.Fatal("mm-service did not reach the rules")
+	}
+	if !strings.Contains(out, `pod=~"mm-[^-]+-[^-]+"`) {
+		t.Fatal("mm-service must not change the pod selector")
+	}
+	for _, bad := range []string{"Bad_Service", `x"} or vector(1) #`, strings.Repeat("a", 64)} {
+		if _, err := newMattermostTarget("chat", "", bad); err == nil || !strings.Contains(err.Error(), "mm-service") {
+			t.Errorf("service %q: err = %v", bad, err)
+		}
+	}
+	opts, msg := parseFormatArgs([]string{"mattermost", "mm-namespace=chat", "mm-service=mattermost"})
+	if msg != "" || opts.mmService != "mattermost" {
+		t.Fatalf("opts = %+v, msg = %q", opts, msg)
+	}
+	if _, msg := parseFormatArgs([]string{"security", "mm-service=x"}); !strings.Contains(msg, "only apply") {
+		t.Fatalf("mm-service outside mattermost: %q", msg)
 	}
 }
 
@@ -143,13 +172,13 @@ func TestNewMattermostTargetValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newMattermostTarget(tc.namespace, tc.crName)
+			_, err := newMattermostTarget(tc.namespace, tc.crName, "")
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
 			}
 		})
 	}
-	target, err := newMattermostTarget("chat", "")
+	target, err := newMattermostTarget("chat", "", "")
 	if err != nil || target.name != defaultMattermostName {
 		t.Fatalf("default name = %q, err %v", target.name, err)
 	}
@@ -187,7 +216,7 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 	p := rulesTestPlugin()
 	target := testTarget(t)
 
-	base, err := p.mattermostRulesFile("monitoring", nil, formatStandard)
+	base, err := p.mattermostRulesFile(testRulesContext(formatStandard), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +225,7 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 		t.Fatalf("without mm-namespace want only the group's runbook rules, got %v", baseAlerts)
 	}
 
-	crd, err := p.mattermostRulesFile("monitoring", &target, formatCRD)
+	crd, err := p.mattermostRulesFile(testRulesContext(formatCRD), &target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +271,7 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 		t.Fatalf("section missing the operator hand-off:\n%s", crd.section())
 	}
 
-	plain, err := p.mattermostRulesFile("monitoring", &target, formatStandard)
+	plain, err := p.mattermostRulesFile(testRulesContext(formatStandard), &target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,8 +328,7 @@ func packCRDSpecs() []crdReceiverSpec {
 			name:       "mattermost-server--ops-alerts",
 			channel:    "ops-alerts",
 			secretName: "alertmanager-webhook-ops-alerts",
-			custom:     true,
-			pack:       packReceiverSlug,
+			kind:       kindPack,
 		},
 	}
 }
@@ -412,9 +440,9 @@ func TestParseFormatArgsPack(t *testing.T) {
 func TestRulesFileForChannelPointsPackUsersToFormatRules(t *testing.T) {
 	p := &Plugin{}
 	p.API = &ruleDMAPI{uploads: map[string]string{}}
-	rules, reason := p.rulesFileForChannel("monitoring", []alertConfig{
+	rules, reason := p.rulesFileForChannel(testRulesContext(formatCRD), []alertConfig{
 		{Name: "mattermost-server--ops-alerts", Team: "ops", Channel: "alerts", Custom: true, Pack: packReceiverSlug},
-	}, formatCRD)
+	})
 	if rules != nil || !strings.Contains(reason, "format rules "+mattermostGroup) {
 		t.Fatalf("rules=%v reason=%q", rules, reason)
 	}
@@ -436,7 +464,7 @@ func TestWritePackRulesForPromtool(t *testing.T) {
 	}
 
 	target := testTarget(t)
-	merged, err := rulesTestPlugin().mattermostRulesFile("monitoring", &target, formatStandard)
+	merged, err := rulesTestPlugin().mattermostRulesFile(testRulesContext(formatStandard), &target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,14 +583,14 @@ func TestParseFormatArgsTargets(t *testing.T) {
 func TestRulesForTargetIsPerGroup(t *testing.T) {
 	p := rulesTestPlugin()
 
-	rules, msg := p.rulesForTarget("monitoring", formatCRD, exportOptions{target: "security"})
+	rules, msg := p.rulesForTarget(testRulesContext(formatCRD), rulesOptions{target: "security"})
 	if msg != "" {
 		t.Fatal(msg)
 	}
 	if rules.name != prometheusRuleObject+"-security.yaml" {
 		t.Fatalf("name = %q", rules.name)
 	}
-	plain, msg := p.rulesForTarget("monitoring", formatStandard, exportOptions{target: "security"})
+	plain, msg := p.rulesForTarget(testRulesContext(formatStandard), rulesOptions{target: "security"})
 	if msg != "" {
 		t.Fatal(msg)
 	}
@@ -574,16 +602,16 @@ func TestRulesForTargetIsPerGroup(t *testing.T) {
 		t.Fatalf("section should name the group:\n%s", rules.section())
 	}
 
-	one, msg := p.rulesForTarget("monitoring", formatStandard, exportOptions{target: "high-cpu-usage"})
+	one, msg := p.rulesForTarget(testRulesContext(formatStandard), rulesOptions{target: "high-cpu-usage"})
 	if msg != "" || one.count == 0 || one.count >= rules.count+len(scaffoldSets["compute"]) {
 		t.Fatalf("single runbook rules: %+v %q", one, msg)
 	}
 
-	mm, msg := p.rulesForTarget("monitoring", formatCRD, exportOptions{target: mattermostGroup})
+	mm, msg := p.rulesForTarget(testRulesContext(formatCRD), rulesOptions{target: mattermostGroup})
 	if msg != "" || mm.count != len(scaffoldSets[mattermostGroup]) {
 		t.Fatalf("mattermost without a namespace: %+v %q", mm, msg)
 	}
-	if _, msg = p.rulesForTarget("monitoring", formatCRD, exportOptions{target: mattermostGroup, mmNamespace: "Bad_NS"}); !strings.Contains(msg, "mm-namespace") {
+	if _, msg = p.rulesForTarget(testRulesContext(formatCRD), rulesOptions{target: mattermostGroup, mmNamespace: "Bad_NS"}); !strings.Contains(msg, "mm-namespace") {
 		t.Fatalf("bad namespace message = %q", msg)
 	}
 }

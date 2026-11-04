@@ -23,10 +23,6 @@ import (
 //	                                       # WebhookRotationDays from
 //	                                       # System Console)
 func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
 		return "Usage: `/alertmanager config rotate <name>` or `/alertmanager config rotate all overdue`", nil
@@ -191,7 +187,7 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
 	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
 	for _, ac := range affected {
-		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
+		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.resolvedKind()))
 		y.WriteString("\n")
 	}
 	routesYAML := assembleRoutesYAML(affected)
@@ -353,7 +349,7 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
 	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
 	for _, ac := range rotated {
-		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
+		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.resolvedKind()))
 		y.WriteString("\n")
 	}
 	routesYAML := assembleRoutesYAML(rotated)
@@ -388,7 +384,7 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 // wasn't, the message must NOT claim the old URL is dead (B-003) and instead
 // tells the admin to remove the lingering webhook by hand.
 func (p *Plugin) renderRotateResponse(ac alertConfig, oldDeleted bool, oldHookID string) string {
-	yaml := renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom)
+	yaml := renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.resolvedKind())
 	return fmt.Sprintf(
 		":key: Rotated webhook for `%s`. %s\n\n"+
 			"**Update your `alertmanager.yml`:**\n\n```yaml\n%s```\n\n"+
