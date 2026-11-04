@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `PersistentVolumeFull` join and the Bitnami registry allowlist for `UnexpectedContainerImage`, with promtool unit tests.
 * SSRF hints and channel-scoped diff matching are more precise.
 
+### Internal
+
+* Commands run through one registry that parses, authorizes and runs each verb.
+* `cmd_scaffold.go`, `cmd_lifecycle.go` and `admin_inventory.go` are split into files of a few hundred lines. `handleAdd` and the inventory page are built from small stage functions, and the inventory page markup lives in `inventory.html`.
+
 ## [1.4.17](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.2.0...v1.4.17) (2026-08-20)
 
 Rolls up the `add-custom` feature (previously drafted as 1.3.0, never tagged) plus a
