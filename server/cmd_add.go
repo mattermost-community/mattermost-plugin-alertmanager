@@ -60,17 +60,59 @@ func splitAddWords(args []string) (format string, rotationOptIn bool, positional
 // `webhook-host=<url>` overrides the host portion of the rendered
 // api_url for the multi-cluster deployment pattern.
 func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
+	req, reply := p.parseAddRequest(args)
+	if reply != "" {
+		return reply, nil
+	}
+
+	dest, msg := p.currentChannelDestination(args)
+	if msg != "" {
+		return msg, nil
+	}
+
+	// Atomic read-modify-write: acquire configWriteMu here, immediately
+	// before the first getConfiguration read, and hold it through the save
+	// so a concurrent add/remove/reconcile can't clobber the merged
+	// result (lost update). Deliberately NOT held during arg parsing or the
+	// channel resolve above — those don't touch config state, so keeping the
+	// lock off them minimizes contention.
+	p.configWriteMu.Lock()
+	defer p.configWriteMu.Unlock()
+
+	results, newEntries, hookID := p.createAddReceivers(args, req, dest)
+	if reply := p.persistAddEntries(args, req, dest, newEntries, hookID); reply != "" {
+		return reply, nil
+	}
+	return p.renderAddSummary(args, req, dest, results, newEntries), nil
+}
+
+// addRequest is the validated form of a `config add` command line.
+type addRequest struct {
+	amURL               string
+	groupName           string
+	slugs               []string // receivers to create, including the pack receiver
+	runbookSlugs        []string // runbook receivers only; drives the sample rules
+	format              string
+	namespace           string
+	rotationOptIn       bool
+	webhookHostOverride string
+	mmTarget            *mattermostTarget
+}
+
+// parseAddRequest validates the command line. A non-empty reply is the
+// user-facing message to return instead of continuing.
+func (p *Plugin) parseAddRequest(args *model.CommandArgs) (addRequest, string) {
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
 	if msg := removedAddSyntaxMessage(rest); msg != "" {
-		return msg, nil
+		return addRequest{}, msg
 	}
 
 	webhookHostOverride, rest := extractFlagValue(rest, "webhook-host=")
 	if webhookHostOverride != "" {
 		if err := validateWebhookHost(webhookHostOverride); err != nil {
-			return fmt.Sprintf("Invalid `webhook-host` value: %v", err), nil
+			return addRequest{}, fmt.Sprintf("Invalid `webhook-host` value: %v", err)
 		}
 	}
 
@@ -79,7 +121,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	if namespace == "" {
 		namespace = defaultCRDNamespace
 	} else if err := validateCRDNamespace(namespace); err != nil {
-		return fmt.Sprintf(":warning: Invalid `namespace`: %v", err), nil
+		return addRequest{}, fmt.Sprintf(":warning: Invalid `namespace`: %v", err)
 	}
 
 	mmNamespace, rest := extractFlagValue(rest, mmNamespaceFlag)
@@ -89,7 +131,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	format, rotationOptIn, positional := splitAddWords(rest)
 
 	if len(positional) < 1 || len(positional) > 2 {
-		return addUsageMessage(), nil
+		return addRequest{}, addUsageMessage()
 	}
 
 	amURL := strings.TrimRight(positional[0], "/")
@@ -97,7 +139,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// clear message instead of creating a webhook and rolling back
 	// (CL-03/CL-21). IsValid re-checks it at persist time for the KV-import path.
 	if err := validateAlertManagerURL(amURL); err != nil {
-		return fmt.Sprintf("Invalid Alertmanager URL: %s", p.amErrorText(args.UserId, err)), nil
+		return addRequest{}, fmt.Sprintf("Invalid Alertmanager URL: %s", p.amErrorText(args.UserId, err))
 	}
 
 	target := "all"
@@ -107,10 +149,10 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	groupName, slugs, err := resolveAddTarget(target)
 	if err != nil {
-		return err.Error(), nil
+		return addRequest{}, err.Error()
 	}
 	if len(slugs) == 0 {
-		return ":warning: Target `" + target + "` resolved to zero runbooks. Either the embedded runbook list is empty or the category map is misconfigured.", nil
+		return addRequest{}, ":warning: Target `" + target + "` resolved to zero runbooks. Either the embedded runbook list is empty or the category map is misconfigured."
 	}
 
 	// mm-namespace turns the operator alerts on for the `mattermost` group: one
@@ -120,30 +162,34 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	runbookSlugs := slugs
 	if mmNamespace != "" || mmName != "" || mmService != "" {
 		if groupName != mattermostGroup {
-			return fmt.Sprintf(":warning: `mm-namespace`, `mm-name` and `mm-service` only apply to the `%s` target.", mattermostGroup), nil
+			return addRequest{}, fmt.Sprintf(":warning: `mm-namespace`, `mm-name` and `mm-service` only apply to the `%s` target.", mattermostGroup)
 		}
 		t, tErr := newMattermostTarget(mmNamespace, mmName, mmService)
 		if tErr != nil {
-			return fmt.Sprintf(":warning: %v\n\n%s", tErr, addUsageMessage()), nil
+			return addRequest{}, fmt.Sprintf(":warning: %v\n\n%s", tErr, addUsageMessage())
 		}
 		mmTarget = &t
 		slugs = append(slices.Clone(slugs), packReceiverSlug)
 	}
 
-	dest, msg := p.currentChannelDestination(args)
-	if msg != "" {
-		return msg, nil
-	}
-	channelID, team, channel := dest.channelID, dest.team, dest.channel
+	return addRequest{
+		amURL:               amURL,
+		groupName:           groupName,
+		slugs:               slugs,
+		runbookSlugs:        runbookSlugs,
+		format:              format,
+		namespace:           namespace,
+		rotationOptIn:       rotationOptIn,
+		webhookHostOverride: webhookHostOverride,
+		mmTarget:            mmTarget,
+	}, ""
+}
 
-	// Atomic read-modify-write: acquire configWriteMu here, immediately
-	// before the first getConfiguration read, and hold it through the save
-	// below so a concurrent add/remove/reconcile can't clobber the merged
-	// result (lost update). Deliberately NOT held during arg parsing or the
-	// channel resolve above — those don't touch config state, so keeping the
-	// lock off them minimizes contention.
-	p.configWriteMu.Lock()
-	defer p.configWriteMu.Unlock()
+// createAddReceivers creates the shared webhook and builds the new receiver
+// entries. Receivers already in this channel are skipped, and a failed webhook
+// fails every new slug. Callers hold configWriteMu.
+func (p *Plugin) createAddReceivers(args *model.CommandArgs, req addRequest, dest addDestination) (results []scaffoldResult, newEntries []alertConfig, hookID string) {
+	team, channel := dest.team, dest.channel
 
 	// Skip-check is scoped to the destination TEAM + channel. Channel names
 	// are unique only per team (`town-square` exists in every team), so a
@@ -163,9 +209,9 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// (pattern <slug>--<team>-<channel>); the shared webhook itself is named
 	// <category>--<team>-<channel> in Mattermost, mirroring the receiver-name
 	// format so the two line up in System Console.
-	results := make([]scaffoldResult, 0, len(slugs))
-	newSlugs := make([]string, 0, len(slugs))
-	for _, slug := range slugs {
+	results = make([]scaffoldResult, 0, len(req.slugs))
+	newSlugs := make([]string, 0, len(req.slugs))
+	for _, slug := range req.slugs {
 		receiverName := receiverNameForChannel(slug, team, channel)
 		if existingInThisChannel[receiverName] || existingInThisChannel[slug] {
 			results = append(results, scaffoldResult{receiverName, "skipped", "already exists"})
@@ -174,77 +220,85 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		newSlugs = append(newSlugs, slug)
 	}
 
-	newEntries := make([]alertConfig, 0, len(newSlugs))
-	var sharedHookID string
-
-	if len(newSlugs) > 0 {
-		// One Mattermost webhook serves every receiver in this add
-		// invocation. Display name follows the receiver-name format
-		// <category>--<team>-<channel> so System Console → Integrations →
-		// Incoming Webhooks shows the unit (and disambiguates channels that
-		// repeat across teams), not the per-receiver slug.
-		webhookDisplayName := webhookDisplayNameFor(groupName, team, channel)
-		hookID, hookErr := p.createIncomingWebhook(args.UserId, channelID, webhookDisplayName)
-		if hookErr != nil {
-			// Webhook creation failed — every requested new slug fails.
-			// Existing skipped slugs remain in the results; rendering
-			// below shows the full picture.
-			for _, slug := range newSlugs {
-				results = append(results, scaffoldResult{receiverNameForChannel(slug, team, channel), "failed", hookErr.Error()})
-			}
-		} else {
-			sharedHookID = hookID
-			now := time.Now().UTC()
-			for _, slug := range newSlugs {
-				receiverName := receiverNameForChannel(slug, team, channel)
-				newEntries = append(newEntries, alertConfig{
-					Name:                     receiverName,
-					Team:                     team,
-					Channel:                  channel,
-					AlertManagerURL:          amURL,
-					WebhookID:                sharedHookID,
-					GroupName:                groupName,
-					Kind:                     kindFor(slug),
-					Pack:                     packFor(slug),
-					WebhookHostOverride:      webhookHostOverride,
-					LastRotatedAt:            now,
-					RotationRemindersEnabled: rotationOptIn,
-				})
-				// Detail is rendered into the chat response table; show the redacted
-				// fingerprint, never the raw hook ID (a reusable bearer token — F-002).
-				// The real webhook URL reaches the admin only in the DM'd YAML/CRD.
-				results = append(results, scaffoldResult{receiverName, "created", redactHookID(sharedHookID)})
-			}
-		}
+	newEntries = make([]alertConfig, 0, len(newSlugs))
+	if len(newSlugs) == 0 {
+		return results, newEntries, ""
 	}
 
-	// Persist all new entries in one save rather than N individual saves.
-	// Single SavePluginConfig call = no race risk between OnConfigurationChange
-	// firings = atomic-to-plugin-settings semantics. If the save fails, we
-	// roll back the shared webhook so the user isn't left with an orphan.
-	if len(newEntries) > 0 {
-		// Append the new entries to the freshly-read KV list under compare-and-set
-		// (CL-24). slices.Concat allocates a fresh backing array — guards against the
-		// append-aliasing pitfall of reusing the source slice's capacity. A
-		// concurrent add of a colliding name surfaces as a validation failure inside
-		// updateConfigsAtomic, which rolls back the webhook + channel below.
-		_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
-			if capErr := enforceReceiverCap(len(current), len(newEntries)); capErr != nil {
-				return nil, capErr
-			}
-			return slices.Concat(current, newEntries), nil
+	// One Mattermost webhook serves every receiver in this add
+	// invocation. Display name follows the receiver-name format
+	// <category>--<team>-<channel> so System Console → Integrations →
+	// Incoming Webhooks shows the unit (and disambiguates channels that
+	// repeat across teams), not the per-receiver slug.
+	webhookDisplayName := webhookDisplayNameFor(req.groupName, team, channel)
+	created, hookErr := p.createIncomingWebhook(args.UserId, dest.channelID, webhookDisplayName)
+	if hookErr != nil {
+		// Existing skipped slugs remain in the results; rendering
+		// shows the full picture.
+		for _, slug := range newSlugs {
+			results = append(results, scaffoldResult{receiverNameForChannel(slug, team, channel), "failed", hookErr.Error()})
+		}
+		return results, newEntries, ""
+	}
+
+	hookID = created
+	now := time.Now().UTC()
+	for _, slug := range newSlugs {
+		receiverName := receiverNameForChannel(slug, team, channel)
+		newEntries = append(newEntries, alertConfig{
+			Name:                     receiverName,
+			Team:                     team,
+			Channel:                  channel,
+			AlertManagerURL:          req.amURL,
+			WebhookID:                hookID,
+			GroupName:                req.groupName,
+			Kind:                     kindFor(slug),
+			Pack:                     packFor(slug),
+			WebhookHostOverride:      req.webhookHostOverride,
+			LastRotatedAt:            now,
+			RotationRemindersEnabled: req.rotationOptIn,
 		})
-		if err != nil {
-			warn := ""
-			if delErr := p.deleteIncomingWebhook(args.UserId, sharedHookID); delErr != nil {
-				p.API.LogWarn("scaffold rollback: could not delete shared webhook (orphan may remain)", "webhook", redactHookID(sharedHookID), "err", delErr.Error())
-				warn = webhookRollbackWarning(webhookDisplayNameFor(groupName, team, channel))
-			}
-			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %s%s", p.amErrorText(args.UserId, err), warn), nil
-		}
+		// Detail is rendered into the chat response table; show the redacted
+		// fingerprint, never the raw hook ID (a reusable bearer token — F-002).
+		// The real webhook URL reaches the admin only in the DM'd YAML/CRD.
+		results = append(results, scaffoldResult{receiverName, "created", redactHookID(hookID)})
 	}
+	return results, newEntries, hookID
+}
 
-	// Render the summary.
+// persistAddEntries saves all new entries in one write rather than N saves.
+// If the save fails the shared webhook is rolled back so the user isn't left
+// with an orphan. A non-empty reply is the failure message. Callers hold
+// configWriteMu.
+func (p *Plugin) persistAddEntries(args *model.CommandArgs, req addRequest, dest addDestination, newEntries []alertConfig, hookID string) string {
+	if len(newEntries) == 0 {
+		return ""
+	}
+	// Append the new entries to the freshly-read KV list under compare-and-set
+	// (CL-24). slices.Concat allocates a fresh backing array — guards against the
+	// append-aliasing pitfall of reusing the source slice's capacity. A
+	// concurrent add of a colliding name surfaces as a validation failure inside
+	// updateConfigsAtomic, which rolls back the webhook + channel below.
+	_, _, err := p.updateConfigsAtomic(func(current []alertConfig) ([]alertConfig, error) {
+		if capErr := enforceReceiverCap(len(current), len(newEntries)); capErr != nil {
+			return nil, capErr
+		}
+		return slices.Concat(current, newEntries), nil
+	})
+	if err == nil {
+		return ""
+	}
+	warn := ""
+	if delErr := p.deleteIncomingWebhook(args.UserId, hookID); delErr != nil {
+		p.API.LogWarn("scaffold rollback: could not delete shared webhook (orphan may remain)", "webhook", redactHookID(hookID), "err", delErr.Error())
+		warn = webhookRollbackWarning(webhookDisplayNameFor(req.groupName, dest.team, dest.channel))
+	}
+	return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %s%s", p.amErrorText(args.UserId, err), warn)
+}
+
+// renderAddSummary builds the reply: the per-receiver table, the DM delivery
+// of the config bundle, and any group-specific prerequisites.
+func (p *Plugin) renderAddSummary(args *model.CommandArgs, req addRequest, dest addDestination, results []scaffoldResult, newEntries []alertConfig) string {
 	var b strings.Builder
 	created := 0
 	skipped := 0
@@ -261,7 +315,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	}
 
 	b.WriteString(fmt.Sprintf(":white_check_mark: `/alertmanager config add` complete: %d created, %d skipped, %d failed.\n\n", created, skipped, failed))
-	b.WriteString(fmt.Sprintf("All receivers bound to channel `~%s`. Alertmanager URL: `%s`\n\n", channel, amURL))
+	b.WriteString(fmt.Sprintf("All receivers bound to channel `~%s`. Alertmanager URL: `%s`\n\n", dest.channel, req.amURL))
 	b.WriteString("| Receiver | Status | Detail |\n")
 	b.WriteString("|----------|--------|--------|\n")
 	for _, r := range results {
@@ -274,20 +328,6 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		b.WriteString(fmt.Sprintf("| `%s` | %s %s | %s |\n", r.Slug, marker, r.Status, r.Detail))
 	}
 
-	// If anything was created, deliver the assembled receivers.yml via
-	// a DM from the bot to the calling sysadmin. Two reasons we use a
-	// DM rather than attaching the file to the ephemeral summary post:
-	//
-	//   1. Ephemeral posts with file attachments are buggy in Mattermost
-	//      — the file uploads but the post-file linkage doesn't persist
-	//      reliably because the post itself isn't in the DB. Users see
-	//      a broken attachment they can't download.
-	//   2. DMs persist normally, so the file is fetchable, downloadable,
-	//      and findable later in the user's DM history with the bot.
-	//
-	// The DM is between @alertmanagerbot and the calling user, so only
-	// the calling sysadmin sees the YAML (which contains webhook URLs
-	// = channel-bound bearer tokens).
 	if created > 0 {
 		// Always list the receiver names in the in-channel summary —
 		// they're the primary handoff to /alertmanager config <name>,
@@ -299,73 +339,94 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 			}
 		}
 		b.WriteString("```\n\n")
-
-		// The receivers only route alerts. The matching sample rules ride in the
-		// same DM so one message holds everything to apply.
-		var rules *rulesFile
-		var rulesErr error
-		rc := rulesContext{namespace: namespace, format: format, allowlist: true}
-		if mmTarget != nil {
-			rules, rulesErr = p.mattermostRulesFile(rc, mmTarget)
-		} else {
-			rules, rulesErr = p.rulesFileForAdd(rc, groupName, runbookSlugs, "")
-		}
-		rulesReason := ""
-		if rulesErr != nil {
-			p.API.LogWarn("scaffold: couldn't build the rules file for this group", "err", rulesErr.Error(), "group", groupName)
-			rulesReason = fmt.Sprintf(":warning: Couldn't build the rules file for this group (%v). Run `/alertmanager format rules` for the full set.", rulesErr)
-			rules = nil
-		}
-		delivered := false
-
-		if format == formatCRD {
-			// Prometheus Operator path: DM an AlertmanagerConfig + Secret
-			// manifest instead of the alertmanager.yml receivers/routes files.
-			manifest, crCount := p.assembleCRDManifest(newEntries, namespace)
-			if dmErr := p.dmCRDBundle(args.UserId, manifest, crCount, namespace, rules); dmErr != nil {
-				p.API.LogWarn("scaffold: couldn't DM CRD manifest; falling back to inline", "err", dmErr.Error())
-				b.WriteString(":warning: Couldn't DM the manifest (")
-				b.WriteString(dmErr.Error())
-				b.WriteString(fmt.Sprintf("). Inline copy below — review and `kubectl apply -n %s`:\n\n```yaml\n", namespace))
-				b.WriteString(manifest)
-				b.WriteString("```\n")
-			} else {
-				delivered = true
-				b.WriteString(fmt.Sprintf(":page_facing_up: **Sent `alertmanager-config.yaml` (%d AlertmanagerConfig, v1alpha1) to your DM with `@%s`.** Open it, review, then apply:\n\n```\nkubectl apply -n %s -f alertmanager-config.yaml\n```\n:book: [Kubernetes guide](%s)\n", crCount, webhookUsername, namespace, p.helpPageURL("KUBERNETES.md")))
-			}
-		} else {
-			yamlFile := p.assembleReceiversYAML(newEntries, results, channel, amURL)
-			routesFile := assembleRoutesYAML(newEntries)
-			dmErr := p.dmYAMLBundle(args.UserId, yamlFile, routesFile, created, amURL, rules)
-			if dmErr != nil {
-				// DM delivery failed — fall back to inline YAML in the
-				// summary post. Long but functional.
-				p.API.LogWarn("scaffold: couldn't DM assembled YAML; falling back to inline", "err", dmErr.Error())
-				b.WriteString(":warning: Couldn't DM the assembled YAML file (")
-				b.WriteString(dmErr.Error())
-				b.WriteString("). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n")
-				b.WriteString(yamlFile)
-				b.WriteString("```\n")
-			} else {
-				delivered = true
-				b.WriteString(":page_facing_up: **Sent `alertmanager-receivers.yml` to your DM with `@")
-				b.WriteString(webhookUsername)
-				b.WriteString("`** — open that conversation to download the file. Paste the contents under `receivers:` in your `alertmanager.yml`, then reload:\n\n```\ncurl -X POST ")
-				b.WriteString(amURL)
-				b.WriteString("/-/reload\n```\n")
-			}
-		}
-		b.WriteString(rulesReply(rules, rulesReason, delivered))
+		b.WriteString(p.deliverAddBundle(args, req, dest, results, newEntries))
 	}
 
 	// The plugin has no Prometheus access to probe for the exporter, so a
 	// static warning at scaffold time is the best signal we can give.
-	if groupName == "database" {
+	if req.groupName == "database" {
 		b.WriteString("\n\n⚠ **Database receivers require `postgres_exporter`** — the rules for this group use `pg_replication_lag_seconds`, `pg_stat_activity_count`, and `pg_stat_statements_*` metrics that only exist when a postgres_exporter is running and scraped by Prometheus. Without it, these receivers will never fire.\n\n")
 		b.WriteString("Deploy: `helm install postgres-exporter prometheus-community/prometheus-postgres-exporter` and configure a ServiceMonitor pointing at your Postgres instance. Also enable `shared_preload_libraries = 'pg_stat_statements'` in PostgreSQL for the DatabaseHighLatency rule.")
 	}
 
-	return b.String(), nil
+	return b.String()
+}
+
+// deliverAddBundle DMs the assembled config (receivers.yml or CRD manifest)
+// plus the matching sample rules to the calling admin, and returns the reply
+// text describing where it went. Two reasons for a DM rather than attaching
+// the file to the ephemeral summary post:
+//
+//  1. Ephemeral posts with file attachments are buggy in Mattermost
+//     — the file uploads but the post-file linkage doesn't persist
+//     reliably because the post itself isn't in the DB. Users see
+//     a broken attachment they can't download.
+//  2. DMs persist normally, so the file is fetchable, downloadable,
+//     and findable later in the user's DM history with the bot.
+//
+// The DM is between @alertmanagerbot and the calling user, so only
+// the calling sysadmin sees the YAML (which contains webhook URLs
+// = channel-bound bearer tokens).
+func (p *Plugin) deliverAddBundle(args *model.CommandArgs, req addRequest, dest addDestination, results []scaffoldResult, newEntries []alertConfig) string {
+	var b strings.Builder
+	created := len(newEntries)
+
+	// The receivers only route alerts. The matching sample rules ride in the
+	// same DM so one message holds everything to apply.
+	var rules *rulesFile
+	var rulesErr error
+	rc := rulesContext{namespace: req.namespace, format: req.format, allowlist: true}
+	if req.mmTarget != nil {
+		rules, rulesErr = p.mattermostRulesFile(rc, req.mmTarget)
+	} else {
+		rules, rulesErr = p.rulesFileForAdd(rc, req.groupName, req.runbookSlugs, "")
+	}
+	rulesReason := ""
+	if rulesErr != nil {
+		p.API.LogWarn("scaffold: couldn't build the rules file for this group", "err", rulesErr.Error(), "group", req.groupName)
+		rulesReason = fmt.Sprintf(":warning: Couldn't build the rules file for this group (%v). Run `/alertmanager format rules` for the full set.", rulesErr)
+		rules = nil
+	}
+	delivered := false
+
+	if req.format == formatCRD {
+		// Prometheus Operator path: DM an AlertmanagerConfig + Secret
+		// manifest instead of the alertmanager.yml receivers/routes files.
+		manifest, crCount := p.assembleCRDManifest(newEntries, req.namespace)
+		if dmErr := p.dmCRDBundle(args.UserId, manifest, crCount, req.namespace, rules); dmErr != nil {
+			p.API.LogWarn("scaffold: couldn't DM CRD manifest; falling back to inline", "err", dmErr.Error())
+			b.WriteString(":warning: Couldn't DM the manifest (")
+			b.WriteString(dmErr.Error())
+			b.WriteString(fmt.Sprintf("). Inline copy below — review and `kubectl apply -n %s`:\n\n```yaml\n", req.namespace))
+			b.WriteString(manifest)
+			b.WriteString("```\n")
+		} else {
+			delivered = true
+			b.WriteString(fmt.Sprintf(":page_facing_up: **Sent `alertmanager-config.yaml` (%d AlertmanagerConfig, v1alpha1) to your DM with `@%s`.** Open it, review, then apply:\n\n```\nkubectl apply -n %s -f alertmanager-config.yaml\n```\n:book: [Kubernetes guide](%s)\n", crCount, webhookUsername, req.namespace, p.helpPageURL("KUBERNETES.md")))
+		}
+	} else {
+		yamlFile := p.assembleReceiversYAML(newEntries, results, dest.channel, req.amURL)
+		routesFile := assembleRoutesYAML(newEntries)
+		if dmErr := p.dmYAMLBundle(args.UserId, yamlFile, routesFile, created, req.amURL, rules); dmErr != nil {
+			// DM delivery failed — fall back to inline YAML in the
+			// summary post. Long but functional.
+			p.API.LogWarn("scaffold: couldn't DM assembled YAML; falling back to inline", "err", dmErr.Error())
+			b.WriteString(":warning: Couldn't DM the assembled YAML file (")
+			b.WriteString(dmErr.Error())
+			b.WriteString("). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n")
+			b.WriteString(yamlFile)
+			b.WriteString("```\n")
+		} else {
+			delivered = true
+			b.WriteString(":page_facing_up: **Sent `alertmanager-receivers.yml` to your DM with `@")
+			b.WriteString(webhookUsername)
+			b.WriteString("`** — open that conversation to download the file. Paste the contents under `receivers:` in your `alertmanager.yml`, then reload:\n\n```\ncurl -X POST ")
+			b.WriteString(req.amURL)
+			b.WriteString("/-/reload\n```\n")
+		}
+	}
+	b.WriteString(rulesReply(rules, rulesReason, delivered))
+	return b.String()
 }
 
 // scaffoldResult is the per-receiver outcome captured during a scaffold
