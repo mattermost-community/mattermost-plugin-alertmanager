@@ -142,15 +142,17 @@ type alertConfig struct {
 	//     existed. Treated as individual for backwards compatibility.
 	GroupName string `json:"groupName,omitempty"`
 
-	// Custom marks a generic (non-runbook) receiver created via
-	// /alertmanager config add-custom. Its base slug is a user-chosen name rather than
-	// a runbook slug, so the plugin does NOT auto-generate a `runbook=<slug>`
-	// route for it — the user wires the matcher manually (see assembleRoutesYAML,
-	// which emits a commented stub for these). Runbook diagnostics/links are
-	// naturally empty since no runbook backs the name.
+	// Kind says what the receiver is for, which decides how its alerts are routed
+	// and silenced. Read it through resolvedKind: entries saved before Kind
+	// existed leave it empty.
+	Kind receiverKind `json:"kind,omitempty"`
+
+	// Custom is the pre-Kind flag for a generic receiver created via
+	// /alertmanager config add-custom. Old entries also set it on pack
+	// receivers. New entries use Kind and leave it unset.
 	Custom bool `json:"custom,omitempty"`
 
-	// Pack names the alert set a Custom receiver was created for (today only
+	// Pack names the alert set a pack receiver was created for (today only
 	// packReceiverSlug). Its receiver carries no runbook label, so its route
 	// matches that set's alert names instead of a runbook slug.
 	Pack string `json:"pack,omitempty"`
@@ -209,11 +211,55 @@ type alertConfig struct {
 // unbounded name. Alertmanager and the rendered YAML impose no tighter limit.
 var alertConfigNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,189}$`)
 
+// receiverKind is how a receiver's alerts reach it.
+type receiverKind string
+
+const (
+	// kindRunbook receivers are named for a shipped runbook. Routes match the
+	// runbook label, and the message links to that runbook.
+	kindRunbook receiverKind = "runbook"
+	// kindCustom receivers carry a name the user chose. The plugin cannot know
+	// their alerts, so it writes only a commented route stub for them.
+	kindCustom receiverKind = "custom"
+	// kindPack receivers claim a fixed set of alert names, such as the
+	// Mattermost operator alerts. Routes match alertname.
+	kindPack receiverKind = "pack"
+)
+
+// hasRunbook reports whether the receiver is backed by a shipped runbook. The
+// zero value counts: specs built in memory leave it empty.
+func (k receiverKind) hasRunbook() bool {
+	return k == "" || k == kindRunbook
+}
+
+// resolvedKind is the receiver's kind, reading entries that predate Kind: a Pack
+// marks a pack receiver, and Custom marks a custom one.
+func (ac alertConfig) resolvedKind() receiverKind {
+	switch {
+	case ac.Kind != "":
+		return ac.Kind
+	case ac.Pack != "":
+		return kindPack
+	case ac.Custom:
+		return kindCustom
+	default:
+		return kindRunbook
+	}
+}
+
 // IsValid enforces per-entry invariants. Name validation runs first so
 // downstream errors can reference it.
 func (ac *alertConfig) IsValid() error {
 	if !alertConfigNameRegex.MatchString(ac.Name) {
 		return fmt.Errorf("invalid name %q: must be 1-190 chars, start with [a-z0-9], remainder [a-z0-9_-]", ac.Name)
+	}
+	switch ac.Kind {
+	case "", kindRunbook, kindCustom, kindPack:
+	default:
+		return fmt.Errorf("unknown receiver kind %q", ac.Kind)
+	}
+	if ac.resolvedKind() == kindPack && ac.Pack == "" {
+		return errors.New("a pack receiver must name its pack")
 	}
 	if ac.Team == "" {
 		return errors.New("must set team")

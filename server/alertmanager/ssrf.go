@@ -147,11 +147,15 @@ func suggestedAllowlistCIDR(ip net.IP) string {
 //     public addresses.
 func CheckDestinationIP(ip net.IP) error {
 	if isHardBlockedIP(ip) {
-		return fmt.Errorf("refusing to connect to %s: link-local/cloud-metadata/multicast/unspecified addresses are never valid Alertmanager targets (not overridable by AlertManagerAllowedCIDRs)", ip)
+		return &BlockedDestinationError{
+			detail: fmt.Sprintf("refusing to connect to %s: link-local/cloud-metadata/multicast/unspecified addresses are never valid Alertmanager targets (not overridable by AlertManagerAllowedCIDRs)", ip),
+		}
 	}
 	if st := allowlist.Load(); st != nil {
 		if st.denyAll {
-			return fmt.Errorf("connection to %s blocked — AlertManagerAllowedCIDRs is configured but has no usable CIDRs; add %s to the setting in System Console to allow this destination", ip, suggestedAllowlistCIDR(ip))
+			return &BlockedDestinationError{
+				detail: fmt.Sprintf("connection to %s blocked: AlertManagerAllowedCIDRs is configured but has no usable CIDRs. Add %s to the setting in System Console to allow this destination", ip, suggestedAllowlistCIDR(ip)),
+			}
 		}
 		if len(st.nets) > 0 {
 			for _, n := range st.nets {
@@ -159,13 +163,35 @@ func CheckDestinationIP(ip net.IP) error {
 					return nil
 				}
 			}
-			return fmt.Errorf("connection to %s blocked by SSRF allowlist — add %s to AlertManagerAllowedCIDRs in System Console", ip, suggestedAllowlistCIDR(ip))
+			return &BlockedDestinationError{
+				detail: fmt.Sprintf("connection to %s blocked by the SSRF allowlist. Add %s to AlertManagerAllowedCIDRs in System Console", ip, suggestedAllowlistCIDR(ip)),
+			}
 		}
 	}
 	if IsBlockedIP(ip) {
-		return fmt.Errorf("connection to %s blocked (loopback/private/internal) — add %s to AlertManagerAllowedCIDRs in System Console to permit an in-cluster Alertmanager", ip, suggestedAllowlistCIDR(ip))
+		return &BlockedDestinationError{
+			detail: fmt.Sprintf("connection to %s blocked (loopback/private/internal). Add %s to AlertManagerAllowedCIDRs in System Console to permit an in-cluster Alertmanager", ip, suggestedAllowlistCIDR(ip)),
+		}
 	}
 	return nil
+}
+
+// BlockedDestinationError is returned when the SSRF guard refuses a destination.
+// Error is deliberately generic: the resolved address and the CIDR to allowlist
+// describe the internal network, and the text reaches ordinary channel members
+// through commands such as `alerts` and `silence list`. Detail carries the full
+// message for system admins and the plugin log.
+type BlockedDestinationError struct {
+	detail string
+}
+
+func (e *BlockedDestinationError) Error() string {
+	return "the Alertmanager address is blocked by the plugin's network guard (AlertManagerAllowedCIDRs). Ask a system admin to check it"
+}
+
+// Detail is the full, admin-only explanation, including the suggested CIDR.
+func (e *BlockedDestinationError) Detail() string {
+	return e.detail
 }
 
 // safeDialControl is the net.Dialer.Control hook installed on the Alertmanager

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -148,6 +149,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 
 	mmNamespace, rest := extractFlagValue(rest, mmNamespaceFlag)
 	mmName, rest := extractFlagValue(rest, mmNameFlag)
+	mmService, rest := extractFlagValue(rest, mmServiceFlag)
 
 	format, rotationOptIn, positional := splitAddWords(rest)
 
@@ -160,7 +162,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// clear message instead of creating a webhook and rolling back
 	// (CL-03/CL-21). IsValid re-checks it at persist time for the KV-import path.
 	if err := validateAlertManagerURL(amURL); err != nil {
-		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+		return fmt.Sprintf("Invalid Alertmanager URL: %s", p.amErrorText(args.UserId, err)), nil
 	}
 
 	target := "all"
@@ -181,11 +183,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// runbook alerts only.
 	var mmTarget *mattermostTarget
 	runbookSlugs := slugs
-	if mmNamespace != "" || mmName != "" {
+	if mmNamespace != "" || mmName != "" || mmService != "" {
 		if groupName != mattermostGroup {
-			return fmt.Sprintf(":warning: `mm-namespace` and `mm-name` only apply to the `%s` target.", mattermostGroup), nil
+			return fmt.Sprintf(":warning: `mm-namespace`, `mm-name` and `mm-service` only apply to the `%s` target.", mattermostGroup), nil
 		}
-		t, tErr := newMattermostTarget(mmNamespace, mmName)
+		t, tErr := newMattermostTarget(mmNamespace, mmName, mmService)
 		if tErr != nil {
 			return fmt.Sprintf(":warning: %v\n\n%s", tErr, addUsageMessage()), nil
 		}
@@ -267,7 +269,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 					AlertManagerURL:          amURL,
 					WebhookID:                sharedHookID,
 					GroupName:                groupName,
-					Custom:                   slug == packReceiverSlug,
+					Kind:                     kindFor(slug),
 					Pack:                     packFor(slug),
 					WebhookHostOverride:      webhookHostOverride,
 					LastRotatedAt:            now,
@@ -303,7 +305,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 				p.API.LogWarn("scaffold rollback: could not delete shared webhook (orphan may remain)", "webhook", redactHookID(sharedHookID), "err", delErr.Error())
 				warn = webhookRollbackWarning(webhookDisplayNameFor(groupName, team, channel))
 			}
-			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %v%s", err, warn), nil
+			return fmt.Sprintf("Failed to persist scaffold (rolled back shared webhook): %s%s", p.amErrorText(args.UserId, err), warn), nil
 		}
 	}
 
@@ -367,10 +369,11 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		// same DM so one message holds everything to apply.
 		var rules *rulesFile
 		var rulesErr error
+		rc := rulesContext{namespace: namespace, format: format, allowlist: true}
 		if mmTarget != nil {
-			rules, rulesErr = p.mattermostRulesFile(namespace, mmTarget, format)
+			rules, rulesErr = p.mattermostRulesFile(rc, mmTarget)
 		} else {
-			rules, rulesErr = p.rulesFileForAdd(namespace, groupName, runbookSlugs, format)
+			rules, rulesErr = p.rulesFileForAdd(rc, groupName, runbookSlugs, "")
 		}
 		rulesReason := ""
 		if rulesErr != nil {
@@ -540,16 +543,15 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	var customEntries, packEntries []alertConfig
 	grouped := make(map[string][]alertConfig)
 	for _, ac := range entries {
-		if ac.Pack != "" {
+		switch ac.resolvedKind() {
+		case kindPack:
 			packEntries = append(packEntries, ac)
-			continue
-		}
-		if ac.Custom {
+		case kindCustom:
 			customEntries = append(customEntries, ac)
-			continue
+		case kindRunbook:
+			slug := receiverBaseSlug(ac.Name)
+			grouped[slug] = append(grouped[slug], ac)
 		}
-		slug := receiverBaseSlug(ac.Name)
-		grouped[slug] = append(grouped[slug], ac)
 	}
 
 	slugs := make([]string, 0, len(grouped))
@@ -640,7 +642,7 @@ func (p *Plugin) assembleReceiversYAML(newEntries []alertConfig, results []scaff
 			y.WriteString(fmt.Sprintf("# WARN: created result for %q has no matching entry — skipping\n\n", r.Slug))
 			continue
 		}
-		rendered := renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL, entry.Custom)
+		rendered := renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL, entry.resolvedKind())
 		y.WriteString(rendered)
 		y.WriteString("\n")
 	}
@@ -773,7 +775,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	amURL, rawName := strings.TrimRight(positional[0], "/"), positional[1]
 	// Reject a dangerous AM URL up front (CL-03/CL-21) — see handleAdd.
 	if err := validateAlertManagerURL(amURL); err != nil {
-		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+		return fmt.Sprintf("Invalid Alertmanager URL: %s", p.amErrorText(args.UserId, err)), nil
 	}
 
 	dest, msg := p.currentChannelDestination(args)
@@ -812,7 +814,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		AlertManagerURL:     amURL,
 		WebhookID:           hookID,
 		GroupName:           receiverBaseSlug(receiverName),
-		Custom:              true,
+		Kind:                kindCustom,
 		WebhookHostOverride: webhookHostOverride,
 		LastRotatedAt:       time.Now().UTC(),
 
@@ -858,7 +860,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	// Runbook-free receiver block plus the commented route stub, DM'd to the caller.
 	receiverYAML := "# Custom (non-runbook) receiver created by /alertmanager config add-custom.\n" +
 		"# Paste under `receivers:` in your alertmanager.yml.\n\n" +
-		renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), channel, "", p.siteURL()+webhookIconURL, true)
+		renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), channel, "", p.siteURL()+webhookIconURL, kindCustom)
 	routesYAML := assembleRoutesYAML([]alertConfig{entry})
 
 	if dmErr := p.dmYAMLBundle(args.UserId, receiverYAML, routesYAML, 1, amURL, nil); dmErr != nil {
@@ -938,7 +940,7 @@ func scaffoldSetNames() []string {
 // have to read source to use it.
 func addUsageMessage() string {
 	var b strings.Builder
-	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>]`\n\n")
+	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>] [mm-service=<svc>]`\n\n")
 	b.WriteString("Run it in the channel that should receive the alerts. Creates Mattermost incoming webhook(s) for the chosen target, all bound to this channel.\n")
 	b.WriteString("- **Group target** (e.g. `compute`, `all`): one shared webhook serves every receiver in the set.\n")
 	b.WriteString("- **Individual slug target** (e.g. `high-cpu-usage`): one dedicated webhook for that one receiver.\n")
@@ -964,7 +966,7 @@ func addUsageMessage() string {
 	b.WriteString("- `standard` (default) or `crd` — format of the config DM'd to you. `standard` is `alertmanager.yml` receivers and routes. `crd` is a Prometheus Operator AlertmanagerConfig plus Secret.\n")
 	b.WriteString("- `on` — opt these receivers in to webhook rotation reminders (see `WebhookRotationDays` in System Console)\n")
 	b.WriteString("- `webhook-host=<url>` — override the host portion of the rendered `api_url` for the multi-cluster pattern\n")
-	b.WriteString(fmt.Sprintf("- `mm-namespace=<ns>` and `mm-name=<cr>` — `%s` only: where Mattermost runs, and its custom resource name (default `%s`)\n", mattermostGroup, defaultMattermostName))
+	b.WriteString(fmt.Sprintf("- `mm-namespace=<ns>`, `mm-name=<cr>` and `mm-service=<svc>` — `%s` only: where Mattermost runs, its custom resource name (default `%s`), and the `service` label on its metrics (default `<cr>-metrics`)\n", mattermostGroup, defaultMattermostName))
 	return b.String()
 }
 
@@ -984,10 +986,19 @@ func extractFlagValue(args []string, prefix string) (value string, rest []string
 	return value, rest
 }
 
-// runbookSlugs reads the embedded runbooks/ directory and returns the
-// slugs (filename without .md, lowercased) in stable alphabetical order.
-// Filters out INDEX.md and TEMPLATE.md which are meta files.
+// runbookSlugs returns the shipped runbook slugs in alphabetical order. The
+// embedded directory never changes at runtime, so it is read once. Callers get
+// their own copy and may modify it.
 func runbookSlugs() []string {
+	return slices.Clone(shippedRunbookSlugs())
+}
+
+var shippedRunbookSlugs = sync.OnceValue(loadRunbookSlugs)
+
+// loadRunbookSlugs reads the embedded runbooks/ directory and returns the
+// slugs (filename without .md, lowercased). Filters out INDEX.md and TEMPLATE.md
+// which are meta files.
+func loadRunbookSlugs() []string {
 	skip := map[string]bool{"INDEX.md": true, "TEMPLATE.md": true}
 
 	var slugs []string
@@ -1029,9 +1040,6 @@ func (p *Plugin) currentChannelDestination(args *model.CommandArgs) (addDestinat
 	}
 	if channel.Type != model.ChannelTypeOpen && channel.Type != model.ChannelTypePrivate {
 		return addDestination{}, "Receivers cannot be added in a direct or group message. Run this in a team channel."
-	}
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return addDestination{}, err.Error()
 	}
 	team, appErr := p.API.GetTeam(channel.TeamId)
 	if appErr != nil {

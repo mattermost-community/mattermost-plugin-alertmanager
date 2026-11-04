@@ -320,6 +320,30 @@ inhibit_rules:
 | `time_intervals` / `mute_time_intervals` | Scheduled silence windows (maintenance hours, weekends) |
 | `templates` | External template files. Not needed — plugin bakes templates inline in each receiver's `slack_configs` |
 
+## Receiver kinds
+
+Every receiver has a kind. It decides how alerts reach the receiver, what the chat
+message links to, and what `silence` can reach.
+
+| Kind | Created by | Alerts reach it through | Chat message | `silence` group and `all` |
+|---|---|---|---|---|
+| `runbook` | `config add <group or slug>` | `runbook=<slug>` route | Runbook diagnostics and a link | Covered by the `runbook` label |
+| `pack` | `config add mattermost mm-namespace=<ns>` | `alertname` route on the operator alerts | No runbook link | `mattermost` and `all` add a second silence on the alert names |
+| `custom` | `config add-custom` | A route you write | The raw alert, no runbook link | Skipped. Silence it in Alertmanager |
+
+The plugin stores the kind on the receiver entry (`kind`). Entries saved by earlier
+versions have no `kind`: a `pack` field means `pack`, the old `custom` flag means
+`custom`, and anything else is `runbook`. Nothing needs migrating. Downgrading to a
+version older than 1.5.0 reads new custom receivers as runbook receivers, so
+re-create them after a downgrade.
+
+To add a kind, add the constant and its routing and silence behavior in one place
+each: `resolvedKind` in `configuration.go` decides the kind, `renderAlertmanagerConfig`
+in `templates_crd.go` and `assembleRoutesYAML` write the route, and `silencePlan`
+in `cmd_silence.go` decides what `silence` can reach. The `switch` over the kind in
+`rulesFileForChannel` and `receiversForAlert` stops compiling cleanly if a case is
+missing, since each lists every kind.
+
 ## Custom (non-runbook) receivers
 
 The `/alertmanager config add` flow binds receivers to shipped **runbooks**: the

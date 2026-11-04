@@ -55,10 +55,6 @@ import (
 // as /alertmanager config remove). Runbook slugs don't collide with set
 // names so the precedence is safe.
 func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	rest := fields[2:]
 
