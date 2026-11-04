@@ -92,11 +92,21 @@ func addOptionGroups(cmd string, mattermost bool) []optionGroup {
 	})
 }
 
+// Autocomplete requests carry text the user typed, and any signed-in user can
+// call these endpoints directly. Real command lines are far shorter than these.
+const (
+	maxAutocompleteInput = 2048
+	maxAutocompleteWords = 32
+)
+
 // commandWords splits what Mattermost has parsed so far into words, without the
 // leading slash. ok is false when it is not this plugin's command.
 func commandWords(parsed string) (words []string, ok bool) {
+	if len(parsed) > maxAutocompleteInput {
+		return nil, false
+	}
 	words = strings.Fields(parsed)
-	if len(words) == 0 || !strings.EqualFold(strings.TrimPrefix(words[0], "/"), commandTrigger) {
+	if len(words) == 0 || len(words) > maxAutocompleteWords || !strings.EqualFold(strings.TrimPrefix(words[0], "/"), commandTrigger) {
 		return nil, false
 	}
 	return words, true

@@ -114,7 +114,7 @@ func TestDashFlagsAreRejectedWithTheNewSpelling(t *testing.T) {
 }
 
 func TestGroupUsageReplies(t *testing.T) {
-	p := &Plugin{}
+	p := sysadminPlugin(nil)
 	cases := map[string]string{
 		"/alertmanager alerts bogus":               "alerts status",
 		"/alertmanager admin":                      "admin repair",

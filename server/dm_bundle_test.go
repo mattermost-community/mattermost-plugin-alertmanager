@@ -25,7 +25,7 @@ func bundleMessage(t *testing.T, api *ruleDMAPI, routesYAML, amURL string, withR
 	p.API = &failingUploadAPI{ruleDMAPI: api, fail: fail}
 	var rules *rulesFile
 	if withRules {
-		rules, _ = p.rulesFileForChannel("monitoring", scopedCompute(), formatStandard)
+		rules, _ = p.rulesFileForChannel(testRulesContext(formatStandard), scopedCompute())
 		if rules == nil {
 			t.Fatal("test setup: no rules file for the compute receivers")
 		}

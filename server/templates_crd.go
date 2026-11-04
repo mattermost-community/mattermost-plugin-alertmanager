@@ -102,8 +102,7 @@ type crdReceiverSpec struct {
 	channel           string // destination channel (with or without leading #)
 	runbookDefaultURL string // plugin-hosted runbook fallback URL
 	iconURL           string // bot avatar URL
-	custom            bool   // add-custom (non-runbook) receiver: no auto route, no runbook link
-	pack              string // alert pack: routes on alertname instead of a runbook label
+	kind              receiverKind
 }
 
 // indentBlock prefixes every non-empty line of s with prefix. Blank lines stay
@@ -138,12 +137,12 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	// Same body as the file format, shifted to the CRD's nesting depth. Fill
 	// {{RUNBOOK_SECTION}} BEFORE re-indenting so its continuation lines pick up
 	// the CRD body indent uniformly. Custom receivers omit the runbook fallback.
-	body := strings.Replace(receiverBodyTemplate, "{{RUNBOOK_SECTION}}", runbookSection(spec.runbookDefaultURL, spec.custom), 1)
+	body := strings.Replace(receiverBodyTemplate, "{{RUNBOOK_SECTION}}", runbookSection(spec.runbookDefaultURL, spec.kind), 1)
 	body = indentBlock(body, crdBodyIndent)
 	// Custom receivers carry no runbook content (Custom is authoritative), so skip
 	// the diagnostics lookup — see the matching guard in renderReceiverYAMLForKind.
 	diagText := ""
-	if !spec.custom {
+	if spec.kind.hasRunbook() {
 		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
 		if diagText != "" {
 			diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
@@ -193,7 +192,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 			receivers.WriteString(renderCRDFallbackReceiver(s))
 			continue
 		}
-		if s.pack != "" {
+		if s.kind == kindPack {
 			match, err := packAlertRegex()
 			if err != nil {
 				continue
@@ -205,7 +204,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 			receivers.WriteString(renderCRDReceiver(s))
 			continue
 		}
-		if s.custom {
+		if s.kind == kindCustom {
 			// Custom (add-custom) receiver: no runbook label, so emit NO auto
 			// matcher and keep it OUT of the parent =~ gate. The receiver is still
 			// defined; the commented stub is emitted after the loop, once we know

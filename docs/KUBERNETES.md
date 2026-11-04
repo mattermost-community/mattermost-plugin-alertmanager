@@ -339,7 +339,7 @@ From the channel that should receive them:
 /alertmanager config add http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093 mattermost crd mm-namespace=<mattermost-namespace>
 ```
 
-- **`mm-namespace`** is where Mattermost runs. **`mm-name`** is the Mattermost custom resource name and defaults to `mattermost`. The metrics Service the rules match is `<mm-name>-metrics`. Without `mm-namespace` you get the five runbook alerts only, as before.
+- **`mm-namespace`** is where Mattermost runs. **`mm-name`** is the Mattermost custom resource name and defaults to `mattermost`. The rules match `service="<mm-name>-metrics"` unless you set **`mm-service=<svc>`**. Use it when your series carry a different `service` label. Operator 1.25 and older create no `<mm-name>-metrics` Service, so the label is the CR name and you need `mm-service=mattermost`. Check with `kubectl -n <ns> get svc` and a query such as `count by (service) (mattermost_http_requests_total)`. Without `mm-namespace` you get the five runbook alerts only, as before.
 - The DM carries two Secret and AlertmanagerConfig pairs and one PrometheusRule named `mattermost-alertmanager-rules-mattermost`. It holds the group's runbook rules and the operator's 13 alerts with the thresholds filled in. Apply all of it, with the `release` label set to your Helm release.
 - The operator alerts get their own Secret and AlertmanagerConfig ending in `-mattermost-server`. Adding `mm-namespace` never renames the objects of the runbook group in the same channel.
 - The extra AlertmanagerConfig has one route on the 13 alert names (`alertname=~"^(MattermostServerDown|...)$"`). Severity picks the color: `critical` red, `warning` yellow, resolved green.

@@ -87,7 +87,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 		AlertManagerURL:     amURL,
 		WebhookID:           hookID,
 		GroupName:           receiverBaseSlug(receiverName),
-		Custom:              true,
+		Kind:                kindCustom,
 		WebhookHostOverride: webhookHostOverride,
 		LastRotatedAt:       time.Now().UTC(),
 
@@ -133,7 +133,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	// Runbook-free receiver block plus the commented route stub, DM'd to the caller.
 	receiverYAML := "# Custom (non-runbook) receiver created by /alertmanager config add-custom.\n" +
 		"# Paste under `receivers:` in your alertmanager.yml.\n\n" +
-		renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), channel, "", p.siteURL()+webhookIconURL, true)
+		renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), channel, "", p.siteURL()+webhookIconURL, kindCustom)
 	routesYAML := assembleRoutesYAML([]alertConfig{entry})
 
 	if dmErr := p.dmYAMLBundle(args.UserId, receiverYAML, routesYAML, 1, amURL, nil); dmErr != nil {

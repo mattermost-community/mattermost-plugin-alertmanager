@@ -211,6 +211,15 @@ const yamlBlockIndent = "        "
 // (the runbook identifier extracted from a possibly channel-suffixed
 // name). Multi-line content is re-indented to match the YAML literal
 // block's column position so the generated YAML parses correctly.
+// runbookURLGate is the Alertmanager template test an alert's runbook_url must
+// pass before the body links to it. The link text is fixed, so the destination
+// is invisible to the reader: only a plain http(s) URL with no spaces,
+// backticks, parentheses or angle brackets may be used. Anything else falls
+// back to the plugin-hosted runbook (standard receivers) or no link (custom).
+// `match` is Alertmanager's regexp.MatchString helper; the \x60 \r \n \t
+// escapes are decoded by the template parser into the characters themselves.
+const runbookURLGate = `match "^https?://[^ \x60\r\n\t()<>]+$" .Annotations.runbook_url`
+
 // runbookSectionStandard/Custom fill the {{RUNBOOK_SECTION}} placeholder in the
 // shared receiverBodyTemplate. Standard receivers fall back to the plugin-hosted
 // runbook page when an alert carries no runbook_url annotation. Custom
@@ -218,21 +227,21 @@ const yamlBlockIndent = "        "
 // link to a nonexistent runbook page is rendered — a Runbook line appears only
 // if the alert itself sets a runbook_url annotation. Continuation lines carry
 // the 8-space YAML block indent to match the surrounding template.
-const runbookSectionStandard = `{{- if .Annotations.runbook_url -}}
+const runbookSectionStandard = `{{- if ` + runbookURLGate + ` -}}
         **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
         {{- else -}}
         **Runbook:** [runbook]({{RUNBOOK_DEFAULT}}){{ "\n" }}
         {{- end -}}`
 
-const runbookSectionCustom = `{{- if .Annotations.runbook_url -}}
+const runbookSectionCustom = `{{- if ` + runbookURLGate + ` -}}
         **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
         {{- end -}}`
 
 // runbookSection resolves {{RUNBOOK_SECTION}} for a receiver. Custom receivers
 // get the annotation-only variant (no plugin fallback link); standard receivers
 // get the fallback with runbookDefaultURL baked in.
-func runbookSection(runbookDefaultURL string, custom bool) string {
-	if custom {
+func runbookSection(runbookDefaultURL string, kind receiverKind) string {
+	if !kind.hasRunbook() {
 		return runbookSectionCustom
 	}
 	return strings.Replace(runbookSectionStandard, "{{RUNBOOK_DEFAULT}}", runbookDefaultURL, 1)
@@ -240,16 +249,16 @@ func runbookSection(runbookDefaultURL string, custom bool) string {
 
 // renderReceiverYAML renders a standard (runbook-backed) receiver.
 func renderReceiverYAML(name, webhookURL, channel, runbookDefaultURL, iconURL string) string {
-	return renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, iconURL, false)
+	return renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, iconURL, kindRunbook)
 }
 
 // renderReceiverYAMLForKind substitutes the plugin-level placeholders and
 // returns a slack_configs YAML block ready to paste under receivers: in
-// alertmanager.yml. When custom is true the runbook fallback line is omitted
+// alertmanager.yml. When kind is not a runbook the runbook fallback line is omitted
 // (see runbookSection) so a generic add-custom receiver never links to a
 // nonexistent runbook page. Channel name conventionally takes a leading # in
 // slack_configs; tolerate either form on input.
-func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, iconURL string, custom bool) string {
+func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, iconURL string, kind receiverKind) string {
 	if !strings.HasPrefix(channel, "#") {
 		channel = "#" + channel
 	}
@@ -261,7 +270,7 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 	// future catalog adds a runbook slug matching a persisted custom name (or an
 	// entry is written straight to the KV store, bypassing name-collision validation).
 	diagText := ""
-	if !custom {
+	if kind.hasRunbook() {
 		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(receiverBaseSlug(name)))
 		if diagText != "" {
 			diagText = indentForYAMLBlock(diagText, yamlBlockIndent)
@@ -269,7 +278,7 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 	}
 
 	r := strings.NewReplacer(
-		"{{RUNBOOK_SECTION}}", runbookSection(runbookDefaultURL, custom),
+		"{{RUNBOOK_SECTION}}", runbookSection(runbookDefaultURL, kind),
 		"{{NAME}}", name,
 		"{{URL}}", webhookURL,
 		"{{CHANNEL}}", channel,

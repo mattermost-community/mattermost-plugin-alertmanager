@@ -34,7 +34,7 @@ func TestCRDManifestKubeconform(t *testing.T) {
 		"alert-pack":    renderAlertmanagerConfig("mattermost-alertmanager-ops-alerts", "monitoring", "ops-alerts-fallback", packCRDSpecs()),
 		"custom-only": renderAlertmanagerConfig("mattermost-alertmanager-ops", "monitoring", "ops-fallback", []crdReceiverSpec{
 			{name: "ops-fallback", channel: "ops", secretName: "alertmanager-webhook-ops"},
-			{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "ops", secretName: "alertmanager-webhook-ops", custom: true},
+			{slug: "slo-burn-rate", name: "slo-burn-rate--ops-alerts", channel: "ops", secretName: "alertmanager-webhook-ops", kind: kindCustom},
 		}),
 	}
 

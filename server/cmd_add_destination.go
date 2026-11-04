@@ -29,9 +29,6 @@ func (p *Plugin) currentChannelDestination(args *model.CommandArgs) (addDestinat
 	if channel.Type != model.ChannelTypeOpen && channel.Type != model.ChannelTypePrivate {
 		return addDestination{}, "Receivers cannot be added in a direct or group message. Run this in a team channel."
 	}
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return addDestination{}, err.Error()
-	}
 	team, appErr := p.API.GetTeam(channel.TeamId)
 	if appErr != nil {
 		return addDestination{}, fmt.Sprintf("Could not look up this channel's team: %v", appErr)

@@ -260,32 +260,14 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 		return msg
 	}
 
-	// Same order as the autocomplete registration. Group handlers drop their
-	// own word and hand the rest to the leaf handlers (see withoutParent).
-	switch fields[1] {
-	case "about":
-		return p.handleAbout(args)
-	case "admin":
-		msg, err := p.handleAdmin(args)
-		return joinErr(msg, err)
-	case "alerts":
-		msg, err := p.handleAlertsGroup(args)
-		return joinErr(msg, err)
-	case "config":
-		msg, err := p.handleConfigGroup(args)
-		return joinErr(msg, err)
-	case "docs":
-		msg, err := p.handleDocs(args)
-		return joinErr(msg, err)
-	case "format":
-		msg, err := p.handleFormatGroup(args)
-		return joinErr(msg, err)
-	case "silence":
-		msg, err := p.handleSilenceGroup(args)
-		return joinErr(msg, err)
-	default:
-		return fmt.Sprintf("Unknown subcommand `%s`. Run `/alertmanager help` for the list.", fields[1])
+	parsed := p.parseCommand(args)
+	if parsed.cmd == nil {
+		return parsed.reply
 	}
+	if err := parsed.cmd.Authorize(args.UserId, args.ChannelId); err != nil {
+		return err.Error()
+	}
+	return joinErr(parsed.cmd.Run(parsed.args))
 }
 
 // removedDashFlagMessage rejects any `--word` argument. Flags are plain words

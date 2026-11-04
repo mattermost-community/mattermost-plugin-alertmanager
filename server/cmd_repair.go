@@ -27,9 +27,6 @@ const repairUsage = "Usage: `/alertmanager admin repair [prune] [force]`"
 //	admin repair prune          → also remove the orphaned receivers
 //	admin repair force          → overwrite a corrupt KV value from memory
 func (p *Plugin) handleRepair(args *model.CommandArgs) (string, error) {
-	if err := p.requireSystemAdmin(args.UserId); err != nil {
-		return err.Error(), nil
-	}
 	force, prune, ok := parseRepairFlags(strings.Fields(args.Command)[2:])
 	if !ok {
 		return repairUsage, nil

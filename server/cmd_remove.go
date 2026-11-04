@@ -24,10 +24,6 @@ import (
 // receiver slugs (high-cpu-usage, etc.) don't collide with category
 // names (compute, etc.), the precedence is safe.
 func (p *Plugin) handleRemove(args *model.CommandArgs) (string, error) {
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
 		return "Usage: `/alertmanager config remove <name>` | `/alertmanager config remove <set> force` | `/alertmanager config remove all force`\n\nSets: `compute`, `application`, `database`, `storage`, `networking`, `observability`", nil

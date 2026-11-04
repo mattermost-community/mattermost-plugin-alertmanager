@@ -146,8 +146,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 			channel:           ac.Channel,
 			runbookDefaultURL: p.runbookDefaultURL(slug),
 			iconURL:           p.siteURL() + webhookIconURL,
-			custom:            ac.Custom,
-			pack:              ac.Pack,
+			kind:              ac.resolvedKind(),
 		})
 	}
 
@@ -215,7 +214,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 // the same message.
 func (p *Plugin) handleExportCRD(args *model.CommandArgs, scoped []alertConfig, namespace string) (string, error) {
 	manifest, crCount := p.assembleCRDManifest(scoped, namespace)
-	rules, rulesReason := p.rulesFileForChannel(namespace, scoped, formatCRD)
+	rules, rulesReason := p.rulesFileForChannel(rulesContext{namespace: namespace, format: formatCRD, allowlist: true}, scoped)
 
 	if err := p.dmCRDBundle(args.UserId, manifest, crCount, namespace, rules); err != nil {
 		// DM failed — inline the manifest so the operator config isn't lost.

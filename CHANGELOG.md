@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * `/alertmanager format` command group: `format export [standard|crd]` (this channel's config and rules), `format diff [standard|crd]` (Alertmanager config only, sysadmin) and `format rules`.
 * `format rules <group|runbook|all> [standard|crd]` sends only one group's rules (or one runbook's) as a PrometheusRule named `mattermost-alertmanager-rules-<group>`, the same object `config add` sends. Without a group you still get all 36.
-* `mattermost` target: `config add <am-url> mattermost [crd] [mm-namespace=<ns>] [mm-name=<cr>]` creates the five Mattermost runbook receivers. With `mm-namespace` it also creates one `mattermost-server` receiver for the 13 alerts the Mattermost Operator generates, with one merged PrometheusRule (18 alerts) for that install. `config remove mattermost force` removes both.
+* `mattermost` target: `config add <am-url> mattermost [crd] [mm-namespace=<ns>] [mm-name=<cr>] [mm-service=<svc>]` creates the five Mattermost runbook receivers. With `mm-namespace` it also creates one `mattermost-server` receiver for the 13 alerts the Mattermost Operator generates, with one merged PrometheusRule (18 alerts) for that install. `config remove mattermost force` removes both. `mm-service` sets the `service` label the operator rules match, for operators that create no `<name>-metrics` Service.
+* Receivers carry an explicit kind (`runbook`, `custom` or `pack`). Entries saved by earlier versions keep working with no migration.
 * Config and Prometheus rules arrive in one DM for `config add` and `format export`, in both standard and CRD formats.
 * Channel-scoped `format diff` with Prometheus Operator CRD auto-detect.
 * Autocomplete shows one option at a time after `config add` and `format rules`, `config validate` lists only the groups present in the channel, and every command accepts a trailing `help` with typeahead.
@@ -26,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 * `silence expire` only ends silences created from the calling channel with `silence create`. A team admin can no longer end another team's silence on a shared Alertmanager. Silences created before this version have no record and must be ended in Alertmanager.
+* The Alertmanager runbook link in chat messages only follows `http(s)://` URLs. Any other `runbook_url` falls back to the plugin runbook, or to no link for a custom receiver.
+* `silence list` shows only the silences that apply to the channel. `silence create <alert>` is limited to alerts the channel's receivers carry, and `all` and the `mattermost` group also cover the operator alerts.
+* Every command is authorized in one place, before it runs. `format diff` and the `admin` commands stay system admin only, and `config`, `silence` and `format export` verbs stay team admin.
+* The image-registry allowlist entries go into generated rules only for team admins, and the blocked-address and suggested-CIDR detail of an Alertmanager connection error is shown only to system admins.
+* Autocomplete requests are capped in size, and the runbook list is read once.
 * Dependency updates (x/net 0.61, x/crypto 0.58, otel, grpc 1.85, alertmanager 0.34.1, goldmark 1.8.7) and pinned GitHub Actions bumps. The standing `GO-2026-5932` finding stays open on purpose.
 
 ### Bug Fixes

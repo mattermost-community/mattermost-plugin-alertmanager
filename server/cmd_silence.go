@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -36,10 +37,6 @@ const (
 var alertNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	if len(fields) != 4 {
 		return silenceUsage(), nil
@@ -68,7 +65,7 @@ func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
 		return emptyScopeMessage("silence"), nil
 	}
 
-	relevant, matchers, err := silencePlan(scope, target, scoped)
+	jobs, err := silencePlan(scope, target, scoped)
 	if err != nil {
 		return ":warning: " + err.Error(), nil
 	}
@@ -80,30 +77,40 @@ func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, ":mute: Silencing **%s** for %s.\n\n", silenceTargetLabel(scope, target), duration)
 	okCount := 0
-	for _, g := range groupByAMURL(relevant) {
-		id, cerr := alertmanager.CreateSilence(context.Background(), g.URL, actor, comment, endsAt, matchers)
-		if cerr != nil {
-			p.auditLog("silence.create", args.UserId, target, args.ChannelId, "failure")
-			fmt.Fprintf(&b, "- `%s` — :x: %s\n", g.URL, p.amErrorText(args.UserId, cerr))
-			continue
+	for _, job := range jobs {
+		for _, g := range groupByAMURL(job.configs) {
+			if p.createChannelSilence(&b, args, g, actor, comment, endsAt, duration, target, job.matchers) {
+				okCount++
+			}
 		}
-		okCount++
-		p.auditLog("silence.create", args.UserId, target, args.ChannelId, "success")
-		rec := silenceRecord{ChannelID: args.ChannelId, AMURL: g.URL, CreatedBy: args.UserId}
-		if recErr := p.recordSilence(id, rec, duration); recErr != nil {
-			p.API.LogWarn("Could not record silence for channel-scoped expire", "silence_id", id, "error", recErr.Error())
-			fmt.Fprintf(&b, "- `%s` — silence `%s` until %s. It could not be recorded here, so end it early in Alertmanager.\n",
-				g.URL, id, endsAt.UTC().Format(time.RFC3339))
-			continue
-		}
-		fmt.Fprintf(&b, "- `%s` — silence `%s` until %s. End it early: `/alertmanager silence expire %s %s`\n",
-			g.URL, id, endsAt.UTC().Format(time.RFC3339), g.Receivers[0].Name, id)
 	}
 	if okCount == 0 {
 		return b.String(), nil
 	}
 	b.WriteString("\nAlertmanager drops matching alerts until that time. Other channels that receive the same alert on this Alertmanager go quiet too.\n")
 	return b.String(), nil
+}
+
+// createChannelSilence creates one silence on one Alertmanager, records it for
+// this channel so it can be expired from here, and writes the result line to b.
+func (p *Plugin) createChannelSilence(b *strings.Builder, args *model.CommandArgs, g amGroup, actor, comment string, endsAt time.Time, duration time.Duration, target string, matchers []alertmanager.SilenceMatcher) bool {
+	id, err := alertmanager.CreateSilence(context.Background(), g.URL, actor, comment, endsAt, matchers)
+	if err != nil {
+		p.auditLog("silence.create", args.UserId, target, args.ChannelId, "failure")
+		fmt.Fprintf(b, "- `%s` — :x: %s\n", g.URL, p.amErrorText(args.UserId, err))
+		return false
+	}
+	p.auditLog("silence.create", args.UserId, target, args.ChannelId, "success")
+	rec := silenceRecord{ChannelID: args.ChannelId, AMURL: g.URL, CreatedBy: args.UserId}
+	if recErr := p.recordSilence(id, rec, duration); recErr != nil {
+		p.API.LogWarn("Could not record silence for channel-scoped expire", "silence_id", id, "error", recErr.Error())
+		fmt.Fprintf(b, "- `%s` — silence `%s` until %s. It could not be recorded here, so end it early in Alertmanager.\n",
+			g.URL, id, endsAt.UTC().Format(time.RFC3339))
+		return true
+	}
+	fmt.Fprintf(b, "- `%s` — silence `%s` until %s. End it early: `/alertmanager silence expire %s %s`\n",
+		g.URL, id, endsAt.UTC().Format(time.RFC3339), g.Receivers[0].Name, id)
+	return true
 }
 
 func silenceUsage() string {
@@ -133,7 +140,7 @@ func silenceAllowedTimes(reason string) string {
 	b.WriteString("- An alert (`HighCPUUsage`) or a group (`compute`): `30m`, or a whole hour from `1h` through `72h` (`2h`, `3h`, … `72h`). Team admin.\n")
 	b.WriteString("- `all`: `30m` or `1h` only. System admin. Anything longer is rejected.\n\n")
 	b.WriteString("`90m`, `45m`, `1.5h`, and anything over `72h` are rejected.\n")
-	b.WriteString("A custom receiver has no runbook label, so a group or `all` does not match it. Silence that alert by its alert name.")
+	b.WriteString("An alert name must be one this channel's receivers carry. A custom receiver's alerts are not known to the plugin, so silence those in Alertmanager.")
 	return b.String()
 }
 
@@ -213,48 +220,83 @@ func parseWholeHours(s string) (int, bool) {
 	return 0, false
 }
 
-// silencePlan picks the receivers whose Alertmanager should receive the
-// silence, and the matchers. An alert matches alertname on every backend
-// this channel uses. A group or all matches the runbook label, so alerts
-// that have no runbook keep firing.
-func silencePlan(scope silenceScope, target string, configs []alertConfig) ([]alertConfig, []alertmanager.SilenceMatcher, error) {
+// silenceJob is one silence to create: the matchers, and the receivers whose
+// Alertmanagers get it.
+type silenceJob struct {
+	configs  []alertConfig
+	matchers []alertmanager.SilenceMatcher
+}
+
+// silencePlan turns a target into silences, limited to this channel's rule set.
+// An alert must be one the channel's receivers carry, and it is silenced only on
+// the backends of the receivers that carry it. A group or all matches the
+// runbook label, and adds a second silence on the pack's alert names when the
+// channel has a pack receiver, since those alerts have no runbook label.
+func silencePlan(scope silenceScope, target string, configs []alertConfig) ([]silenceJob, error) {
 	switch scope {
 	case silenceScopeAlert:
-		return configs, []alertmanager.SilenceMatcher{{
-			Name:  "alertname",
-			Value: target,
+		carriers := receiversForAlert(target, configs)
+		if len(carriers) == 0 {
+			return nil, errors.New(alertNotInChannelMessage(target, configs))
+		}
+		return []silenceJob{{
+			configs:  carriers,
+			matchers: []alertmanager.SilenceMatcher{{Name: "alertname", Value: target}},
 		}}, nil
 	case silenceScopeGroup:
-		slugs := groupRunbooksInChannel(target, configs)
-		if len(slugs) == 0 {
-			return nil, nil, fmt.Errorf("no `%s` receivers are bound to this channel", target)
-		}
-		regex, err := runbookMatcher(slugs)
+		jobs, err := runbookSilenceJobs(groupRunbooksInChannel(target, configs), configs)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return filterByRunbooks(configs, slugs), []alertmanager.SilenceMatcher{{
-			Name:  "runbook",
-			Value: regex,
-			Regex: true,
-		}}, nil
+		if target == mattermostGroup {
+			jobs = append(jobs, packSilenceJobs(configs)...)
+		}
+		if len(jobs) == 0 {
+			return nil, fmt.Errorf("no `%s` receivers are bound to this channel", target)
+		}
+		return jobs, nil
 	case silenceScopeAll:
-		slugs := channelRunbookSlugs(configs)
-		if len(slugs) == 0 {
-			return nil, nil, fmt.Errorf("this channel has no runbook receivers to silence")
-		}
-		regex, err := runbookMatcher(slugs)
+		jobs, err := runbookSilenceJobs(channelRunbookSlugs(configs), configs)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return filterByRunbooks(configs, slugs), []alertmanager.SilenceMatcher{{
-			Name:  "runbook",
-			Value: regex,
-			Regex: true,
-		}}, nil
+		jobs = append(jobs, packSilenceJobs(configs)...)
+		if len(jobs) == 0 {
+			return nil, errors.New("this channel has no runbook or pack receivers to silence")
+		}
+		return jobs, nil
 	default:
-		return nil, nil, fmt.Errorf("unhandled silence scope %d", scope)
+		return nil, fmt.Errorf("unhandled silence scope %d", scope)
 	}
+}
+
+func runbookSilenceJobs(slugs []string, configs []alertConfig) ([]silenceJob, error) {
+	if len(slugs) == 0 {
+		return nil, nil
+	}
+	regex, err := runbookMatcher(slugs)
+	if err != nil {
+		return nil, err
+	}
+	return []silenceJob{{
+		configs:  filterByRunbooks(configs, slugs),
+		matchers: []alertmanager.SilenceMatcher{{Name: "runbook", Value: regex, Regex: true}},
+	}}, nil
+}
+
+func packSilenceJobs(configs []alertConfig) []silenceJob {
+	packs := receiversOfKind(configs, kindPack)
+	if len(packs) == 0 {
+		return nil
+	}
+	regex, err := packAlertRegex()
+	if err != nil {
+		return nil
+	}
+	return []silenceJob{{
+		configs:  packs,
+		matchers: []alertmanager.SilenceMatcher{{Name: "alertname", Value: regex, Regex: true}},
+	}}
 }
 
 func groupRunbooksInChannel(group string, configs []alertConfig) []string {
@@ -277,7 +319,7 @@ func channelRunbookSlugs(configs []alertConfig) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, c := range configs {
-		if c.Custom {
+		if c.resolvedKind() != kindRunbook {
 			continue
 		}
 		slug := receiverBaseSlug(c.Name)
@@ -297,7 +339,7 @@ func filterByRunbooks(configs []alertConfig, slugs []string) []alertConfig {
 	}
 	out := make([]alertConfig, 0, len(configs))
 	for _, c := range configs {
-		if c.Custom {
+		if c.resolvedKind() != kindRunbook {
 			continue
 		}
 		if want[receiverBaseSlug(c.Name)] {
