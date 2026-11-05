@@ -101,8 +101,8 @@ func (p *Plugin) handleTargetRules(userID string, rc rulesContext, opts rulesOpt
 func (p *Plugin) rulesForTarget(rc rulesContext, opts rulesOptions) (rules *rulesFile, errMsg string) {
 	if opts.target == mattermostGroup {
 		var target *mattermostTarget
-		if opts.mmNamespace != "" || opts.mmName != "" || opts.mmService != "" {
-			t, err := newMattermostTarget(opts.mmNamespace, opts.mmName, opts.mmService)
+		if opts.mmNamespace != "" || opts.mmName != "" {
+			t, err := newMattermostTarget(opts.mmNamespace, opts.mmName)
 			if err != nil {
 				return nil, fmt.Sprintf(":warning: %v", err)
 			}

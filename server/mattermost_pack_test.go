@@ -30,7 +30,7 @@ var wantPackAlerts = []string{
 
 func testTarget(t *testing.T) mattermostTarget {
 	t.Helper()
-	target, err := newMattermostTarget("mattermost-crimson", "", "")
+	target, err := newMattermostTarget("mattermost-crimson", "")
 	if err != nil {
 		t.Fatalf("newMattermostTarget: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 
 	for _, want := range []string{
 		`namespace="mattermost-crimson"`,
-		`service="mattermost-metrics"`,
+		`installation_mattermost_com_installation="mattermost"`,
 		`pod=~"mattermost-[^-]+-[^-]+"`,
 		"> 0.85",
 		"> 0.9",
@@ -118,7 +118,7 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 }
 
 func TestRenderMattermostOperatorRulesCustomName(t *testing.T) {
-	target, err := newMattermostTarget("chat", "mm-prod", "")
+	target, err := newMattermostTarget("chat", "mm-prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,13 +126,13 @@ func TestRenderMattermostOperatorRulesCustomName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `service="mm-prod-metrics"`) || !strings.Contains(out, `pod=~"mm-prod-[^-]+-[^-]+"`) {
-		t.Fatal("custom name did not reach the service and pod selector")
+	if !strings.Contains(out, `installation_mattermost_com_installation="mm-prod"`) || !strings.Contains(out, `pod=~"mm-prod-[^-]+-[^-]+"`) {
+		t.Fatal("custom name did not reach the installation and pod selector")
 	}
 }
 
-func TestMattermostServiceLabelOverride(t *testing.T) {
-	target, err := newMattermostTarget("chat", "mm", "mattermost")
+func TestMattermostRulesMatchInstallationNotService(t *testing.T) {
+	target, err := newMattermostTarget("chat", "mm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,23 +140,30 @@ func TestMattermostServiceLabelOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `service="mattermost"`) || strings.Contains(out, `service="mm-metrics"`) {
-		t.Fatal("mm-service did not reach the rules")
+	if strings.Contains(out, "service=") || strings.Contains(out, "$labels.service") || strings.Contains(out, ", service)") {
+		t.Fatal("rules must not depend on the scraped Service name")
 	}
-	if !strings.Contains(out, `pod=~"mm-[^-]+-[^-]+"`) {
-		t.Fatal("mm-service must not change the pod selector")
+	if !strings.Contains(out, `up{namespace="chat", installation_mattermost_com_installation="mm"}`) {
+		t.Fatal("up must be scoped by namespace and installation")
 	}
-	for _, bad := range []string{"Bad_Service", `x"} or vector(1) #`, strings.Repeat("a", 64)} {
-		if _, err := newMattermostTarget("chat", "", bad); err == nil || !strings.Contains(err.Error(), "mm-service") {
-			t.Errorf("service %q: err = %v", bad, err)
+	if _, msg := parseFormatArgs([]string{"security", "mm-namespace=chat"}); !strings.Contains(msg, "only apply") {
+		t.Fatalf("mm-namespace outside mattermost: %q", msg)
+	}
+}
+
+// Every series selector must carry the namespace, so two installs that share a
+// CR name in different namespaces never share an alert.
+func TestMattermostRulesAlwaysScopeByNamespace(t *testing.T) {
+	raw, err := readMattermostOperatorRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := regexp.MustCompile(`\b(?:up|mattermost_\w+|kube_\w+|container_\w+)\{[^}]*\}`)
+	commentLine := regexp.MustCompile(`(?m)^\s*#.*$`)
+	for _, m := range selector.FindAllString(commentLine.ReplaceAllString(raw, ""), -1) {
+		if !strings.Contains(m, `namespace="__NAMESPACE__"`) {
+			t.Errorf("selector without namespace: %s", m)
 		}
-	}
-	opts, msg := parseFormatArgs([]string{"mattermost", "mm-namespace=chat", "mm-service=mattermost"})
-	if msg != "" || opts.mmService != "mattermost" {
-		t.Fatalf("opts = %+v, msg = %q", opts, msg)
-	}
-	if _, msg := parseFormatArgs([]string{"security", "mm-service=x"}); !strings.Contains(msg, "only apply") {
-		t.Fatalf("mm-service outside mattermost: %q", msg)
 	}
 }
 
@@ -172,13 +179,13 @@ func TestNewMattermostTargetValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newMattermostTarget(tc.namespace, tc.crName, "")
+			_, err := newMattermostTarget(tc.namespace, tc.crName)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
 			}
 		})
 	}
-	target, err := newMattermostTarget("chat", "", "")
+	target, err := newMattermostTarget("chat", "")
 	if err != nil || target.name != defaultMattermostName {
 		t.Fatalf("default name = %q, err %v", target.name, err)
 	}
