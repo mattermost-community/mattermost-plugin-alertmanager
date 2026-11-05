@@ -126,7 +126,6 @@ func (p *Plugin) parseAddRequest(args *model.CommandArgs) (addRequest, string) {
 
 	mmNamespace, rest := extractFlagValue(rest, mmNamespaceFlag)
 	mmName, rest := extractFlagValue(rest, mmNameFlag)
-	mmService, rest := extractFlagValue(rest, mmServiceFlag)
 
 	format, rotationOptIn, positional := splitAddWords(rest)
 
@@ -160,11 +159,11 @@ func (p *Plugin) parseAddRequest(args *model.CommandArgs) (addRequest, string) {
 	// runbook alerts only.
 	var mmTarget *mattermostTarget
 	runbookSlugs := slugs
-	if mmNamespace != "" || mmName != "" || mmService != "" {
+	if mmNamespace != "" || mmName != "" {
 		if groupName != mattermostGroup {
-			return addRequest{}, fmt.Sprintf(":warning: `mm-namespace`, `mm-name` and `mm-service` only apply to the `%s` target.", mattermostGroup)
+			return addRequest{}, fmt.Sprintf(":warning: `mm-namespace` and `mm-name` only apply to the `%s` target.", mattermostGroup)
 		}
-		t, tErr := newMattermostTarget(mmNamespace, mmName, mmService)
+		t, tErr := newMattermostTarget(mmNamespace, mmName)
 		if tErr != nil {
 			return addRequest{}, fmt.Sprintf(":warning: %v\n\n%s", tErr, addUsageMessage())
 		}
@@ -445,7 +444,7 @@ type scaffoldResult struct {
 // have to read source to use it.
 func addUsageMessage() string {
 	var b strings.Builder
-	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>] [mm-service=<svc>]`\n\n")
+	b.WriteString("**Usage:** `/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>]`\n\n")
 	b.WriteString("Run it in the channel that should receive the alerts. Creates Mattermost incoming webhook(s) for the chosen target, all bound to this channel.\n")
 	b.WriteString("- **Group target** (e.g. `compute`, `all`): one shared webhook serves every receiver in the set.\n")
 	b.WriteString("- **Individual slug target** (e.g. `high-cpu-usage`): one dedicated webhook for that one receiver.\n")
@@ -471,7 +470,7 @@ func addUsageMessage() string {
 	b.WriteString("- `standard` (default) or `crd` — format of the config DM'd to you. `standard` is `alertmanager.yml` receivers and routes. `crd` is a Prometheus Operator AlertmanagerConfig plus Secret.\n")
 	b.WriteString("- `on` — opt these receivers in to webhook rotation reminders (see `WebhookRotationDays` in System Console)\n")
 	b.WriteString("- `webhook-host=<url>` — override the host portion of the rendered `api_url` for the multi-cluster pattern\n")
-	b.WriteString(fmt.Sprintf("- `mm-namespace=<ns>`, `mm-name=<cr>` and `mm-service=<svc>` — `%s` only: where Mattermost runs, its custom resource name (default `%s`), and the `service` label on its metrics (default `<cr>-metrics`)\n", mattermostGroup, defaultMattermostName))
+	b.WriteString(fmt.Sprintf("- `mm-namespace=<ns>` and `mm-name=<cr>` — `%s` only: where Mattermost runs and its custom resource name (default `%s`)\n", mattermostGroup, defaultMattermostName))
 	return b.String()
 }
 
