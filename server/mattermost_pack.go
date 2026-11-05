@@ -25,7 +25,6 @@ const (
 	defaultMattermostName       = "mattermost"
 	mmNamespaceFlag             = "mm-namespace="
 	mmNameFlag                  = "mm-name="
-	mmServiceFlag               = "mm-service="
 )
 
 // Operator defaults for prometheusRule.thresholds. Keep in step with the
@@ -50,12 +49,11 @@ var (
 type mattermostTarget struct {
 	namespace string
 	name      string
-	service   string // the `service` label the metrics carry, as Prometheus scrapes it
 }
 
 // newMattermostTarget validates the namespace and CR name before they reach a
 // PromQL string. An empty name means the operator's usual CR name.
-func newMattermostTarget(namespace, name, service string) (mattermostTarget, error) {
+func newMattermostTarget(namespace, name string) (mattermostTarget, error) {
 	if namespace == "" {
 		return mattermostTarget{}, fmt.Errorf("`mm-namespace=<ns>` is required: the namespace your Mattermost runs in")
 	}
@@ -68,13 +66,7 @@ func newMattermostTarget(namespace, name, service string) (mattermostTarget, err
 	if len(name) > 63 || !mattermostCRName.MatchString(name) {
 		return mattermostTarget{}, fmt.Errorf("invalid `mm-name` %q: use the Mattermost custom resource name (lowercase letters, digits and '-')", name)
 	}
-	if service == "" {
-		service = name + "-metrics"
-	}
-	if len(service) > 63 || !mattermostCRName.MatchString(service) {
-		return mattermostTarget{}, fmt.Errorf("invalid `mm-service` %q: use the Service name Prometheus puts in the `service` label (lowercase letters, digits and '-')", service)
-	}
-	return mattermostTarget{namespace: namespace, name: name, service: service}, nil
+	return mattermostTarget{namespace: namespace, name: name}, nil
 }
 
 // kindFor is the receiver kind a scaffold add gives the receiver for slug.
@@ -140,7 +132,7 @@ func renderMattermostOperatorRules(t mattermostTarget) (string, error) {
 
 	out := strings.NewReplacer(
 		"__NAMESPACE__", t.namespace,
-		"__SERVICE__", t.service,
+		"__INSTALLATION__", t.name,
 		// Deployment pods are <name>-<replicaset-hash>-<suffix>. The anchored
 		// pattern keeps "mm" from matching a differently named "mm-test".
 		"__POD_SELECTOR__", t.name+"-[^-]+-[^-]+",
