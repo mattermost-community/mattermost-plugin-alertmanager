@@ -200,7 +200,7 @@ func TestRepresentativeOverdueNames(t *testing.T) {
 }
 
 // TestOverdueReceiverNamesRespectsOptIn is the F-007 regression: rotate all
-// --overdue must only consider receivers opted INTO rotation reminders. An
+// overdue must only consider receivers opted INTO rotation reminders. An
 // opted-out receiver past the threshold must NOT be selected — rotating it would
 // invalidate a webhook the operator never enrolled in the rotation workflow.
 func TestOverdueReceiverNamesRespectsOptIn(t *testing.T) {

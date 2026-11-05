@@ -148,12 +148,13 @@ func TestScaffoldCategoriesDocumented(t *testing.T) {
 		autocompleteItems[it] = true
 	}
 
+	help := renderHelp([]string{"config", "add"})
 	for name := range scaffoldSets {
 		if name == "all" {
 			continue
 		}
-		if !strings.Contains(helpMsg, "`"+name+"`") {
-			t.Errorf("scaffold category %q is not mentioned in helpMsg", name)
+		if !strings.Contains(help, "`"+name+"`") {
+			t.Errorf("scaffold category %q is not mentioned in `config add help`", name)
 		}
 		if !autocompleteItems[name] {
 			t.Errorf("scaffold category %q is not offered in any command autocomplete static list", name)

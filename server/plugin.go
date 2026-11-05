@@ -31,7 +31,7 @@ type Plugin struct {
 	configuration     *configuration
 	configurationLock sync.RWMutex
 
-	// BotUserID is the bot account that owns the channels we auto-create
+	// BotUserID is the bot account that owns the webhooks and posts we create
 	// and is the Username/IconURL override on the webhooks we register.
 	// The webhook's user_id field is actually set to the calling sysadmin
 	// (see incoming_webhook.go for why), but display overrides make
@@ -315,6 +315,9 @@ func (p *Plugin) requireChannelTeamAdmin(userID, channelID string) error {
 	if appErr != nil {
 		return fmt.Errorf("could not resolve channel: %w", appErr)
 	}
+	if channel.TeamId == "" {
+		return fmt.Errorf("this command works in a team channel, not a direct or group message")
+	}
 	member, appErr := p.API.GetTeamMember(channel.TeamId, userID)
 	if appErr != nil {
 		return fmt.Errorf("you must be a member of this channel's team")
@@ -324,32 +327,6 @@ func (p *Plugin) requireChannelTeamAdmin(userID, channelID string) error {
 		return nil
 	}
 	return fmt.Errorf("this command requires team_admin (in this channel's team) or system_admin privilege")
-}
-
-// requireTeamAdminBySlug authorizes the caller for a team identified by its URL
-// slug — the DESTINATION team of add/add-custom — rather than the invocation
-// channel's team. Without this, a team_admin of team A could invoke the command
-// from team A and cause a channel to be created (and a webhook bound) in team B.
-// System admins bypass; otherwise the caller must be a team_admin of that team.
-func (p *Plugin) requireTeamAdminBySlug(userID, teamSlug string) error {
-	if p.client == nil {
-		return fmt.Errorf("plugin not fully initialized")
-	}
-	if p.client.User.HasPermissionTo(userID, model.PermissionManageSystem) {
-		return nil
-	}
-	team, appErr := p.API.GetTeamByName(teamSlug)
-	if appErr != nil {
-		return fmt.Errorf("team `%s` not found", teamSlug)
-	}
-	member, appErr := p.API.GetTeamMember(team.Id, userID)
-	if appErr != nil {
-		return fmt.Errorf("you must be a team_admin of team `%s` (or system_admin) to target it", teamSlug)
-	}
-	if slices.Contains(strings.Fields(member.Roles), "team_admin") {
-		return nil
-	}
-	return fmt.Errorf("this command requires team_admin of team `%s` or system_admin", teamSlug)
 }
 
 // auditLog emits a structured plugin audit record for a mutating

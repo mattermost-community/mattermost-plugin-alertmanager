@@ -57,10 +57,6 @@ func (p *Plugin) metricsEndpointURL() string {
 // invocation reports status without rotating; `generate` mints a new token and
 // reveals it once.
 func (p *Plugin) handleMetricsToken(args *model.CommandArgs) (string, error) {
-	if err := p.requireSystemAdmin(args.UserId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	action := ""
 	if len(fields) >= 3 {
@@ -80,7 +76,7 @@ func (p *Plugin) handleMetricsToken(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf(
 			"**Metrics endpoint token:** %s\n\n**Endpoint:** `%s`\n\n"+
 				"To mint a new token (or rotate the current one) and get a ready-to-paste "+
-				"Prometheus config, run:\n\n```\n/alertmanager metrics-token generate\n```\n"+
+				"Prometheus config, run:\n\n```\n/alertmanager admin metrics-token generate\n```\n"+
 				":warning: Generating **rotates** the token — any Prometheus already scraping this endpoint must be updated with the new value.",
 			state, url,
 		), nil

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// CRD (Prometheus Operator AlertmanagerConfig) rendering — the `--format=crd`
+// CRD (Prometheus Operator AlertmanagerConfig) rendering — the `crd` format
 // counterpart to the file (alertmanager.yml) output. The notification body
 // (color/title/text + inline quick diagnostics) is the SAME receiverBodyTemplate
 // the file renderer uses, re-indented to the deeper AlertmanagerConfig nesting,
@@ -75,16 +75,19 @@ metadata:
     alertmanager-config: "true"
 spec:
   route:
-    # Top-level receiver is the fallback for any runbook in this group that
-    # lacks a sub-route below — never let a labelled alert vanish silently.
+    # Top-level receiver is the fallback for any alert in this group that
+    # lacks a sub-route below — never let a matched alert vanish silently.
     receiver: {{FALLBACK}}
-    # Gate on the group's known runbooks (not runbook=~".+", which leaks other
+    # Gate on the group's known alerts (not runbook=~".+", which leaks other
     # categories in). Update alongside routes: below.
     matchers:
-      - name: runbook
+      - name: {{PARENT_LABEL}}
         value: "{{PARENT_MATCH}}"
         matchType: "=~"
-    groupBy: ["alertname"]
+    # alertname alone merges every pod into one post. namespace and pod
+    # split those. Alerts that do not carry the labels stay one group,
+    # because the missing values are empty for every instance.
+    groupBy: ["alertname", "namespace", "pod"]
     groupWait: 30s
     groupInterval: 5m
     repeatInterval: 4h
@@ -99,7 +102,7 @@ type crdReceiverSpec struct {
 	channel           string // destination channel (with or without leading #)
 	runbookDefaultURL string // plugin-hosted runbook fallback URL
 	iconURL           string // bot avatar URL
-	custom            bool   // add-custom (non-runbook) receiver: no auto route, no runbook link
+	kind              receiverKind
 }
 
 // indentBlock prefixes every non-empty line of s with prefix. Blank lines stay
@@ -134,12 +137,12 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	// Same body as the file format, shifted to the CRD's nesting depth. Fill
 	// {{RUNBOOK_SECTION}} BEFORE re-indenting so its continuation lines pick up
 	// the CRD body indent uniformly. Custom receivers omit the runbook fallback.
-	body := strings.Replace(receiverBodyTemplate, "{{RUNBOOK_SECTION}}", runbookSection(spec.runbookDefaultURL, spec.custom), 1)
+	body := strings.Replace(receiverBodyTemplate, "{{RUNBOOK_SECTION}}", runbookSection(spec.runbookDefaultURL, spec.kind), 1)
 	body = indentBlock(body, crdBodyIndent)
 	// Custom receivers carry no runbook content (Custom is authoritative), so skip
 	// the diagnostics lookup — see the matching guard in renderReceiverYAMLForKind.
 	diagText := ""
-	if !spec.custom {
+	if spec.kind.hasRunbook() {
 		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
 		if diagText != "" {
 			diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
@@ -180,6 +183,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 	var subroutes, receivers strings.Builder
 	slugs := make([]string, 0, len(specs))
 	var customNames []string
+	packMatch := ""
 
 	for _, s := range specs {
 		// The fallback receiver (no runbook slug) gets no sub-route and a
@@ -188,7 +192,19 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 			receivers.WriteString(renderCRDFallbackReceiver(s))
 			continue
 		}
-		if s.custom {
+		if s.kind == kindPack {
+			match, err := packAlertRegex()
+			if err != nil {
+				continue
+			}
+			packMatch = match
+			fmt.Fprintf(&subroutes,
+				"      - matchers: [{name: alertname, value: %q, matchType: \"=~\"}]\n        receiver: %s\n        continue: true\n",
+				match, s.name)
+			receivers.WriteString(renderCRDReceiver(s))
+			continue
+		}
+		if s.kind == kindCustom {
 			// Custom (add-custom) receiver: no runbook label, so emit NO auto
 			// matcher and keep it OUT of the parent =~ gate. The receiver is still
 			// defined; the commented stub is emitted after the loop, once we know
@@ -232,9 +248,13 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 	// alert and dumps it into this group's fallback receiver (broad auto-routing).
 	// Use a sentinel no real slug (nor an absent label) can match, so the CR stays
 	// inert until the operator wires a route for the custom receiver.
-	parentMatch := "^__mm_no_runbook_routes__$"
+	parentLabel, parentMatch := "runbook", "^__mm_no_runbook_routes__$"
 	if len(slugs) > 0 {
 		parentMatch = "^(" + strings.Join(slugs, "|") + ")$"
+	}
+	// A pack has no runbook label, so its CR gates on the pack's alert names.
+	if packMatch != "" {
+		parentLabel, parentMatch = "alertname", packMatch
 	}
 
 	// Emit the routes: key. With live sub-routes, list them under `routes:`. A
@@ -242,7 +262,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 	// spec.route.routes as an array; a comment-only body would decode to null and
 	// fail schema validation) and keep the editable stub as trailing comments.
 	routesBlock := "    routes:\n" + subroutes.String()
-	if len(slugs) == 0 {
+	if len(slugs) == 0 && packMatch == "" {
 		routesBlock = "    routes: []\n" + subroutes.String()
 	}
 
@@ -251,6 +271,7 @@ func renderAlertmanagerConfig(crName, namespace, fallbackReceiver string, specs 
 		"{{CR_NAME}}", crName,
 		"{{NAMESPACE}}", namespace,
 		"{{FALLBACK}}", fallbackReceiver,
+		"{{PARENT_LABEL}}", parentLabel,
 		"{{PARENT_MATCH}}", parentMatch,
 		"{{ROUTES_BLOCK}}", routesBlock,
 		"{{RECEIVERS}}", receivers.String(),

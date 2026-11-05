@@ -24,6 +24,11 @@ func TestRawConfigMapCoversSchema(t *testing.T) {
 			Settings []struct {
 				Key string `json:"key"`
 			} `json:"settings"`
+			Sections []struct {
+				Settings []struct {
+					Key string `json:"key"`
+				} `json:"settings"`
+			} `json:"sections"`
 		} `json:"settings_schema"`
 	}
 	if err := json.Unmarshal(blob, &manifest); err != nil {
@@ -33,6 +38,11 @@ func TestRawConfigMapCoversSchema(t *testing.T) {
 	schemaKeys := make(map[string]bool)
 	for _, s := range manifest.SettingsSchema.Settings {
 		schemaKeys[strings.ToLower(s.Key)] = true
+	}
+	for _, section := range manifest.SettingsSchema.Sections {
+		for _, s := range section.Settings {
+			schemaKeys[strings.ToLower(s.Key)] = true
+		}
 	}
 	mapKeys := make(map[string]bool)
 	for k := range (rawConfiguration{}).toConfigMap() {
@@ -76,7 +86,7 @@ func TestValidateWebhookHost(t *testing.T) {
 		{"query string is rejected", "https://mattermost.example.com?foo=bar", true, "'?'"},
 		{"fragment is rejected", "https://mattermost.example.com#section", true, "'?'"},
 		// Hardened to the validateAlertManagerURL bar — a second attacker-controllable
-		// URL (per-receiver --webhook-host) that drives a webhook-test POST and lands
+		// URL (per-receiver webhook-host) that drives a webhook-test POST and lands
 		// in generated api_url YAML, so it must reject the same SSRF/injection shapes.
 		{"embedded credentials rejected", "http://user:pass@mattermost.example.com", true, "credential"},
 		{"single quote in host rejected (YAML injection)", "http://mattermost.example.com'", true, "invalid characters"},

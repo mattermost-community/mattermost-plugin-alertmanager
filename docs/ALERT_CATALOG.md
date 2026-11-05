@@ -1,8 +1,8 @@
 # Alert Catalog
 
 Every alert type the runbook library covers, grouped the same way as the
-`/alertmanager add <set>` group sets and the `groups:` in your Prometheus
-rules. Read it in chat with `/alertmanager docs alerts`.
+`/alertmanager config add <set>` group sets and the `groups:` in your Prometheus
+rules.
 
 Each runbook slug maps to a rendered page at
 `/plugins/com.mattermost.alertmanager/public/runbooks/<slug>.html` and,
@@ -99,13 +99,45 @@ rule is valid but never fires without it.
 | RBAC Privilege Escalation | `rbac-privilege-escalation` | critical | cluster-admin binding / wildcard role created | audit logs + Falco |
 | Security Tooling Down | `security-tooling-down` | critical | Falco/Kyverno/audit sensor stopped reporting | Falco/Kyverno scrape targets |
 
+## Mattermost Application (`mattermost`)
+
+Rules for the Mattermost server itself. Requires `ServiceSettings.EnableMetrics: true` in Mattermost `config.json`. Metric names may vary by Mattermost version — verify from your `/metrics` endpoint before deploying.
+
+| Alert | slug | Severity | Fires when | Requires |
+|---|---|---|---|---|
+| Mattermost API High Latency | `mattermost-api-high-latency` | warning | p95 API response > 1s for 5m | Mattermost metrics |
+| Mattermost High Login Failures | `mattermost-high-login-failures` | warning | > 10 failed logins in 10m | Mattermost metrics |
+| Mattermost WebSocket Drop | `mattermost-websocket-drop` | warning | Active WS connections drop > 50% vs 10m ago | Mattermost metrics |
+| Mattermost DB Slow Query | `mattermost-db-slow-query` | warning | p99 DB store op > 500ms for 5m | Mattermost metrics |
+| Mattermost High Error Rate | `mattermost-high-error-rate` | warning | > 5% of API calls return 5xx for 5m | Mattermost metrics |
+
+### Mattermost operator alerts (`mattermost` with `mm-namespace=<ns>`)
+
+Kubernetes installs only. These 13 alerts come from the Mattermost Operator's own PrometheusRule. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
+
+| Alert | Severity | Fires when | Needs |
+|---|---|---|---|
+| MattermostServerDown | critical | No Mattermost pod is up | Mattermost metrics |
+| MattermostDBReplicaLag | warning | Replica lag over threshold | Read replica |
+| MattermostDBWriterPoolEmpty | critical | Writer connection pool exhausted | Mattermost metrics |
+| MattermostHighHTTPErrorRate | warning | Elevated HTTP error ratio | Mattermost metrics |
+| MattermostLoginFailureSpike | warning | Elevated failed-login ratio | Mattermost metrics |
+| MattermostSearchDown | warning | Search backend unhealthy | Mattermost metrics |
+| MattermostClusterUnhealthy | warning | Cluster nodes disagree | Mattermost metrics |
+| MattermostLogsDropped | warning | Log records dropped | Mattermost metrics |
+| MattermostPodCrashLooping | critical | Pod restarting repeatedly | kube-state-metrics |
+| MattermostHighCPU, MattermostHighMemory, MattermostCPULimitMissing, MattermostMemoryLimitMissing | warning | Resource pressure, missing limits | kube-state-metrics |
+
+Thresholds live in the operator's rules and are filled in by the plugin. Read `samples/mattermost-operator-rules.yaml` for the exact expressions.
+
 ## Wiring a set into a channel
 
 ```
-/alertmanager add <team> <channel> <am-url> security
-/alertmanager add <team> <channel> <am-url> storage
-/alertmanager validate security --simulate runbook=unexpected-container-image severity=warning
+/alertmanager config add <am-url> mattermost
+/alertmanager config add <am-url> security
+/alertmanager config add <am-url> storage
+/alertmanager config validate security simulate runbook=unexpected-container-image severity=warning
 ```
 
-`all` wires every slug above (30) behind one shared webhook. See
-`/alertmanager docs slash_commands` for the full command reference.
+`all` wires every slug above (35) behind one shared webhook. See
+[Slash commands](SLASH_COMMANDS.md) for the full command reference.

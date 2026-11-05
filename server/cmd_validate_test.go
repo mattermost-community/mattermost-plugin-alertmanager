@@ -32,7 +32,7 @@ func TestSyntheticFiringTTLClearsGroupWait(t *testing.T) {
 	}
 }
 
-// TestParseSimulateLabels pins the input contract for `--simulate
+// TestParseSimulateLabels pins the input contract for `simulate
 // <key>=<value>` args. Operators typing at 3am benefit from clear
 // error messages on bad input — each case below should produce a
 // specific, actionable error or a clean label set.
@@ -173,7 +173,7 @@ receivers:
 	})
 }
 
-// TestExpandSeverityForFire pins the contract for the --severity flag:
+// TestExpandSeverityForFire pins the contract for the severity flag:
 // what each accepted value expands to, which strings are invalid, and
 // what the `all` matrix looks like.
 func TestExpandSeverityForFire(t *testing.T) {

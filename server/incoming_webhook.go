@@ -277,7 +277,7 @@ func webhookDeleteError(hookID string, err error) error {
 // webhookURLForReceiver resolves the api_url with per-receiver
 // precedence. Resolution order:
 //
-//  1. ac.WebhookHostOverride — set via /alertmanager add --webhook-host=...
+//  1. ac.WebhookHostOverride — set via /alertmanager config add webhook-host=...
 //     for multi-cluster pattern C (each cluster has a different
 //     network path to MM)
 //  2. WebhookHost plugin setting — global default for the deployment

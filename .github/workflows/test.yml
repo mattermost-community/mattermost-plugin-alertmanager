@@ -76,3 +76,30 @@ jobs:
             -v "${{ github.workspace }}/samples":/w -w /w \
             prom/prometheus:v3.5.0 \
             check rules /w/prometheus-rules.yaml
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The Mattermost operator rules ship with placeholders. Render them the way
+      # `config add mattermost mm-namespace=<ns>` does, then check the result.
+      - name: promtool check mattermost operator rules
+        run: |
+          mkdir -p "${{ runner.temp }}/pack-rules"
+          RENDER_PACK_RULES_DIR="${{ runner.temp }}/pack-rules" \
+            go test -run TestWritePackRulesForPromtool -count=1 ./server/...
+          # The test writes 0600 files. The promtool container runs as another user.
+          chmod 0644 "${{ runner.temp }}/pack-rules"/*.yaml
+          docker run --rm --entrypoint promtool \
+            -v "${{ runner.temp }}/pack-rules":/w -w /w \
+            prom/prometheus:v3.5.0 \
+            check rules /w/mattermost-operator-rules.yaml /w/mattermost-group-rules.yaml
+
+      - name: promtool test rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "${{ github.workspace }}/samples":/w -w /w \
+            prom/prometheus:v3.5.0 \
+            test rules /w/prometheus-rules.test.yaml

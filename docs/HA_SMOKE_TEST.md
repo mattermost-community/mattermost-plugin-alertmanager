@@ -42,7 +42,7 @@ behavior.
 - `kubectl` access to the namespace.
 - The plugin installed and active (`make dist` → upload via
   System Console).
-- At least one receiver configured via `/alertmanager add` so
+- At least one receiver configured via `/alertmanager config add` so
   there's something for the reconciler to walk.
 
 ## Procedure
@@ -114,11 +114,11 @@ gone.
 the cycle. The deferred `revokeUserAccessToken` call didn't
 fire — file a bug.
 
-### D. Verify `/alertmanager reconcile` (manual trigger) doesn't
+### D. Verify `/alertmanager admin repair prune` (manual trigger) doesn't
 fight the background job
 
 While the background reconciler is running (mid-cycle), a
-sysadmin runs `/alertmanager reconcile` from any channel.
+sysadmin runs `/alertmanager admin repair prune` from any channel.
 
 **Pass:** the manual command completes (success or "no orphans"
 message), audit log shows two reconcile entries (one background,
@@ -138,12 +138,12 @@ via one pod is visible on the others.
 # Find two distinct pods.
 kubectl get pods -n mattermost -l app=mattermost -o name
 
-# 1. Run `/alertmanager add testing prop-check <am-url>` from the app
+# 1. Run `/alertmanager config add <am-url>` from the app
 #    (the request lands on whichever pod the LB picks).
-# 2. Immediately hit the admin inventory / `/alertmanager list` a few
+# 2. Immediately hit the admin inventory / `/alertmanager config list` a few
 #    times so the LB routes you to different pods (or curl each pod
 #    directly). Every pod must show the new receiver right away.
-# 3. Then `/alertmanager remove prop-check` and repeat — it must
+# 3. Then `/alertmanager config remove prop-check` and repeat — it must
 #    disappear on every pod without waiting for a reconciler cycle.
 ```
 
