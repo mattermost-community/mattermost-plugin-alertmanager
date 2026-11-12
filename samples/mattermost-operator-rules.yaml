@@ -1,5 +1,9 @@
 # Mattermost-focused alerting rules, scoped to this installation's pods.
 #
+# These mirror the rules in the Mattermost Operator's monitoring PR (draft
+# mattermost-operator #466). The operator does not ship them yet. If it does,
+# these are redundant: same groups, alert names and labels, so drop this pack.
+#
 # The plugin substitutes __NAMESPACE__, __INSTALLATION__ and __POD_SELECTOR__ for
 # one Mattermost CR, so every alert here targets that install by namespace and
 # installation name, never by Service name, static IP or CIDR.
@@ -191,6 +195,27 @@ groups:
         annotations:
           summary: "Mattermost {{ $labels.namespace }}/{{ $labels.installation_mattermost_com_installation }} login failures are most attempts"
           description: "More than __LOGIN_FAILURE_PERCENT__% of login attempts have failed for 10 minutes, with at least __LOGIN_MIN_FAILURES__ failures in 15 minutes."
+
+      - alert: MattermostWebSocketDrop
+        # Active WebSocket connections fell below half of their level 10 minutes
+        # ago. Summed across pods so a restart (new pod name, old series gone) is
+        # still seen as a drop. Typical causes: pod restart, load balancer idle
+        # timeout, network disruption. `for: 5m` ignores a normal rolling update
+        # once clients reconnect.
+        expr: |
+          sum by (namespace, installation_mattermost_com_installation) (
+            mattermost_http_websockets_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}
+          )
+          <
+          0.5 * sum by (namespace, installation_mattermost_com_installation) (
+            mattermost_http_websockets_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"} offset 10m
+          )
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mattermost {{ $labels.namespace }}/{{ $labels.installation_mattermost_com_installation }} WebSocket connections dropped by more than half"
+          description: "Active WebSocket connections are below half of their level 10 minutes ago. Users are losing real-time updates."
 
       - alert: MattermostSearchDown
         # 1 when Elasticsearch is healthy or not configured, 0 only when it is
