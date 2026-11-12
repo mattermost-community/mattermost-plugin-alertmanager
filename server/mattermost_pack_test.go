@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	root "github.com/mattermost/mattermost-plugin-alertmanager"
 )
 
 var wantPackAlerts = []string{
@@ -757,5 +759,26 @@ func TestParseFormatArgsPackOptions(t *testing.T) {
 	plugin := rulesTestPlugin()
 	if _, errMsg := plugin.rulesForTarget(testRulesContext(formatCRD), rulesOptions{target: mattermostGroup, mmOptions: mattermostOptions{postgresPod: true, given: true}}); !strings.Contains(errMsg, "mm-namespace") {
 		t.Fatalf("flags without mm-namespace must ask for it, got %q", errMsg)
+	}
+}
+
+// A comment sits above the alert it describes. Dropping a rule must drop its
+// comment and keep the next rule's, not hand the comment to a neighbour.
+func TestFilterKeepsEachCommentWithItsAlert(t *testing.T) {
+	raw, err := root.SamplesFS.ReadFile("samples/prometheus-rules.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := filterPrometheusRules(string(raw), slugsWithoutPack(scaffoldSets[mattermostGroup]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "MattermostHighLoginFailures") || strings.Contains(out, "MattermostWebSocketDrop") {
+		t.Fatalf("dropped rules left comments behind:\n%s", out)
+	}
+	idx := strings.Index(out, "# MattermostDBSlowQuery")
+	alert := strings.Index(out, "- alert: MattermostDBSlowQuery")
+	if idx < 0 || alert < 0 || idx > alert {
+		t.Fatalf("MattermostDBSlowQuery lost its comment:\n%s", out)
 	}
 }

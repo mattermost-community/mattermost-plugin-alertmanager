@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -230,6 +231,20 @@ func buildPrometheusRuleManifest(rawYAML, namespace, name string) string {
 	return b.String()
 }
 
+// splitLeadingComment moves the trailing blank and comment lines of lines into
+// lead. They sit directly above the next alert.
+func splitLeadingComment(lines []string) (kept, lead []string) {
+	i := len(lines)
+	for i > 0 {
+		trimmed := strings.TrimSpace(lines[i-1])
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		i--
+	}
+	return lines[:i], append([]string{}, lines[i:]...)
+}
+
 // filterPrometheusRules keeps the sample rules whose runbook label is in
 // slugs. Group banners and rules for other slugs are dropped. The result
 // is a bare groups: document, which buildPrometheusRuleManifest wraps.
@@ -280,8 +295,16 @@ func filterPrometheusRules(raw string, slugs []string) (string, int, error) {
 			continue
 		}
 		if strings.HasPrefix(line, "      - alert:") {
+			// Comments above an alert describe it. They were read as the tail of
+			// whatever came before, so take them back before that is dropped.
+			var lead []string
+			if rule != nil {
+				rule, lead = splitLeadingComment(rule)
+			} else {
+				groups[gi].header, lead = splitLeadingComment(groups[gi].header)
+			}
 			flush()
-			rule = []string{line}
+			rule = slices.Concat(lead, []string{line})
 			continue
 		}
 		if rule != nil {
