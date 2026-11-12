@@ -267,7 +267,7 @@ func rulesGroupItems() []model.AutocompleteListItem {
 		case "all":
 			help = "Every group's rules, all 36. Same as leaving the group out."
 		case mattermostGroup:
-			help = "DM the mattermost group's rules. Add mm-namespace=<ns> to include the 13 rules the Mattermost Operator generates for that install."
+			help = "DM the mattermost group's rules. Add mm-namespace=<ns> to include the 14 rules the Mattermost Operator generates for that install."
 		}
 		items = append(items, model.AutocompleteListItem{Item: name, HelpText: help})
 	}

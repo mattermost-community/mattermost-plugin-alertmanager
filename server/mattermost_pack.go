@@ -15,6 +15,11 @@ import (
 // samples/mattermost-operator-rules.yaml is a verbatim copy of the operator's
 // file; the plugin only fills in its placeholders, the same way the operator
 // does, so the two never diverge in meaning.
+//
+// The pack is a stand-in for monitoring the Mattermost Operator does not ship
+// yet (draft mattermost-operator PR #466). If the operator ever creates these
+// rules itself, stop adding the pack: the groups, alert names and labels match,
+// so removing it leaves nothing behind.
 const (
 	mattermostGroup = "mattermost"
 	// packReceiverSlug names the receiver that claims the operator alerts. Entries
@@ -160,6 +165,25 @@ func percentFraction(percent int) string {
 	return strconv.FormatFloat(float64(percent)/100, 'f', -1, 64)
 }
 
+// supersededByPack lists the group's runbook slugs the pack replaces. Both
+// monitor the same signal as a pack alert, but unscoped and across every install.
+// With a target they are dropped, so each signal alerts once.
+var supersededByPack = map[string]bool{
+	"mattermost-websocket-drop":      true, // MattermostWebSocketDrop
+	"mattermost-high-login-failures": true, // MattermostLoginFailureSpike
+}
+
+// slugsWithoutPack returns slugs minus the ones the pack covers.
+func slugsWithoutPack(slugs []string) []string {
+	kept := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		if !supersededByPack[slug] {
+			kept = append(kept, slug)
+		}
+	}
+	return kept
+}
+
 // mattermostRulesFile builds the rules for the `mattermost` group. With a target
 // it appends the operator's alerts for that install. namespace is where the
 // PrometheusRule object lands, not where Mattermost runs.
@@ -182,13 +206,16 @@ func (p *Plugin) mattermostRulesFile(rc rulesContext, t *mattermostTarget) (*rul
 	if err != nil {
 		return nil, err
 	}
+	spec.slugs = slugsWithoutPack(spec.slugs)
 	spec.scope = fmt.Sprintf("the `mattermost` group and Mattermost `%s/%s`", t.namespace, t.name)
 	spec.extraGroups = strings.TrimPrefix(body, "groups:\n")
 	spec.extraCount = len(names)
 	spec.tail = fmt.Sprintf(
 		"Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. "+
 			"The `mattermost.*` groups are the rules the Mattermost Operator generates: once your operator creates its own PrometheusRule, remove them from this file. "+
-			"MattermostHighErrorRate and MattermostHighLoginFailures overlap the operator's HTTP error and login alerts.",
+			"The group's WebSocket drop and login failure rules are left out, because the operator alerts cover them. "+
+			"MattermostHighErrorRate overlaps the operator's HTTP error alert. "+
+			"If the Mattermost Operator ships these rules itself, remove the `mattermost.*` groups and do not add them again.",
 		prometheusRuleObject,
 	)
 	return p.buildRules(spec)

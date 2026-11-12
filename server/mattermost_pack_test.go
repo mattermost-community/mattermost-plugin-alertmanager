@@ -23,6 +23,7 @@ var wantPackAlerts = []string{
 	"MattermostDBWriterPoolEmpty",
 	"MattermostHighHTTPErrorRate",
 	"MattermostLoginFailureSpike",
+	"MattermostWebSocketDrop",
 	"MattermostSearchDown",
 	"MattermostClusterUnhealthy",
 	"MattermostLogsDropped",
@@ -232,12 +233,21 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 		t.Fatalf("without mm-namespace want only the group's runbook rules, got %v", baseAlerts)
 	}
 
+	// The pack replaces these two built-in rules; keeping both would alert twice.
+	var keptAlerts []string
+	for _, a := range baseAlerts {
+		if a != "MattermostWebSocketDrop" && a != "MattermostHighLoginFailures" {
+			keptAlerts = append(keptAlerts, a)
+		}
+	}
+	wantTotal := len(keptAlerts) + len(wantPackAlerts)
+
 	crd, err := p.mattermostRulesFile(testRulesContext(formatCRD), &target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if crd.count != len(baseAlerts)+len(wantPackAlerts) {
-		t.Fatalf("count = %d, want %d", crd.count, len(baseAlerts)+len(wantPackAlerts))
+	if crd.count != wantTotal {
+		t.Fatalf("count = %d, want %d", crd.count, wantTotal)
 	}
 	var obj struct {
 		Kind     string `yaml:"kind"`
@@ -266,15 +276,25 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 			got = append(got, r.Alert)
 		}
 	}
-	for _, want := range append(slices.Clone(baseAlerts), wantPackAlerts...) {
+	for _, want := range append(slices.Clone(keptAlerts), wantPackAlerts...) {
 		if !slices.Contains(got, want) {
 			t.Errorf("merged manifest missing %s", want)
 		}
 	}
+	seen := map[string]bool{}
+	for _, a := range got {
+		if seen[a] {
+			t.Errorf("alert %s is defined twice, so it would fire twice", a)
+		}
+		seen[a] = true
+	}
+	if slices.Contains(got, "MattermostHighLoginFailures") {
+		t.Error("MattermostHighLoginFailures is covered by MattermostLoginFailureSpike and must be dropped")
+	}
 	if packPlaceholder.MatchString(string(crd.data)) {
 		t.Fatal("manifest still carries a placeholder")
 	}
-	if !strings.Contains(crd.section(), "remove them from this file") {
+	if !strings.Contains(crd.section(), "remove them from this file") || !strings.Contains(crd.section(), "ships these rules itself") {
 		t.Fatalf("section missing the operator hand-off:\n%s", crd.section())
 	}
 
@@ -285,7 +305,7 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 	if strings.Contains(string(plain.data), "kind: PrometheusRule") || !strings.Contains(string(plain.data), "groups:") {
 		t.Fatalf("standard rules should be a bare groups file:\n%s", plain.data)
 	}
-	if n := len(ruleAlertNames(t, plain.data)); n != len(baseAlerts)+len(wantPackAlerts) {
+	if n := len(ruleAlertNames(t, plain.data)); n != wantTotal {
 		t.Fatalf("standard merged file has %d alerts", n)
 	}
 }
