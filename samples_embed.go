@@ -8,6 +8,7 @@ import "embed"
 //
 // mattermost-operator-rules.yaml is a verbatim copy of the rules the Mattermost
 // Operator embeds, so the plugin can serve them until the operator ships them.
+// mattermost-postgres-rules.yaml is plugin-only and has no operator counterpart.
 
-//go:embed samples/prometheus-rules.yaml samples/mattermost-operator-rules.yaml
+//go:embed samples/prometheus-rules.yaml samples/mattermost-operator-rules.yaml samples/mattermost-postgres-rules.yaml
 var SamplesFS embed.FS

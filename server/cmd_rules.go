@@ -101,11 +101,12 @@ func (p *Plugin) handleTargetRules(userID string, rc rulesContext, opts rulesOpt
 func (p *Plugin) rulesForTarget(rc rulesContext, opts rulesOptions) (rules *rulesFile, errMsg string) {
 	if opts.target == mattermostGroup {
 		var target *mattermostTarget
-		if opts.mmNamespace != "" || opts.mmName != "" {
+		if opts.mmNamespace != "" || opts.mmName != "" || opts.mmOptions.given {
 			t, err := newMattermostTarget(opts.mmNamespace, opts.mmName)
 			if err != nil {
 				return nil, fmt.Sprintf(":warning: %v", err)
 			}
+			t = t.withOptions(opts.mmOptions)
 			target = &t
 		}
 		built, err := p.mattermostRulesFile(rc, target)

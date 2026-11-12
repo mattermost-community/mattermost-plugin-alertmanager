@@ -29,6 +29,9 @@ var wantPackAlerts = []string{
 	"MattermostLogsDropped",
 }
 
+// defaultPackAlerts is the pack without the opt-in MattermostDBReplicaLag.
+var defaultPackAlerts = slices.DeleteFunc(slices.Clone(wantPackAlerts), func(name string) bool { return name == alertDBReplicaLag })
+
 func testTarget(t *testing.T) mattermostTarget {
 	t.Helper()
 	target, err := newMattermostTarget("mattermost-crimson", "")
@@ -61,7 +64,7 @@ func TestPackRulesCarryNoRunbookLabel(t *testing.T) {
 }
 
 func TestRenderMattermostOperatorRules(t *testing.T) {
-	out, err := renderMattermostOperatorRules(testTarget(t))
+	out, err := renderMattermostOperatorRules(testTarget(t).withOptions(mattermostOptions{dbReplicas: true}))
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -240,7 +243,7 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 			keptAlerts = append(keptAlerts, a)
 		}
 	}
-	wantTotal := len(keptAlerts) + len(wantPackAlerts)
+	wantTotal := len(keptAlerts) + len(defaultPackAlerts)
 
 	crd, err := p.mattermostRulesFile(testRulesContext(formatCRD), &target)
 	if err != nil {
@@ -276,7 +279,7 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 			got = append(got, r.Alert)
 		}
 	}
-	for _, want := range append(slices.Clone(keptAlerts), wantPackAlerts...) {
+	for _, want := range append(slices.Clone(keptAlerts), defaultPackAlerts...) {
 		if !slices.Contains(got, want) {
 			t.Errorf("merged manifest missing %s", want)
 		}
@@ -482,25 +485,29 @@ func TestWritePackRulesForPromtool(t *testing.T) {
 	if dir == "" {
 		t.Skip("RENDER_PACK_RULES_DIR not set")
 	}
-	out, err := renderMattermostOperatorRules(testTarget(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(dir, "mattermost-operator-rules.yaml"), []byte(out), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	target := testTarget(t)
-	merged, err := rulesTestPlugin().mattermostRulesFile(testRulesContext(formatStandard), &target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(dir, "mattermost-group-rules.yaml"), merged.data, 0o600); err != nil {
-		t.Fatal(err)
+	for name, opts := range map[string]mattermostOptions{
+		"default": {},
+		"all":     {dbReplicas: true, postgresPod: true},
+	} {
+		target := testTarget(t).withOptions(opts)
+		out, err := renderMattermostOperatorRules(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(dir, "mattermost-operator-rules-"+name+".yaml"), []byte(out), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		merged, err := rulesTestPlugin().mattermostRulesFile(testRulesContext(formatStandard), &target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(dir, "mattermost-group-rules-"+name+".yaml"), merged.data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
-// The route claims the 13 operator alerts and nothing else, including the
+// The route claims the operator and Postgres pod alerts and nothing else, including the
 // chart's own MattermostDown and the older runbook alerts.
 func TestPackRegexMatchesOnlyPackAlerts(t *testing.T) {
 	expr, err := packAlertRegex()
@@ -509,7 +516,11 @@ func TestPackRegexMatchesOnlyPackAlerts(t *testing.T) {
 	}
 	// Alertmanager anchors matchers itself; the explicit ^$ is for readers.
 	re := regexp.MustCompile(expr)
-	for _, name := range wantPackAlerts {
+	postgres, err := postgresAlertnames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range append(slices.Clone(wantPackAlerts), postgres...) {
 		if !re.MatchString(name) {
 			t.Errorf("%s should match", name)
 		}
@@ -640,5 +651,111 @@ func TestRulesForTargetIsPerGroup(t *testing.T) {
 	}
 	if _, msg = p.rulesForTarget(testRulesContext(formatCRD), rulesOptions{target: mattermostGroup, mmNamespace: "Bad_NS"}); !strings.Contains(msg, "mm-namespace") {
 		t.Fatalf("bad namespace message = %q", msg)
+	}
+}
+
+func TestDBReplicaLagIsOptIn(t *testing.T) {
+	alerts := func(opts mattermostOptions) []string {
+		out, err := renderMattermostOperatorRules(testTarget(t).withOptions(opts))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Groups []struct {
+				Name  string `yaml:"name"`
+				Rules []struct {
+					Alert string `yaml:"alert"`
+				} `yaml:"rules"`
+			} `yaml:"groups"`
+		}
+		if err = yaml.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("not valid YAML after dropping the alert: %v\n%s", err, out)
+		}
+		var names []string
+		for _, g := range doc.Groups {
+			if len(g.Rules) == 0 {
+				t.Errorf("group %s is empty", g.Name)
+			}
+			for _, r := range g.Rules {
+				names = append(names, r.Alert)
+			}
+		}
+		return names
+	}
+
+	if got := alerts(mattermostOptions{}); !slices.Equal(got, defaultPackAlerts) {
+		t.Fatalf("default alerts = %v, want %v", got, defaultPackAlerts)
+	}
+	if got := alerts(mattermostOptions{dbReplicas: true}); !slices.Equal(got, wantPackAlerts) {
+		t.Fatalf("with mm-db-replicas alerts = %v, want %v", got, wantPackAlerts)
+	}
+}
+
+func TestPostgresPodRules(t *testing.T) {
+	p := rulesTestPlugin()
+	plain := testTarget(t)
+	withPG := testTarget(t).withOptions(mattermostOptions{postgresPod: true})
+
+	base, err := p.mattermostRulesFile(testRulesContext(formatStandard), &plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, err := p.mattermostRulesFile(testRulesContext(formatStandard), &withPG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postgres, err := postgresAlertnames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseAlerts := ruleAlertNames(t, base.data)
+	withAlerts := ruleAlertNames(t, with.data)
+	for _, name := range postgres {
+		if slices.Contains(baseAlerts, name) {
+			t.Errorf("%s must be off by default", name)
+		}
+		if !slices.Contains(withAlerts, name) {
+			t.Errorf("%s missing with mm-postgres-pod=true", name)
+		}
+	}
+	if len(withAlerts) != len(baseAlerts)+len(postgres) || with.count != len(withAlerts) {
+		t.Fatalf("count = %d, alerts = %d, want %d", with.count, len(withAlerts), len(baseAlerts)+len(postgres))
+	}
+	if !strings.Contains(string(with.data), `namespace="mattermost-crimson"`) || packPlaceholder.MatchString(string(with.data)) {
+		t.Fatal("postgres rules must carry the namespace and no placeholder")
+	}
+}
+
+func TestExtractMattermostOptions(t *testing.T) {
+	rest, opts, err := extractMattermostOptions([]string{"mattermost", "mm-db-replicas=true", "mm-postgres-pod=TRUE", "crd"})
+	if err != nil || !opts.dbReplicas || !opts.postgresPod || !opts.given || !slices.Equal(rest, []string{"mattermost", "crd"}) {
+		t.Fatalf("rest=%v opts=%+v err=%v", rest, opts, err)
+	}
+	_, opts, err = extractMattermostOptions([]string{"mm-db-replicas=false"})
+	if err != nil || opts.dbReplicas || !opts.given {
+		t.Fatalf("false must parse and count as given: %+v %v", opts, err)
+	}
+	if _, opts, err = extractMattermostOptions([]string{"mattermost"}); err != nil || opts.given {
+		t.Fatalf("no flags: %+v %v", opts, err)
+	}
+	if _, _, err = extractMattermostOptions([]string{"mm-postgres-pod=yes"}); err == nil || !strings.Contains(err.Error(), "true or false") {
+		t.Fatalf("bad value error = %v", err)
+	}
+}
+
+func TestParseFormatArgsPackOptions(t *testing.T) {
+	opts, msg := parseFormatArgs([]string{"mattermost", "mm-namespace=chat", "mm-db-replicas=true", "mm-postgres-pod=true", "crd"})
+	if msg != "" || !opts.mmOptions.dbReplicas || !opts.mmOptions.postgresPod {
+		t.Fatalf("opts = %+v msg = %q", opts, msg)
+	}
+	if _, msg = parseFormatArgs([]string{"security", "mm-postgres-pod=true"}); !strings.Contains(msg, "only apply") {
+		t.Fatalf("flags on another group must be refused, got %q", msg)
+	}
+	if _, msg = parseFormatArgs([]string{"mattermost", "mm-db-replicas=maybe"}); !strings.Contains(msg, "true or false") {
+		t.Fatalf("bad value must be refused, got %q", msg)
+	}
+	plugin := rulesTestPlugin()
+	if _, errMsg := plugin.rulesForTarget(testRulesContext(formatCRD), rulesOptions{target: mattermostGroup, mmOptions: mattermostOptions{postgresPod: true, given: true}}); !strings.Contains(errMsg, "mm-namespace") {
+		t.Fatalf("flags without mm-namespace must ask for it, got %q", errMsg)
 	}
 }

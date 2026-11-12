@@ -113,7 +113,7 @@ Rules for the Mattermost server itself. Requires `ServiceSettings.EnableMetrics:
 
 ### Mattermost operator alerts (`mattermost` with `mm-namespace=<ns>`)
 
-Kubernetes installs only. These 14 alerts come from the Mattermost Operator's own PrometheusRule. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
+Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come from the Mattermost Operator's own PrometheusRule. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
 
 | Alert | Severity | Fires when | Needs |
 |---|---|---|---|

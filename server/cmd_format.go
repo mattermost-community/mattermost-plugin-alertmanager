@@ -28,6 +28,7 @@ type rulesOptions struct {
 	// mattermost target only
 	mmNamespace string // namespace Mattermost runs in
 	mmName      string // Mattermost custom resource name
+	mmOptions   mattermostOptions
 }
 
 // parseFormatArgs reads the words after `format <verb>`: an optional
@@ -45,6 +46,11 @@ func parseFormatArgs(words []string) (rulesOptions, string) {
 	}
 	opts.mmNamespace, rest = extractFlagValue(rest, mmNamespaceFlag)
 	opts.mmName, rest = extractFlagValue(rest, mmNameFlag)
+	var optsErr error
+	rest, opts.mmOptions, optsErr = extractMattermostOptions(rest)
+	if optsErr != nil {
+		return opts, fmt.Sprintf(":warning: %v", optsErr)
+	}
 
 	tooMany := false
 	var unknown []string
@@ -69,8 +75,8 @@ func parseFormatArgs(words []string) (rulesOptions, string) {
 	if len(unknown) == 1 {
 		return opts, fmt.Sprintf(":warning: Unknown format or target `%s`. Use `standard` or `crd`, or a group such as `security`.", unknown[0])
 	}
-	if opts.target != mattermostGroup && (opts.mmNamespace != "" || opts.mmName != "") {
-		return opts, fmt.Sprintf(":warning: `mm-namespace` and `mm-name` only apply to `%s`.", mattermostGroup)
+	if opts.target != mattermostGroup && (opts.mmNamespace != "" || opts.mmName != "" || opts.mmOptions.given) {
+		return opts, fmt.Sprintf(":warning: `mm-namespace`, `mm-name`, `mm-db-replicas` and `mm-postgres-pod` only apply to `%s`.", mattermostGroup)
 	}
 	return opts, ""
 }
@@ -82,7 +88,7 @@ func parseFormatArgs(words []string) (rulesOptions, string) {
 //	format rules [standard|crd] [namespace=<ns>]    the sample Prometheus rules only
 //	format rules <group|slug> [standard|crd] [namespace=<ns>]
 //	                                                one group's rules, or one runbook's
-//	format rules mattermost [mm-namespace=<ns>] [mm-name=<cr>] [standard|crd] [namespace=<ns>]
+//	format rules mattermost [mm-namespace=<ns>] [mm-name=<cr>] [mm-db-replicas=true] [mm-postgres-pod=true] [standard|crd] [namespace=<ns>]
 //	                                                the mattermost group's rules, plus the operator's
 //	                                                Mattermost rules when mm-namespace is given
 func (p *Plugin) handleFormatGroup(args *model.CommandArgs) (string, error) {
