@@ -1,0 +1,36 @@
+# Alerts for a Postgres that runs as pods in the Mattermost namespace, the shape
+# the Mattermost Operator's own database or a chart such as Bitnami creates
+# (<name>-postgresql-primary-0, <name>-postgresql-read-0). Added only with
+# mm-postgres-pod=true.
+#
+# These are plugin-only. The Mattermost Operator does not ship them, so unlike
+# mattermost-operator-rules.yaml they do not mirror an operator PR.
+#
+# The plugin substitutes __NAMESPACE__. Pods are matched by the name pattern
+# ".*postgres.*" inside that namespace, so a Postgres exporter that lives in the
+# same namespace is covered too. kube-state-metrics must be running.
+groups:
+  - name: mattermost.postgres
+    rules:
+      - alert: MattermostPostgresPodNotReady
+        # Covers the primary and every replica. The pod label says which one.
+        expr: |
+          kube_pod_status_ready{namespace="__NAMESPACE__", pod=~".*postgres.*", condition="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready"
+          description: "Pod {{ $labels.pod }} has not been Ready for 5 minutes. If it is the primary, Mattermost cannot write; if it is a replica, reads fail over or fail."
+
+      - alert: MattermostPostgresPodCrashLooping
+        expr: |
+          sum by (namespace, pod) (
+            increase(kube_pod_container_status_restarts_total{namespace="__NAMESPACE__", pod=~".*postgres.*"}[15m])
+          ) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
+          description: "Pod {{ $labels.pod }} has restarted more than 3 times in the last 15 minutes."

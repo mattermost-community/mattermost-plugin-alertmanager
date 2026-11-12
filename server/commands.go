@@ -105,7 +105,7 @@ func getAutocompleteData() *model.AutocompleteData {
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
 		{Item: "compute", HelpText: "CPU, memory, throttling, pod, deployment, node, image-pull, scheduling alerts (9) — one shared webhook"},
 		{Item: "database", HelpText: "Connectivity, replication lag, query latency, connection saturation (4) — one shared webhook"},
-		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate (5) — one shared webhook. Requires Mattermost metrics enabled. Add mm-namespace=<ns> to also get the 14 alerts the Mattermost Operator generates."},
+		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate (5) — one shared webhook. Requires Mattermost metrics enabled. Add mm-namespace=<ns> to also get the 13 alerts the Mattermost Operator generates. mm-db-replicas=true adds replica lag, mm-postgres-pod=true adds in-cluster Postgres pod alerts."},
 		{Item: "networking", HelpText: "Ingress 5xx, cert expiry, DNS failure (3) — one shared webhook"},
 		{Item: "observability", HelpText: "Prometheus scrape down, Alertmanager notify fail (2) — one shared webhook"},
 		{Item: "security", HelpText: "Unexpected image, API auth spike, privileged container, shell-in-container, RBAC escalation, security tooling down (6) — one shared webhook"},

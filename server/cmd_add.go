@@ -126,6 +126,10 @@ func (p *Plugin) parseAddRequest(args *model.CommandArgs) (addRequest, string) {
 
 	mmNamespace, rest := extractFlagValue(rest, mmNamespaceFlag)
 	mmName, rest := extractFlagValue(rest, mmNameFlag)
+	rest, mmOpts, optsErr := extractMattermostOptions(rest)
+	if optsErr != nil {
+		return addRequest{}, fmt.Sprintf(":warning: %v\n\n%s", optsErr, addUsageMessage())
+	}
 
 	format, rotationOptIn, positional := splitAddWords(rest)
 
@@ -159,14 +163,15 @@ func (p *Plugin) parseAddRequest(args *model.CommandArgs) (addRequest, string) {
 	// runbook alerts only.
 	var mmTarget *mattermostTarget
 	runbookSlugs := slugs
-	if mmNamespace != "" || mmName != "" {
+	if mmNamespace != "" || mmName != "" || mmOpts.given {
 		if groupName != mattermostGroup {
-			return addRequest{}, fmt.Sprintf(":warning: `mm-namespace` and `mm-name` only apply to the `%s` target.", mattermostGroup)
+			return addRequest{}, fmt.Sprintf(":warning: `mm-namespace`, `mm-name`, `mm-db-replicas` and `mm-postgres-pod` only apply to the `%s` target.", mattermostGroup)
 		}
 		t, tErr := newMattermostTarget(mmNamespace, mmName)
 		if tErr != nil {
 			return addRequest{}, fmt.Sprintf(":warning: %v\n\n%s", tErr, addUsageMessage())
 		}
+		t = t.withOptions(mmOpts)
 		mmTarget = &t
 		slugs = append(slices.Clone(slugs), packReceiverSlug)
 	}
