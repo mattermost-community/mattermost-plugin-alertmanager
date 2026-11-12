@@ -95,7 +95,11 @@ jobs:
           docker run --rm --entrypoint promtool \
             -v "${{ runner.temp }}/pack-rules":/w -w /w \
             prom/prometheus:v3.5.0 \
-            check rules /w/mattermost-operator-rules.yaml /w/mattermost-group-rules.yaml
+            check rules \
+              /w/mattermost-operator-rules-default.yaml \
+              /w/mattermost-operator-rules-all.yaml \
+              /w/mattermost-group-rules-default.yaml \
+              /w/mattermost-group-rules-all.yaml
 
       - name: promtool test rules
         run: |
