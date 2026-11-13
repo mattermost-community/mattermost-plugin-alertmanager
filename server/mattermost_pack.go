@@ -186,19 +186,29 @@ func postgresAlertnames() ([]string, error) {
 	return names, nil
 }
 
-// packAlertRegex is the anchored alertname regex a route uses to claim the pack.
-// It lists every pack alert, including the opt-in ones, so one route keeps
-// working whichever flags a later `format rules` used.
-func packAlertRegex() (string, error) {
+// packRoutedAlertnames is every alert the pack route claims, including the
+// opt-in ones. Receivers do not record which flags `format rules` used, so the
+// route, silences and the channel's alert list all take the full set.
+func packRoutedAlertnames() ([]string, error) {
 	names, err := packAlertnames()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	postgres, err := postgresAlertnames()
 	if err != nil {
+		return nil, err
+	}
+	return append(names, postgres...), nil
+}
+
+// packAlertRegex is the anchored alertname regex a route uses to claim the pack,
+// so one route keeps working whichever flags a later `format rules` used.
+func packAlertRegex() (string, error) {
+	names, err := packRoutedAlertnames()
+	if err != nil {
 		return "", err
 	}
-	return "^(" + strings.Join(append(names, postgres...), "|") + ")$", nil
+	return "^(" + strings.Join(names, "|") + ")$", nil
 }
 
 // dropAlert removes one alert's block from a rules document. The block runs until

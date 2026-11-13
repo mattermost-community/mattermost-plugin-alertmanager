@@ -33,10 +33,10 @@ var shippedAlertRunbooks = sync.OnceValue(func() map[string]string {
 	return out
 })
 
-// packAlertSet is the pack's alert names as a set. It is empty if the embedded
-// rules cannot be read.
+// packAlertSet is the alert names the pack route claims, as a set. It is empty
+// if the embedded rules cannot be read.
 func packAlertSet() map[string]bool {
-	names, err := packAlertnames()
+	names, err := packRoutedAlertnames()
 	if err != nil {
 		return map[string]bool{}
 	}
