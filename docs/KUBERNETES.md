@@ -10,7 +10,7 @@ Three things to set up beyond the standard plugin install:
 2. **`runbook` label on every Prometheus rule** → matches a receiver name in `alertmanager.yml`.
 3. **Sub-routes in `alertmanager.yml`** → one per receiver, matching on the `runbook` label.
 
-Everything else (channel creation, webhook lifecycle, the embedded runbook pages) works the same as a single-node install.
+Everything else (webhook lifecycle, the embedded runbook pages) works the same as a single-node install.
 
 ## Why `WebhookHost` matters
 
@@ -59,13 +59,13 @@ that matches a receiver's base slug. Example:
 ```
 
 Then in `alertmanager.yml` — **but you don't write this block by hand.**
-`/alertmanager add` generates it for you and DMs it as
+`/alertmanager config add` generates it for you and DMs it as
 `alertmanager-routes.yml`. The generated block looks like:
 
 ```yaml
 route:
   receiver: default-fallback         # catch-all for unlabeled alerts (you provide)
-  group_by: ['alertname', 'cluster']
+  group_by: ['alertname', 'namespace', 'pod']
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h                # production value, not the 5m dev default
@@ -75,18 +75,23 @@ route:
     - matchers: [runbook="high-cpu-usage"]
       receiver: high-cpu-usage--sre-alert-slo-channel
       continue: true
+      group_by: ['alertname', 'namespace', 'pod']
     - matchers: [runbook="high-memory-usage"]
       receiver: high-memory-usage--sre-alert-slo-channel
       continue: true
+      group_by: ['alertname', 'namespace', 'pod']
     - matchers: [runbook="pod-crashloopbackoff"]
       receiver: pod-crashloopbackoff--sre-alert-slo-channel
       continue: true
-    # ... one route per receiver, 30 total for the standard set
+      group_by: ['alertname', 'namespace', 'pod']
+    # ... one route per receiver, 36 total for the standard set
 ```
+
+`group_by` includes `namespace` and `pod` on every generated route. Two pods firing the same alertname become two posts, because a bad image on one deployment is not the same incident as a bad image on another. An alert that does not have those labels stays one post: the missing labels are empty on every instance, so they still share a group. The generated routes set this themselves, so a parent route that only groups by `alertname` does not collapse them again.
 
 `continue: true` on every plugin-generated route is what makes fan-out
 work (same `runbook` slug routed to multiple channels via separate
-`/alertmanager add` calls). Without it, AM stops at the first match
+`/alertmanager config add` calls). Without it, AM stops at the first match
 and the second channel never gets the alert.
 
 The matcher always keys on the **base slug** (no `--channel` suffix)
@@ -135,12 +140,12 @@ kubectl get crd alertmanagerconfigs.monitoring.coreos.com \
 Unlike the file format's inline `api_url:`, an `AlertmanagerConfig`'s
 `slackConfigs.apiURL` is a **Secret reference** — you cannot inline the URL.
 Create one Secret per receiver (or reuse one per group webhook), in the **same
-namespace** as the `AlertmanagerConfig`. The URL is the one `/alertmanager add`
+namespace** as the `AlertmanagerConfig`. The URL is the one `/alertmanager config add`
 DMs you.
 
 > **Generated object names carry a short hash suffix.** The examples below use
 > readable names like `alertmanager-webhook-sre-alert-slo-channel`, but
-> `/alertmanager export --format=crd` appends a short hash (e.g.
+> `/alertmanager format export crd` appends a short hash (e.g.
 > `…-slo-channel-1a2b3c4d`) to every generated Secret / `AlertmanagerConfig` /
 > fallback-receiver name. That keeps two teams sharing a channel name from
 > colliding on identical object names in one namespace. Use whatever names the
@@ -148,11 +153,11 @@ DMs you.
 
 ```
 kubectl create secret generic alertmanager-webhook-sre-alert-slo-channel \
-  --from-literal=url='<webhook URL from /alertmanager add>' \
+  --from-literal=url='<webhook URL from /alertmanager config add>' \
   -n monitoring
 ```
 
-Or declaratively (GitOps / air-gapped):
+Or declaratively (GitOps):
 
 ```yaml
 apiVersion: v1
@@ -161,7 +166,7 @@ metadata:
   name: alertmanager-webhook-sre-alert-slo-channel
   namespace: monitoring
 stringData:
-  url: "<webhook URL from /alertmanager add>"
+  url: "<webhook URL from /alertmanager config add>"
 ```
 
 ### The AlertmanagerConfig
@@ -178,7 +183,7 @@ metadata:
 spec:
   route:
     receiver: mattermost-fallback            # in-CR fallback; grafted under AM's main route
-    groupBy: [alertname, cluster]
+    groupBy: [alertname, namespace, pod]
     groupWait: 30s
     groupInterval: 5m
     repeatInterval: 4h
@@ -204,7 +209,7 @@ spec:
           # in the title, e.g. `{{ .CommonLabels.alertname | reReplaceAll "[\x60\r\n()<>]" "" | printf "%.256s" }}`,
           # and the same for label values in the text body — stripping
           # markdown/shell-breakout chars so a hostile alert can't inject links or
-          # code spans into the post. Prefer `/alertmanager add --format=crd` over
+          # code spans into the post. Prefer `/alertmanager config add <am-url> crd` over
           # hand-authoring so you get the hardened templates.
           title: '[{{ .Status | toUpper }}:{{ .CommonLabels.alertname }}]'
           text: |-
@@ -272,12 +277,82 @@ metadata:
 spec:
   groups:
     # exact contents of samples/prometheus-rules.yaml (do not hand-copy —
-    # take it from that single source; `/alertmanager rules` prints it)
+    # take it from that single source; `/alertmanager format rules` prints it)
 ```
 
 The only hard requirement for the plugin to work is that your rules emit
 `runbook: <slug>` — see [Required: route alerts to the right
 receiver](#required-route-alerts-to-the-right-receiver) above.
+
+### kube-prometheus-stack: stock control-plane alerts
+
+`kube-prometheus-stack` ships about 150 alert rules of its own. They carry no
+`runbook` label, so none of them reach Mattermost through this plugin's
+receivers. They still fire in Prometheus and Alertmanager, and on some
+clusters a few of them fire all the time.
+
+The cause is the control-plane scrape targets. The chart enables ServiceMonitors
+and alerts for etcd, the scheduler, the controller-manager and `kube-proxy`.
+Those only work where you can reach the component's metrics port:
+
+| Cluster | etcd, scheduler, controller-manager | kube-proxy |
+|---|---|---|
+| AKS, EKS, GKE | Hidden by the provider. Targets stay down. | Runs, but metrics bind to localhost. Targets stay down. |
+| RKE2, k3s, kubeadm | Bound to localhost by default. Down until you expose them (RKE2: `etcd-expose-metrics: true` and `bind-address=0.0.0.0` for the scheduler and controller-manager). | Not present when Cilium replaces it. |
+
+The symptoms are `TargetDown` for `kube-etcd`, `kube-scheduler` and
+`kube-controller-manager`, plus `KubeProxyDown` and `etcdMembersDown`. If you
+route any of those to a channel, expect permanent noise.
+
+On a cluster that can't expose these components, turn them off in the
+`kube-prometheus-stack` values. This is plain chart configuration, so it works
+the same through Helm, Flux, Argo CD or Terraform:
+
+```yaml
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+```
+
+Leave `kubeSchedulerRecording` on. The scheduler dashboards use those recording
+rules. To mute one stock alert instead of a whole group, use
+`defaultRules.disabled`, for example `{ KubeCPUOvercommit: true }`.
+
+### Prometheus ignores objects without the release label
+
+A ServiceMonitor or PrometheusRule that Prometheus never selects fails
+silently. The object exists, `kubectl get` shows it, and the rules or metrics
+never appear. With `kube-prometheus-stack` the default selectors require
+`release: <helm release name>`:
+
+```bash
+kubectl -n monitoring get prometheus -o jsonpath='{.items[0].spec.ruleSelector}{"\n"}{.items[0].spec.serviceMonitorSelector}{"\n"}'
+```
+
+If that prints a `release` label, every PrometheusRule and ServiceMonitor you
+add, including the ones for Mattermost and your database exporter, needs the
+same label. Check that your rules loaded and evaluate cleanly:
+
+```bash
+kubectl get --raw "/api/v1/namespaces/monitoring/services/kube-prometheus-stack-prometheus:9090/proxy/api/v1/rules?type=alert" \
+  | jq '.data.groups[].rules[] | select(.labels.runbook != null) | {name, health, lastError}'
+```
+
+Chart option names differ between charts. The `prometheus-postgres-exporter`
+chart reads `serviceMonitor.labels` and `serviceMonitor.timeout`. It ignores
+`additionalLabels` and `scrapeTimeout` without a warning, which leaves the
+ServiceMonitor unselected.
 
 ## HA / multi-pod considerations
 
@@ -291,7 +366,7 @@ The plugin is HA-aware where it counts:
 | Background reconciler | Uses `pluginapi/cluster.Schedule` — only the cluster-elected leader runs the periodic webhook check |
 | Webhook URL generation | Deterministic from hook-id + WebhookHost/SiteURL — same output from any pod |
 
-The reconciler leader election uses a KV mutex under the key `alertmanager-orphan-reconciler`. If for some reason cluster scheduling fails to register, the plugin logs a warning and disables automatic pruning — manual `/alertmanager reconcile` continues to work from any pod.
+The reconciler leader election uses a KV mutex under the key `alertmanager-orphan-reconciler`. If for some reason cluster scheduling fails to register, the plugin logs a warning and disables automatic pruning — manual `/alertmanager admin repair prune` continues to work from any pod.
 
 ## Network topology cheat sheet
 
@@ -388,7 +463,10 @@ After deploying:
    **unreachable until its CIDR is allowlisted** — inventory probes and
    `validate` will report connection failures otherwise. See
    [CONFIGURATION.md → `AlertManagerAllowedCIDRs`](CONFIGURATION.md).
-2. **Run `/alertmanager add testing alerts-sre http://alertmanager-operated.monitoring.svc.cluster.local:9093`** from a Mattermost channel. The Prometheus Operator exposes Alertmanager via the `alertmanager-operated` headless service (not `alertmanager`); swap in your namespace, or use your stack's service name (e.g. `<release>-kube-prometheus-alertmanager`) — confirm with `kubectl get svc -A | grep alertmanager`. The rendered `api_url:` should then use your cluster-internal MM service URL.
+   Also set Mattermost `ServiceSettings.AllowedUntrustedInternalConnections`
+   to the host Alertmanager uses for the webhook POST back into Mattermost.
+   That setting is the return path. The plugin CIDR list does not cover it.
+2. **Run `/alertmanager config add http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093`** from a Mattermost channel. Replace `kube-prometheus-stack` with your Helm release name and `monitoring` with the namespace. Confirm the Service with `kubectl get svc -A | grep alertmanager`. The headless `alertmanager-operated` Service is not the one to put in this command. The rendered `api_url:` should then use your cluster-internal MM service URL. The same DM carries a PrometheusRule file for the group you created. Apply that file too, or Prometheus has routes and no rules.
 3. **Reload Alertmanager** after pasting the YAML — `kubectl exec -it alertmanager-0 -- /bin/sh -c "killall -HUP alertmanager"` or via the Operator's reconciliation.
 4. **Fire a synthetic alert** (e.g., `up == 0` for a scrape target you deliberately broke). Verify:
    - Post lands in the intended channel
@@ -402,6 +480,6 @@ After deploying:
 |---|---|
 | AM logs `connection refused` posting to api_url | `WebhookHost` not set, or set to a host AM can't resolve |
 | Runbook URL in post 404s when clicked | `SiteURL` not configured correctly; user can't reach the plugin's `/public/runbooks/` path via Ingress |
-| Multiple pods logging `reconciler: pruned ...` per cycle | Cluster-mutex registration failed; fall back to manual `/alertmanager reconcile` until next plugin restart |
-| `/alertmanager add` hangs on channel creation | NetworkPolicy blocking plugin → MM internal API; check `localhost:8065` is reachable from the MM pod itself |
+| Multiple pods logging `reconciler: pruned ...` per cycle | Cluster-mutex registration failed; fall back to manual `/alertmanager admin repair prune` until next plugin restart |
+| `/alertmanager config add` hangs creating the webhook | NetworkPolicy blocking plugin → MM internal API; check `localhost:8065` is reachable from the MM pod itself |
 | Alerts firing but never reach Mattermost | Routing tree has no sub-route matching the `runbook` label — alerts land on the fallback receiver only |

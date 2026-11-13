@@ -108,29 +108,30 @@ in-cluster address (see the note below the table).
 In the channel where you want alerts, run:
 
 ```
-/alertmanager add <team> <channel> <alertmanager-url> <target>
+/alertmanager config add <alertmanager-url> <target>
 ```
 - `<target>` is a **runbook set** (`all`, `compute`, `application`, `database`,
-  `storage`, `networking`, `observability`, `security`) or a **single runbook slug**
-  (e.g. `pod-crashloopbackoff`).
+  `mattermost`, `storage`, `networking`, `observability`, `security`) or a **single
+  runbook slug** (e.g. `pod-crashloopbackoff`).
+- Add `standard` (default) or `crd` to pick the format of the config DM'd to you: `standard` is plain `alertmanager.yml`, `crd` is Prometheus Operator objects to `kubectl apply`.
 - Add a trailing `on` to opt these receivers into rotation reminders.
 
 Example:
 ```
-/alertmanager add sre-team incidents http://alertmanager.monitoring:9093 compute
+/alertmanager config add http://alertmanager.monitoring:9093 compute
 ```
-This creates the Mattermost incoming webhook and registers the receivers.
-`/alertmanager list` shows what's bound to the current channel.
+The receivers go in the channel you run this in, so create the channel first if it doesn't exist. This creates the Mattermost incoming webhook and registers the receivers.
+`/alertmanager config list` shows what's bound to the current channel.
 
-<!-- SHOT: message box with "/alertmanager add " typed and the slash-command autocomplete hint visible | HIGHLIGHT: the argument hint [team] [channel] [am-url] [target] | REDACT: real team/channel names, real AM URL -->
-![Binding a channel with /alertmanager add](images/mattermost-alertmanager-add-autocomplete.png)
+<!-- SHOT: message box with "/alertmanager config add " typed and the slash-command autocomplete hint visible | HIGHLIGHT: the argument hint [am-url] [target] [standard|crd] [on] | REDACT: real AM URL -->
+![Binding a channel with /alertmanager config add](images/mattermost-alertmanager-add-autocomplete.png)
 
 ---
 
 ## Step 4 — Get the Alertmanager config  **[Mattermost]**
 
 ```
-/alertmanager export
+/alertmanager format export
 ```
 The bot DMs you `alertmanager-receivers.yml` and `alertmanager-routes.yml` for
 this channel. Inside you'll find the receiver (with the webhook URL) and its
@@ -197,6 +198,9 @@ The admin inventory offers three test modes, in increasing coverage:
 The Simulate mode doubles as a config-drift check: it flags receivers that are
 in the plugin but missing from the loaded Alertmanager YAML, and "AM-only"
 receivers hand-edited into `alertmanager.yml` that the plugin doesn't track.
+`/alertmanager admin acknowledge add <name>` (sysadmin) hides a receiver another
+system created on purpose. The warning comes back with
+`/alertmanager admin acknowledge remove <name>`. Neither command mutes alerts.
 
 <!-- SHOT: admin inventory in Simulate (read-only) mode showing the receiver inventory table | HIGHLIGHT: the OK / "Not in AM YAML" / "AM unreachable" / "AM-only" status legend and the per-receiver rows | REDACT: real channel/team names, real AM URLs -->
 ![Admin inventory — Simulate mode with receiver inventory & drift status](images/mattermost-admin-inventory-simulate-alertmanager-config.png)
@@ -252,7 +256,7 @@ job:
 | Alert commands show `<no value>` for namespace/pod | Alert rule doesn't emit those labels | Add `namespace`/`pod` labels to the rule (Step 6) |
 | Posts don't look like `@alertmanagerbot` | Override toggles off | Enable both override toggles (Step 1) |
 | Alertmanager can't reach the webhook | AM can't hit your SiteURL | Set **Webhook host override** (Step 2) / see [KUBERNETES.md](KUBERNETES.md) |
-| `/alertmanager add`, `validate`, or the inventory page can't reach Alertmanager (connection refused / blocked) | AM is on a private/internal IP, which is blocked by default (SSRF guard) | Add the AM's network to **Alertmanager allowed destinations** (Step 2), e.g. `10.0.0.0/8` |
+| `/alertmanager config add`, `validate`, or the inventory page can't reach Alertmanager (connection refused / blocked) | AM is on a private/internal IP, which is blocked by default (SSRF guard) | Add the AM's network to **Alertmanager allowed destinations** (Step 2), e.g. `10.0.0.0/8` |
 | `/metrics` returns 401 | Token mismatch | Match the Prometheus `credentials` to the **MetricsToken** setting |
 | Alertmanager TLS handshake fails | Private CA not trusted | Paste the CA into **Alertmanager CA bundle** (Step 2) |
 

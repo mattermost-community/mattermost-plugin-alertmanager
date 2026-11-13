@@ -219,13 +219,13 @@ const yamlBlockIndent = "        "
 // if the alert itself sets a runbook_url annotation. Continuation lines carry
 // the 8-space YAML block indent to match the surrounding template.
 const runbookSectionStandard = `{{- if .Annotations.runbook_url -}}
-        **Runbook:** {{SAN_RUNBOOK_URL}}{{ "\n" }}
+        **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
         {{- else -}}
-        **Runbook:** {{RUNBOOK_DEFAULT}}{{ "\n" }}
+        **Runbook:** [runbook]({{RUNBOOK_DEFAULT}}){{ "\n" }}
         {{- end -}}`
 
 const runbookSectionCustom = `{{- if .Annotations.runbook_url -}}
-        **Runbook:** {{SAN_RUNBOOK_URL}}{{ "\n" }}
+        **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
         {{- end -}}`
 
 // runbookSection resolves {{RUNBOOK_SECTION}} for a receiver. Custom receivers

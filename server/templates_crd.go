@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// CRD (Prometheus Operator AlertmanagerConfig) rendering — the `--format=crd`
+// CRD (Prometheus Operator AlertmanagerConfig) rendering — the `crd` format
 // counterpart to the file (alertmanager.yml) output. The notification body
 // (color/title/text + inline quick diagnostics) is the SAME receiverBodyTemplate
 // the file renderer uses, re-indented to the deeper AlertmanagerConfig nesting,
@@ -84,7 +84,10 @@ spec:
       - name: runbook
         value: "{{PARENT_MATCH}}"
         matchType: "=~"
-    groupBy: ["alertname"]
+    # alertname alone merges every pod into one post. namespace and pod
+    # split those. Alerts that do not carry the labels stay one group,
+    # because the missing values are empty for every instance.
+    groupBy: ["alertname", "namespace", "pod"]
     groupWait: 30s
     groupInterval: 5m
     repeatInterval: 4h

@@ -214,10 +214,11 @@ func TestReceiverTextSanitizesHostileAlert(t *testing.T) {
 	}
 	out := sb.String()
 
-	// Structural invariants — the template itself never emits these sequences, so
-	// any occurrence is injected content that slipped through sanitization.
-	if strings.Contains(out, "](") {
-		t.Errorf("disguised markdown link survived (found `](`):\n%s", out)
+	// The body emits one markdown link, and its text is the fixed word "runbook".
+	// Parentheses are stripped from the destination, so alert data cannot add a
+	// second "](" or change the link text.
+	if strings.Count(out, "](") != 1 || !strings.Contains(out, "**Runbook:** [runbook](") {
+		t.Errorf("runbook link was not the only markdown link:\n%s", out)
 	}
 	if strings.Contains(out, "$(") {
 		t.Errorf("shell command substitution survived (found `$(`):\n%s", out)

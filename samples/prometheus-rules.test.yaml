@@ -1,0 +1,92 @@
+# Unit tests for prometheus-rules.yaml. Run from this directory:
+#   promtool test rules prometheus-rules.test.yaml
+# CI runs it next to `promtool check rules` (see .github/workflows/test.yml).
+rule_files:
+  - prometheus-rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # Two pods mount the same claim. The old join failed with "many-to-many
+  # matching not allowed", so the rule never evaluated.
+  - name: PersistentVolumeFull fires once per pod when a shared claim is nearly full
+    interval: 30s
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{namespace="ns", persistentvolumeclaim="data"}'
+        values: "95+0x30"
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="ns", persistentvolumeclaim="data"}'
+        values: "100+0x30"
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="ns", persistentvolumeclaim="data", pod="app-0", volume="d", instance="10.0.0.1:8080", job="kube-state-metrics"}'
+        values: "1+0x30"
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="ns", persistentvolumeclaim="data", pod="job-0", volume="d", instance="10.0.0.1:8080", job="kube-state-metrics"}'
+        values: "1+0x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PersistentVolumeFull
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: storage
+              runbook: persistent-volume-full
+              namespace: ns
+              persistentvolumeclaim: data
+              pod: app-0
+            exp_annotations:
+              summary: "PVC ns/data (pod app-0) > 90% full"
+              description: "Volume close to capacity. Expand the PVC or clean up data before writes start failing."
+          - exp_labels:
+              severity: critical
+              category: storage
+              runbook: persistent-volume-full
+              namespace: ns
+              persistentvolumeclaim: data
+              pod: job-0
+            exp_annotations:
+              summary: "PVC ns/data (pod job-0) > 90% full"
+              description: "Volume close to capacity. Expand the PVC or clean up data before writes start failing."
+
+  - name: PersistentVolumeFull stays quiet below the threshold
+    interval: 30s
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{namespace="ns", persistentvolumeclaim="data"}'
+        values: "50+0x30"
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="ns", persistentvolumeclaim="data"}'
+        values: "100+0x30"
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="ns", persistentvolumeclaim="data", pod="app-0"}'
+        values: "1+0x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PersistentVolumeFull
+        exp_alerts: []
+
+  # bitnamilegacy is the registry the Bitnami Postgres image ships from.
+  - name: UnexpectedContainerImage allows the Bitnami legacy registry
+    interval: 30s
+    input_series:
+      - series: 'kube_pod_container_info{namespace="ns", pod="db-0", container="postgresql", image="docker.io/bitnamilegacy/postgresql:17.4.0-debian-12-r10"}'
+        values: "1+0x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: UnexpectedContainerImage
+        exp_alerts: []
+
+  - name: UnexpectedContainerImage flags an unknown registry
+    interval: 30s
+    input_series:
+      - series: 'kube_pod_container_info{namespace="ns", pod="x-0", container="x", image="evil.example.com/miner:latest"}'
+        values: "1+0x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: UnexpectedContainerImage
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: security
+              runbook: unexpected-container-image
+              namespace: ns
+              pod: x-0
+              container: x
+              image: evil.example.com/miner:latest
+            exp_annotations:
+              summary: "ns/x-0 runs unapproved image evil.example.com/miner:latest"
+              description: "Image from outside the approved registry allowlist — possible supply-chain issue or rogue workload."

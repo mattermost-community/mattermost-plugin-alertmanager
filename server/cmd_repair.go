@@ -8,23 +8,79 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-// handleRepair is the sysadmin-only recovery path for a corrupt receiver-list KV
-// value (F-005). Normal mutating commands parse the current KV blob before
-// transforming it, so if that blob is invalid (bad JSON, duplicate names, …) they
-// all fail — and the plugin can't fix itself through its own command surface. The
-// load path already keeps the plugin UP on last-known in-memory state; this
-// command lets an admin write that known-good in-memory snapshot back over the
-// corrupt KV value (with an explicit --force, since it's destructive).
+const repairUsage = "Usage: `/alertmanager admin repair [prune] [force]`"
+
+// handleRepair is the sysadmin-only health command. It covers the two ways the
+// plugin's receiver list can drift from reality:
 //
-//	/alertmanager repair          → diagnose (is KV valid? how many in memory?)
-//	/alertmanager repair --force  → overwrite KV from the in-memory snapshot
+//   - A corrupt receiver-list KV value (F-005). Normal mutating commands parse
+//     the current KV blob before transforming it, so an invalid blob (bad JSON,
+//     duplicate names, …) makes them all fail. The plugin keeps running on its
+//     last-known in-memory list, and force writes that snapshot back.
+//   - Orphans: receivers whose Mattermost webhook was deleted out of band. A
+//     background job prunes these every 5 minutes. prune runs it now.
+//
+// The KV check always runs first. Pruning rewrites the same KV value, so it
+// cannot succeed on a corrupt blob.
+//
+//	admin repair                  → read-only: KV check plus a preview of orphans
+//	admin repair prune          → also remove the orphaned receivers
+//	admin repair force          → overwrite a corrupt KV value from memory
 func (p *Plugin) handleRepair(args *model.CommandArgs) (string, error) {
 	if err := p.requireSystemAdmin(args.UserId); err != nil {
 		return err.Error(), nil
 	}
-	fields := strings.Fields(args.Command)
-	force := len(fields) >= 3 && fields[2] == "--force"
-	return p.repairAlertConfigsKV(args.UserId, args.ChannelId, force), nil
+	force, prune, ok := parseRepairFlags(strings.Fields(args.Command)[2:])
+	if !ok {
+		return repairUsage, nil
+	}
+	kv := p.repairAlertConfigsKV(args.UserId, args.ChannelId, force)
+	return kv + "\n\n" + p.orphanSection(args.UserId, prune), nil
+}
+
+// parseRepairFlags rejects anything but force and prune. A typo must not
+// fall through to a bare run, which would look like it did the repair.
+func parseRepairFlags(args []string) (force, prune, ok bool) {
+	for _, a := range args {
+		switch a {
+		case "force":
+			force = true
+		case "prune":
+			prune = true
+		default:
+			return false, false, false
+		}
+	}
+	return force, prune, true
+}
+
+// orphanSection reports receivers whose webhook no longer exists. With prune it
+// removes them, otherwise it only lists what a prune would remove.
+func (p *Plugin) orphanSection(userID string, prune bool) string {
+	if !prune {
+		orphans, err := p.findOrphanedReceivers(userID)
+		if err != nil {
+			return fmt.Sprintf(":warning: Could not check for orphaned receivers: %v", err)
+		}
+		if len(orphans) == 0 {
+			return ":white_check_mark: No orphaned receivers. Every registered webhook still exists in Mattermost."
+		}
+		return fmt.Sprintf(
+			":mag: %d receiver(s) point at a deleted webhook:\n\n- `%s`\n\nRemove them now with `/alertmanager admin repair prune`. The background job also does this every 5 minutes.",
+			len(orphans), strings.Join(orphans, "`\n- `"))
+	}
+
+	pruned, err := p.reconcileOrphans(userID)
+	if err != nil {
+		return fmt.Sprintf(":warning: Prune failed: %v\n\nIf the receiver-list KV value is unreadable, fix it first with `/alertmanager admin repair force`.", err)
+	}
+	if len(pruned) == 0 {
+		return ":white_check_mark: Nothing to prune. Every registered webhook still exists in Mattermost."
+	}
+	return fmt.Sprintf(
+		":wastebasket: Pruned %d orphaned receiver(s) whose webhooks were deleted out of band:\n\n- `%s`\n\n"+
+			"_Delete the matching `slack_configs` blocks from your `alertmanager.yml` if you have not already, then reload Alertmanager._",
+		len(pruned), strings.Join(pruned, "`\n- `"))
 }
 
 // repairAlertConfigsKV is the KV-recovery core of handleRepair, split out (no
@@ -51,7 +107,7 @@ func (p *Plugin) repairAlertConfigsKV(userID, channelID string, force bool) stri
 			":warning: The receiver list in KV is UNREADABLE: %v\n\n"+
 				"The plugin is running on its last-known in-memory list (**%d** receiver(s)). "+
 				"To overwrite the corrupt KV value with that in-memory list, re-run:\n\n"+
-				"```\n/alertmanager repair --force\n```\n"+
+				"```\n/alertmanager admin repair force\n```\n"+
 				":warning: **Destructive** — anything in the corrupt blob not present in the in-memory list is lost. "+
 				"Copy the raw KV value out first if you need to inspect it.",
 			perr, len(inMemory))
@@ -82,7 +138,7 @@ func (p *Plugin) repairAlertConfigsKV(userID, channelID string, force bool) stri
 		return fmt.Sprintf(":warning: Failed to write the repaired receiver list to KV: %v", appErr)
 	}
 	if !set {
-		return ":warning: The receiver list in KV changed while repairing (another node may have already fixed it). Re-run `/alertmanager repair` to re-check before forcing."
+		return ":warning: The receiver list in KV changed while repairing (another node may have already fixed it). Re-run `/alertmanager admin repair` to re-check before forcing."
 	}
 	// Apply the sanitized parsed list to THIS node's memory now — the CAS only
 	// fixed KV. Without this, the writing node keeps serving its stale (possibly

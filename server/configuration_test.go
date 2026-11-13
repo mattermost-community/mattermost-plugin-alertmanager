@@ -24,6 +24,11 @@ func TestRawConfigMapCoversSchema(t *testing.T) {
 			Settings []struct {
 				Key string `json:"key"`
 			} `json:"settings"`
+			Sections []struct {
+				Settings []struct {
+					Key string `json:"key"`
+				} `json:"settings"`
+			} `json:"sections"`
 		} `json:"settings_schema"`
 	}
 	if err := json.Unmarshal(blob, &manifest); err != nil {
@@ -33,6 +38,11 @@ func TestRawConfigMapCoversSchema(t *testing.T) {
 	schemaKeys := make(map[string]bool)
 	for _, s := range manifest.SettingsSchema.Settings {
 		schemaKeys[strings.ToLower(s.Key)] = true
+	}
+	for _, section := range manifest.SettingsSchema.Sections {
+		for _, s := range section.Settings {
+			schemaKeys[strings.ToLower(s.Key)] = true
+		}
 	}
 	mapKeys := make(map[string]bool)
 	for k := range (rawConfiguration{}).toConfigMap() {
@@ -76,7 +86,7 @@ func TestValidateWebhookHost(t *testing.T) {
 		{"query string is rejected", "https://mattermost.example.com?foo=bar", true, "'?'"},
 		{"fragment is rejected", "https://mattermost.example.com#section", true, "'?'"},
 		// Hardened to the validateAlertManagerURL bar — a second attacker-controllable
-		// URL (per-receiver --webhook-host) that drives a webhook-test POST and lands
+		// URL (per-receiver webhook-host) that drives a webhook-test POST and lands
 		// in generated api_url YAML, so it must reject the same SSRF/injection shapes.
 		{"embedded credentials rejected", "http://user:pass@mattermost.example.com", true, "credential"},
 		{"single quote in host rejected (YAML injection)", "http://mattermost.example.com'", true, "invalid characters"},
@@ -222,6 +232,25 @@ func TestSanitizeAlertManagerURL(t *testing.T) {
 // failure here returns from OnConfigurationChange and takes the whole plugin
 // down, turning F-002 into a persistent DoS), and the stored URL comes back
 // neutered (F-002, PR #58).
+func TestParseAlertConfigsIgnoresRemovedCredentialFields(t *testing.T) {
+	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops",` +
+		`"alertManagerURL":"http://am:9093","webhookID":"hook1","user":"svc","password":"s3cret"}]`
+	entries, err := parseAlertConfigs(blob)
+	if err != nil {
+		t.Fatalf("a stored entry with the old user/password keys must still load, got: %v", err)
+	}
+	if len(entries) != 1 || entries[0].WebhookID != "hook1" {
+		t.Fatalf("entry not loaded: %#v", entries)
+	}
+	reencoded, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(reencoded), "s3cret") {
+		t.Fatalf("the old password survives a rewrite: %s", reencoded)
+	}
+}
+
 func TestParseAlertConfigsNeutersHostileURL(t *testing.T) {
 	blob := `[{"name":"probe--alpha-ops","team":"alpha","channel":"ops",` +
 		`"alertManagerURL":"http://169.254.169.254/latest/meta-data/#","webhookID":"hook1"}]`
@@ -355,8 +384,6 @@ func TestAlertConfigIsValid(t *testing.T) {
 		{"empty team", func(c *alertConfig) { c.Team = "" }, "team"},
 		{"empty channel", func(c *alertConfig) { c.Channel = "" }, "channel"},
 		{"empty webhookID", func(c *alertConfig) { c.WebhookID = "" }, "webhookID"},
-		{"user without password", func(c *alertConfig) { c.User = "u" }, "user and password"},
-		{"password without user", func(c *alertConfig) { c.Password = "p" }, "user and password"},
 	}
 
 	for _, tc := range cases {

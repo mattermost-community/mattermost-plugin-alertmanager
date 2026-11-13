@@ -17,7 +17,7 @@ func TestFormatSilenceLineSanitizesID(t *testing.T) {
 	s := &models.GettableSilence{}
 	s.ID = &hostile
 
-	out := formatSilenceLine("high-cpu-usage--team-chan", s)
+	out := formatSilenceLine("high-cpu-usage--team-chan", s, true)
 
 	if strings.Contains(out, "](") {
 		t.Errorf("disguised markdown link survived via silence ID:\n%s", out)
@@ -123,20 +123,6 @@ func TestGroupByAMURL(t *testing.T) {
 		}
 		if got[0].URL != "http://am1" || got[1].URL != "http://am2" {
 			t.Fatalf("groups not in first-appearance order: %q then %q", got[0].URL, got[1].URL)
-		}
-	})
-
-	t.Run("first receiver's credentials propagate to the group", func(t *testing.T) {
-		input := []alertConfig{
-			{Name: "a", AlertManagerURL: "http://am1", User: "alice", Password: "p1"},
-			{Name: "b", AlertManagerURL: "http://am1", User: "bob", Password: "p2"},
-		}
-		got := groupByAMURL(input)
-		if len(got) != 1 {
-			t.Fatalf("expected 1 group, got %d", len(got))
-		}
-		if got[0].User != "alice" || got[0].Password != "p1" {
-			t.Fatalf("expected first-wins credentials, got user=%s pass=%s", got[0].User, got[0].Password)
 		}
 	})
 
