@@ -170,8 +170,8 @@ func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdC
 	}
 
 	fileIds := []string{receiversInfo.Id}
-	hasRoutes := strings.TrimSpace(routesYAML) != ""
-	if hasRoutes {
+	routesAttached := false
+	if strings.TrimSpace(routesYAML) != "" {
 		routesInfo, routesErr := p.API.UploadFile([]byte(routesYAML), dm.Id, "alertmanager-routes.yml")
 		if routesErr != nil {
 			// Routes upload failure isn't fatal — receivers still useful
@@ -179,6 +179,7 @@ func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdC
 			p.API.LogWarn("scaffold: couldn't upload routes file to DM (receivers file still delivered)", "err", routesErr.Error())
 		} else {
 			fileIds = append(fileIds, routesInfo.Id)
+			routesAttached = true
 		}
 	}
 
@@ -191,10 +192,15 @@ func (p *Plugin) dmYAMLBundle(userID, receiversYAML, routesYAML string, createdC
 	}
 
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("Assembled YAML for the %d new receiver(s) you just created via `/alertmanager config add`.\n\n", createdCount))
+	msg.WriteString(fmt.Sprintf("Assembled YAML for %d receiver(s).\n\n", createdCount))
 	msg.WriteString("**Paste `alertmanager-receivers.yml`** under `receivers:` in your `alertmanager.yml`.\n")
-	if len(fileIds) > 1 {
+	if routesAttached {
 		msg.WriteString("**Paste `alertmanager-routes.yml`** under `route.routes:` in your `alertmanager.yml`.\n")
+	} else if strings.TrimSpace(routesYAML) != "" {
+		msg.WriteString("The routes file could not be attached. Add a route under `route.routes:` for each receiver by hand, or run the command again.\n")
+	}
+	if amURL == "" {
+		amURL = "<am-url>"
 	}
 	msg.WriteString(fmt.Sprintf("\nThen reload Alertmanager:\n\n```\ncurl -X POST %s/-/reload\n```", amURL))
 	if rules != nil {
