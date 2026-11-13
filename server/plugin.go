@@ -65,6 +65,12 @@ type Plugin struct {
 	reconcilerLastRun    time.Time
 	reconcilerLastPruned int
 
+	// Throttle state for the work inside a reconcile tick, and the sysadmin
+	// the tick acts as. Same lock as the status fields above.
+	reconcilerLastProbe time.Time
+	yamlLastSweep       time.Time
+	cachedSysadminID    string
+
 	// amReachabilityCache is a sync.Map keyed by Alertmanager URL.
 	// Values are *amReachabilityEntry. Probes are deduped per URL
 	// and results cached for amReachabilityTTL — keeps the admin
@@ -96,17 +102,7 @@ func (p *Plugin) OnActivate() error {
 		return fmt.Errorf("register command: %w", err)
 	}
 
-	// Force-enable the integration override settings. Webhook posts
-	// embed Username/IconURL override fields (see incoming_webhook.go),
-	// but Mattermost only honors them when these server-level toggles
-	// are on. Off by default in some installs, which makes posts
-	// render as the calling sysadmin instead of @alertmanagerbot.
-	// We flip them on at activation so the plugin's documented behavior
-	// is the actual behavior.
-	if err := p.ensureIntegrationOverrides(); err != nil {
-		p.API.LogWarn("could not enable integration override settings; webhook posts may display as the creating sysadmin instead of @alertmanagerbot. Enable manually in System Console → Integrations → Integration Management.",
-			"err", err.Error())
-	}
+	p.applyIntegrationOverridePolicy()
 
 	// Start the orphan-webhook reconciler. Prunes plugin config entries
 	// whose underlying Mattermost incoming webhook has been deleted
@@ -117,43 +113,48 @@ func (p *Plugin) OnActivate() error {
 	return nil
 }
 
-// ensureIntegrationOverrides checks Mattermost's server-level toggles
-// that govern whether webhooks can override the post's displayed
-// username + icon. If either is off, flips it on and logs.
-//
-// Implications of doing this from a plugin:
-//   - It's a server-wide setting change, affecting every webhook in
-//     this Mattermost install, not just the plugin's webhooks. That
-//     is acceptable because the toggles exist specifically for this
-//     pattern — no integration that wires up Username/IconURL would
-//     want them off.
-//   - Audit log records the change as the plugin acting on behalf of
-//     the system. Visible in logs as a config update event.
-//   - Idempotent: when both are already on, this is a single GetConfig
-//     call with no SaveConfig.
-func (p *Plugin) ensureIntegrationOverrides() error {
-	cfg := p.API.GetConfig()
-	if cfg == nil {
-		return fmt.Errorf("plugin API returned no server config")
+// applyIntegrationOverridePolicy handles Mattermost's server-wide toggles that
+// decide whether a webhook may override a post's username and icon. They affect
+// every integration on the server, so the plugin only changes them when an admin
+// has turned on EnableIntegrationOverrides. Otherwise it logs a warning when
+// either is off, because posts then show as the creating sysadmin.
+func (p *Plugin) applyIntegrationOverridePolicy() {
+	var raw rawConfiguration
+	if err := p.API.LoadPluginConfiguration(&raw); err != nil {
+		p.API.LogWarn("could not read plugin settings for the integration override policy", "err", err.Error())
+		return
 	}
 
-	enabled := func(b *bool) bool { return b != nil && *b }
-	usernameOn := enabled(cfg.ServiceSettings.EnablePostUsernameOverride)
-	iconOn := enabled(cfg.ServiceSettings.EnablePostIconOverride)
+	cfg := p.API.GetConfig()
+	if cfg == nil {
+		p.API.LogWarn("plugin API returned no server config; skipping the integration override check")
+		return
+	}
+	usernameOn := enabledSetting(cfg.ServiceSettings.EnablePostUsernameOverride)
+	iconOn := enabledSetting(cfg.ServiceSettings.EnablePostIconOverride)
 	if usernameOn && iconOn {
-		return nil
+		return
+	}
+
+	if !raw.EnableIntegrationOverrides {
+		p.API.LogWarn("webhook posts will show as the creating sysadmin, not @alertmanagerbot: EnablePostUsernameOverride or EnablePostIconOverride is off. Turn them on in System Console > Integrations > Integration Management, or enable this plugin's 'EnableIntegrationOverrides' setting to let it do so.",
+			"username_override_on", usernameOn, "icon_override_on", iconOn)
+		return
 	}
 
 	t := true
 	cfg.ServiceSettings.EnablePostUsernameOverride = &t
 	cfg.ServiceSettings.EnablePostIconOverride = &t
 	if appErr := p.API.SaveConfig(cfg); appErr != nil {
-		return appErr
+		p.API.LogWarn("could not enable the integration override settings; enable them in System Console > Integrations > Integration Management",
+			"err", appErr.Error())
+		return
 	}
-	p.API.LogInfo("Enabled integration override toggles (EnablePostUsernameOverride, EnablePostIconOverride). Webhook posts will now render with the @alertmanagerbot identity instead of the creating sysadmin.",
+	p.API.LogInfo("Enabled the server-wide integration override settings (EnablePostUsernameOverride, EnablePostIconOverride) because EnableIntegrationOverrides is on",
 		"was_username_on", usernameOn, "was_icon_on", iconOn)
-	return nil
 }
+
+func enabledSetting(b *bool) bool { return b != nil && *b }
 
 func (p *Plugin) OnDeactivate() error {
 	if p.stopReconciler != nil {

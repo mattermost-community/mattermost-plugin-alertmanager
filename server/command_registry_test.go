@@ -57,7 +57,7 @@ func TestEveryVerbHasItsAccessLevel(t *testing.T) {
 		{"/alertmanager config remove x", "config remove", accessChannelAdmin},
 		{"/alertmanager config rotate x", "config rotate", accessChannelAdmin},
 		{"/alertmanager config validate", "config validate", accessChannelAdmin},
-		{"/alertmanager format rules", "format rules", accessAnyone},
+		{"/alertmanager format rules", "format rules", accessChannelAdmin},
 		{"/alertmanager format export", "format export", accessChannelAdmin},
 		{"/alertmanager format diff", "format diff", accessSystemAdmin},
 		{"/alertmanager silence list", "silence list", accessAnyone},

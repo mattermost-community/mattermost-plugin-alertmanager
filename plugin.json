@@ -97,6 +97,13 @@
                 "help_text": "Days before the plugin DMs sysadmins to rotate a receiver's webhook (reminder only — no auto-rotation); 0 disables, 90 is a good baseline.",
                 "placeholder": "0",
                 "default": 0
+            },
+            {
+                "key": "EnableIntegrationOverrides",
+                "display_name": "Turn on Mattermost's webhook username and icon overrides",
+                "type": "bool",
+                "help_text": "Webhook posts show as @alertmanagerbot only when System Console > Integrations has 'Enable integrations to override usernames' and 'Enable integrations to override profile picture icons' on. Turning this on lets the plugin switch both on at activation. They are server-wide settings that affect every integration, so this is off by default; with it off the plugin only logs a warning when they are off.",
+                "default": false
             }
                 ]
             }
