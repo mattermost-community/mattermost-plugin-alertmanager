@@ -84,7 +84,7 @@ func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
 		id, cerr := alertmanager.CreateSilence(context.Background(), g.URL, g.User, g.Password, actor, comment, endsAt, matchers)
 		if cerr != nil {
 			p.auditLog("silence.create", args.UserId, target, args.ChannelId, "failure")
-			fmt.Fprintf(&b, "- `%s` — :x: %v\n", g.URL, cerr)
+			fmt.Fprintf(&b, "- `%s` — :x: %s\n", g.URL, p.amErrorText(args.UserId, cerr))
 			continue
 		}
 		okCount++

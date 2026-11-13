@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -203,7 +204,7 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		// (warning + critical + info + resolved); otherwise 1. Per-spec
 		// errors get aggregated into a single status string.
 		if endToEnd && st.ok {
-			r.EndToEndAlertID = fireSyntheticMatrix(c.AlertManagerURL, receiverBaseSlug(c.Name), fireSpecs)
+			r.EndToEndAlertID = p.fireSyntheticMatrix(args.UserId, c.AlertManagerURL, receiverBaseSlug(c.Name), fireSpecs)
 		} else if endToEnd {
 			r.EndToEndAlertID = "— (AM unreachable)"
 		}
@@ -654,13 +655,13 @@ func postValidateSyntheticAlert(amURL, runbookSlug, severity string, extraLabels
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, amURL+"/api/v2/alerts", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("bad URL: %w", err)
+		return "", errors.New("the Alertmanager URL is not valid")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := alertmanager.GetClient().Do(req)
 	if err != nil {
-		return "", fmt.Errorf("POST to AM failed: %w", err)
+		return "", alertmanager.AsRequestError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -715,7 +716,7 @@ type syntheticFireSpec struct {
 // for the validate report's End-to-end column. Aggregates per-spec
 // outcomes — partial-failure cases show `✓ 3 of 4` so the operator
 // can see something landed without paging up the AM logs.
-func fireSyntheticMatrix(amURL, runbookSlug string, specs []syntheticFireSpec) string {
+func (p *Plugin) fireSyntheticMatrix(userID, amURL, runbookSlug string, specs []syntheticFireSpec) string {
 	if len(specs) == 0 {
 		return "— (no severity)"
 	}
@@ -725,7 +726,7 @@ func fireSyntheticMatrix(amURL, runbookSlug string, specs []syntheticFireSpec) s
 		_, err := postValidateSyntheticAlert(amURL, runbookSlug, s.Severity, nil, s.Resolved)
 		if err != nil {
 			if firstErr == "" {
-				firstErr = err.Error()
+				firstErr = p.amErrorText(userID, err)
 			}
 			continue
 		}

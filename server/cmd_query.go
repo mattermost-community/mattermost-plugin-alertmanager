@@ -177,7 +177,7 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"- %s → :x: failed to reach: `%v`\n  Bound receivers: %s\n\n",
-				g.URL, err, g.receiverNames(),
+				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
 		}
@@ -220,7 +220,7 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
-				g.URL, err, g.receiverNames(),
+				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
 		}
@@ -299,7 +299,7 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
-				g.URL, err, g.receiverNames(),
+				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
 		}
@@ -454,7 +454,7 @@ func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 
 	if err := alertmanager.ExpireSilence(context.Background(), silenceID, match.AlertManagerURL, match.User, match.Password); err != nil {
 		p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "failure")
-		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %v", silenceID, name, err), nil
+		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %s", silenceID, name, p.amErrorText(args.UserId, err)), nil
 	}
 	p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "success")
 	return fmt.Sprintf(":mute: Silence `%s` expired on `%s`.", silenceID, name), nil

@@ -30,7 +30,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	webhookHostOverride, rest := extractFlagValue(rest, "webhook-host=")
 	if webhookHostOverride != "" {
 		if err := validateWebhookHost(webhookHostOverride); err != nil {
-			return fmt.Sprintf("Invalid `webhook-host` value: %v", err), nil
+			return fmt.Sprintf("Invalid `webhook-host` value: %s", p.amErrorText(args.UserId, err)), nil
 		}
 	}
 
@@ -48,7 +48,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	amURL, rawName := strings.TrimRight(positional[0], "/"), positional[1]
 	// Reject a dangerous AM URL up front (CL-03/CL-21) — see handleAdd.
 	if err := validateAlertManagerURL(amURL); err != nil {
-		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+		return fmt.Sprintf("Invalid Alertmanager URL: %s", p.amErrorText(args.UserId, err)), nil
 	}
 
 	dest, msg := p.currentChannelDestination(args)

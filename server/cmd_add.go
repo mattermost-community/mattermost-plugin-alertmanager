@@ -70,7 +70,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	webhookHostOverride, rest := extractFlagValue(rest, "webhook-host=")
 	if webhookHostOverride != "" {
 		if err := validateWebhookHost(webhookHostOverride); err != nil {
-			return fmt.Sprintf("Invalid `webhook-host` value: %v", err), nil
+			return fmt.Sprintf("Invalid `webhook-host` value: %s", p.amErrorText(args.UserId, err)), nil
 		}
 	}
 
@@ -93,7 +93,7 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 	// clear message instead of creating a webhook and rolling back
 	// (CL-03/CL-21). IsValid re-checks it at persist time for the KV-import path.
 	if err := validateAlertManagerURL(amURL); err != nil {
-		return fmt.Sprintf("Invalid Alertmanager URL: %v", err), nil
+		return fmt.Sprintf("Invalid Alertmanager URL: %s", p.amErrorText(args.UserId, err)), nil
 	}
 
 	target := "all"

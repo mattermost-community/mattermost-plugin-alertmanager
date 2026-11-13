@@ -381,7 +381,8 @@ func (p *Plugin) runInventoryEndToEnd(targetSlugs []string, severity, extra stri
 			if err == nil {
 				item.Detail = "Fired synthetic alert id " + alertID + " — watch the bound channels for delivery."
 			} else {
-				item.Detail = err.Error()
+				p.logAMError(err)
+				item.Detail = amAdminErrorText(err)
 			}
 			res.Items = append(res.Items, item)
 		}
