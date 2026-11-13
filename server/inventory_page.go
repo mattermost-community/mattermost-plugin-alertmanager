@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -118,11 +119,24 @@ func inventoryGroupMode(r *http.Request) string {
 
 // probeInventoryAMs probes each unique AM URL once, populating the
 // reachability cache. The probe is cached for amReachabilityTTL — repeat page
-// loads within the TTL window don't re-ping.
+// loads within the TTL window don't re-ping. Up to maxParallelAMCalls probes run
+// at once, so the page waits for the slowest Alertmanager rather than the sum.
 func (p *Plugin) probeInventoryAMs(configs []alertConfig) map[string]amReachabilityEntry {
-	amStatus := make(map[string]amReachabilityEntry)
-	for _, url := range uniqueAMURLs(configs) {
-		amStatus[url] = p.probeAMReachability(url)
+	urls := uniqueAMURLs(configs)
+	entries := make([]amReachabilityEntry, len(urls))
+	sem := make(chan struct{}, maxParallelAMCalls)
+	var wg sync.WaitGroup
+	for i, url := range urls {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			entries[i] = p.probeAMReachability(url)
+		})
+	}
+	wg.Wait()
+	amStatus := make(map[string]amReachabilityEntry, len(urls))
+	for i, url := range urls {
+		amStatus[url] = entries[i]
 	}
 	return amStatus
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
+
+	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
 
 type inventoryPageAPI struct{ plugin.API }
@@ -107,6 +110,34 @@ func TestInventorySideEffectModesRejectGET(t *testing.T) {
 		body := renderInventoryPage(t, http.MethodGet, q)
 		if !strings.Contains(body, "CSRF protection") {
 			t.Errorf("%s over GET must be refused with the CSRF message", mode)
+		}
+	}
+}
+
+func TestInventoryProbesAlertmanagersConcurrently(t *testing.T) {
+	_, loopback, _ := net.ParseCIDR("127.0.0.0/8")
+	alertmanager.SetAllowedNets([]*net.IPNet{loopback})
+	t.Cleanup(func() { alertmanager.SetAllowedNets(nil) })
+
+	var configs []alertConfig
+	for range 4 {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(300 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+		configs = append(configs, alertConfig{AlertManagerURL: srv.URL})
+	}
+
+	p := &Plugin{}
+	start := time.Now()
+	got := p.probeInventoryAMs(configs)
+	if elapsed := time.Since(start); elapsed > 800*time.Millisecond {
+		t.Fatalf("four 300ms probes took %s; they ran one at a time", elapsed)
+	}
+	for _, c := range configs {
+		if _, ok := got[c.AlertManagerURL]; !ok {
+			t.Errorf("no probe result for %s", c.AlertManagerURL)
 		}
 	}
 }
