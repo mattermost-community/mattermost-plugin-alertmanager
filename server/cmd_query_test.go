@@ -126,20 +126,6 @@ func TestGroupByAMURL(t *testing.T) {
 		}
 	})
 
-	t.Run("first receiver's credentials propagate to the group", func(t *testing.T) {
-		input := []alertConfig{
-			{Name: "a", AlertManagerURL: "http://am1", User: "alice", Password: "p1"},
-			{Name: "b", AlertManagerURL: "http://am1", User: "bob", Password: "p2"},
-		}
-		got := groupByAMURL(input)
-		if len(got) != 1 {
-			t.Fatalf("expected 1 group, got %d", len(got))
-		}
-		if got[0].User != "alice" || got[0].Password != "p1" {
-			t.Fatalf("expected first-wins credentials, got user=%s pass=%s", got[0].User, got[0].Password)
-		}
-	})
-
 	t.Run("output order is stable across runs", func(t *testing.T) {
 		input := []alertConfig{
 			{Name: "a", AlertManagerURL: "http://am1"},

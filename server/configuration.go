@@ -18,8 +18,7 @@ import (
 // plugin's System Console settings_schema.
 //
 // The receiver list (alertConfig entries) is deliberately NOT here: it holds
-// webhook IDs and Alertmanager basic-auth passwords, and anything in the plugin
-// config map is readable via GET /api/v4/config by delegated console roles
+// webhook IDs, and anything in the plugin config map is readable via GET /api/v4/config by delegated console roles
 // (sysconsole_read_plugins) unless flagged secret. It lives in the plugin KV
 // store instead (kvKeyAlertConfigs), which the config API does not expose. See
 // loadAlertConfigsFromKV (read) and updateConfigsAtomic (write) (CL-19).
@@ -158,17 +157,6 @@ type alertConfig struct {
 	// path. Empty = inherit global WebhookHost or fall back to SiteURL.
 	WebhookHostOverride string `json:"webhookHostOverride,omitempty"`
 
-	// Optional basic-auth credentials for outbound calls to Alertmanager's
-	// REST API (used by /alertmanager alerts, silences, status). Not a
-	// Mattermost user — these are service-account credentials for the
-	// Alertmanager side. Leave empty unless your Alertmanager is behind an
-	// auth proxy. NOT exposed via the /alertmanager config add slash command. Since
-	// CL-19 moved the receiver list to the KV store, the old config-JSON edit
-	// path is gone; setting these now means writing the KV entry directly.
-	// A dedicated slash flag is a possible future addition.
-	User     string `json:"user,omitempty"`
-	Password string `json:"password,omitempty"`
-
 	// LastRotatedAt is when the WebhookID was last (re)created via
 	// /alertmanager config add or /alertmanager config rotate. Used by the rotation
 	// reminder scheduler — when the configured WebhookRotationDays
@@ -218,9 +206,6 @@ func (ac *alertConfig) IsValid() error {
 	}
 	if ac.WebhookID == "" {
 		return errors.New("must set webhookID (the plugin creates this; do not set manually)")
-	}
-	if (ac.User == "") != (ac.Password == "") {
-		return errors.New("user and password must both be set or both be empty")
 	}
 	// CL-03/CL-21/CL-33: validate the URLs here so EVERY persist path — slash
 	// command and a blob written straight to the KV store — is covered, not just
@@ -383,7 +368,7 @@ func sanitizeAlertManagerURL(raw string) string {
 	if err != nil || u.User == nil {
 		return raw
 	}
-	// Strip embedded credentials (basic-auth belongs in the user/password fields).
+	// Strip embedded credentials; the plugin never sends any to Alertmanager.
 	u.User = nil
 	return u.String()
 }

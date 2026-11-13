@@ -182,10 +182,9 @@ production).
 ### Internal: receiver list storage
 
 The receiver list is stored in the plugin **KV store** (key
-`alertconfigs:v1`), not in the plugin config. It holds webhook IDs
-and any Alertmanager basic-auth passwords, and the KV store — unlike
-plugin config — is not returned by `GET /api/v4/config`, so those
-secrets aren't exposed to delegated System Console roles
+`alertconfigs:v1`), not in the plugin config. It holds webhook IDs,
+and the KV store — unlike plugin config — is not returned by
+`GET /api/v4/config`, so they aren't exposed to delegated System Console roles
 (`sysconsole_read_plugins`). It is managed entirely by slash commands;
 there is no System Console field to hand-edit it.
 
@@ -231,8 +230,9 @@ The stored JSON shape is:
 - **Scheme must be `http://` or `https://`**, a host is required, and the host
   and any path are held to a strict character grammar (blocks shell/CSV
   injection, since the URL renders into a copy-paste `curl` and an exported CSV).
-- **No embedded credentials** — set the basic-auth `user`/`password` fields on
-  the receiver entry instead.
+- **No embedded credentials.** The plugin does not send credentials to
+  Alertmanager. It expects an Alertmanager API it can reach without
+  authentication, such as an in-cluster Service URL.
 
 A value that bypasses these (a direct KV write, say) is **neutered on load**,
 not rejected: a hard failure would stop the whole plugin loading. The bad URL is

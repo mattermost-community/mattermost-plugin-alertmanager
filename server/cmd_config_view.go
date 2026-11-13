@@ -125,11 +125,6 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 	b.WriteString(fmt.Sprintf("- **Webhook ID:** `%s`\n", redactHookID(match.WebhookID)))
 	runbookURL := p.runbookDefaultURL(receiverBaseSlug(match.Name))
 	b.WriteString(fmt.Sprintf("- **Runbook (default):** [%s](%s)\n", receiverBaseSlug(match.Name), runbookURL))
-	if match.User != "" {
-		// Username is shown but password is never echoed — even masked,
-		// echoing it teaches admins the password length, which weakens it.
-		b.WriteString(fmt.Sprintf("- **AM basic-auth user:** `%s` _(password set; not shown)_\n", match.User))
-	}
 	b.WriteString("\n**slack_configs YAML** (paste under `receivers:` in alertmanager.yml):\n\n```yaml\n")
 	b.WriteString(yaml)
 	b.WriteString("```\n\n")

@@ -81,7 +81,7 @@ func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
 	fmt.Fprintf(&b, ":mute: Silencing **%s** for %s.\n\n", silenceTargetLabel(scope, target), duration)
 	okCount := 0
 	for _, g := range groupByAMURL(relevant) {
-		id, cerr := alertmanager.CreateSilence(context.Background(), g.URL, g.User, g.Password, actor, comment, endsAt, matchers)
+		id, cerr := alertmanager.CreateSilence(context.Background(), g.URL, actor, comment, endsAt, matchers)
 		if cerr != nil {
 			p.auditLog("silence.create", args.UserId, target, args.ChannelId, "failure")
 			fmt.Fprintf(&b, "- `%s` — :x: %s\n", g.URL, p.amErrorText(args.UserId, cerr))

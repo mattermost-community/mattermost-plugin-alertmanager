@@ -30,9 +30,8 @@ func TestCreateSilencePostsMatchersAndReturnsUUID(t *testing.T) {
 		if r.URL.Path != "/api/v2/silences" || r.Method != http.MethodPost {
 			t.Errorf("path %s %s", r.Method, r.URL.Path)
 		}
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != "user" || pass != "pass" {
-			t.Errorf("basic auth = %q %q ok=%v", user, pass, ok)
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("Authorization header sent: %q", auth)
 		}
 		raw, _ := io.ReadAll(r.Body)
 		body = string(raw)
@@ -41,7 +40,7 @@ func TestCreateSilencePostsMatchersAndReturnsUUID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := CreateSilence(context.Background(), srv.URL, "user", "pass", "ada", "from mattermost", time.Now().Add(time.Hour), []SilenceMatcher{
+	id, err := CreateSilence(context.Background(), srv.URL, "ada", "from mattermost", time.Now().Add(time.Hour), []SilenceMatcher{
 		{Name: "alertname", Value: "HighCPUUsage"},
 	})
 	if err != nil {
@@ -67,7 +66,7 @@ func TestCreateSilenceDoesNotRetryRejectedRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "from mattermost", time.Now().Add(time.Minute), []SilenceMatcher{
+	_, err := CreateSilence(context.Background(), srv.URL, "ada", "from mattermost", time.Now().Add(time.Minute), []SilenceMatcher{
 		{Name: "alertname", Value: "HighCPUUsage"},
 	})
 	if err == nil {
@@ -85,7 +84,7 @@ func TestCreateSilenceRejectsNonUUIDResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "c", time.Now().Add(time.Minute), []SilenceMatcher{
+	if _, err := CreateSilence(context.Background(), srv.URL, "ada", "c", time.Now().Add(time.Minute), []SilenceMatcher{
 		{Name: "alertname", Value: "HighCPUUsage"},
 	}); err == nil {
 		t.Fatal("expected a non-uuid id to be rejected")

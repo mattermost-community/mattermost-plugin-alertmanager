@@ -46,8 +46,8 @@ func silenceEndsAt(s *models.GettableSilence) time.Time {
 // Returns []*models.GettableSilence — that's the swagger-generated type for
 // the GET response in prometheus/alertmanager >= v0.31, which replaced the
 // removed types.Silence struct.
-func ListSilences(ctx context.Context, alertmanagerURL, user, password string) ([]*models.GettableSilence, error) {
-	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/silences", user, password)
+func ListSilences(ctx context.Context, alertmanagerURL string) ([]*models.GettableSilence, error) {
+	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/silences")
 	if err != nil {
 		return nil, err
 	}
@@ -66,14 +66,14 @@ func ListSilences(ctx context.Context, alertmanagerURL, user, password string) (
 // ExpireSilence terminates the silence with the given ID. The Alertmanager
 // API treats DELETE on /silence/{id} as "expire now" rather than literal
 // deletion — the silence remains visible in history with state=expired.
-func ExpireSilence(ctx context.Context, silenceID, alertmanagerURL, user, password string) error {
+func ExpireSilence(ctx context.Context, silenceID, alertmanagerURL string) error {
 	// Reject anything that isn't a UUID before it touches the request path (CL-08).
 	if !silenceIDRegex.MatchString(silenceID) {
 		return fmt.Errorf("invalid silence ID: must be a UUID")
 	}
 
 	expireURL := fmt.Sprintf("%s/api/v2/silence/%s", alertmanagerURL, silenceID)
-	_, statusCode, err := httpRetry(ctx, http.MethodDelete, expireURL, user, password)
+	_, statusCode, err := httpRetry(ctx, http.MethodDelete, expireURL)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,7 @@ type silenceIDResponse struct {
 // is not that shape is rejected so a hostile Alertmanager cannot put markdown
 // into the command reply. The POST and any lookup after a lost reply share one
 // RequestBudget.
-func CreateSilence(ctx context.Context, alertmanagerURL, user, password, createdBy, comment string, endsAt time.Time, matchers []SilenceMatcher) (string, error) {
+func CreateSilence(ctx context.Context, alertmanagerURL, createdBy, comment string, endsAt time.Time, matchers []SilenceMatcher) (string, error) {
 	if len(matchers) == 0 {
 		return "", fmt.Errorf("silence requires at least one matcher")
 	}
@@ -144,10 +144,10 @@ func CreateSilence(ctx context.Context, alertmanagerURL, user, password, created
 	ctx, cancel := context.WithTimeout(ctx, RequestBudget)
 	defer cancel()
 	postCtx, cancelPost := context.WithTimeout(ctx, postShare(ctx))
-	body, _, err := httpPostJSON(postCtx, alertmanagerURL+"/api/v2/silences", user, password, raw)
+	body, _, err := httpPostJSON(postCtx, alertmanagerURL+"/api/v2/silences", raw)
 	cancelPost()
 	if errors.Is(err, ErrOutcomeUnknown) {
-		if id, ok := findCreatedSilence(ctx, alertmanagerURL, user, password, &payload.Silence); ok {
+		if id, ok := findCreatedSilence(ctx, alertmanagerURL, &payload.Silence); ok {
 			return id, nil
 		}
 		return "", &RequestError{
@@ -176,7 +176,7 @@ const silenceLookupWindow = 5 * time.Second
 // created, so the caller records it instead of leaving an untracked silence.
 // A proxy can give up on the POST while Alertmanager is still storing it, so a
 // miss is polled again for up to silenceLookupWindow.
-func findCreatedSilence(ctx context.Context, alertmanagerURL, user, password string, want *models.Silence) (string, bool) {
+func findCreatedSilence(ctx context.Context, alertmanagerURL string, want *models.Silence) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, silenceLookupWindow)
 	defer cancel()
 	var id string
@@ -185,7 +185,7 @@ func findCreatedSilence(ctx context.Context, alertmanagerURL, user, password str
 	poll.MaxInterval = 2 * time.Second
 	poll.MaxElapsedTime = 0
 	err := backoff.Retry(func() error {
-		silences, err := ListSilences(ctx, alertmanagerURL, user, password)
+		silences, err := ListSilences(ctx, alertmanagerURL)
 		if err != nil {
 			return backoff.Permanent(err)
 		}

@@ -127,23 +127,15 @@ func groupByAMURL(configs []alertConfig) []amGroup {
 		idx[ac.AlertManagerURL] = len(out)
 		out = append(out, amGroup{
 			URL:       ac.AlertManagerURL,
-			User:      ac.User,
-			Password:  ac.Password,
 			Receivers: []alertConfig{ac},
 		})
 	}
 	return out
 }
 
-// amGroup is one Alertmanager URL plus the receivers bound to it. User
-// and Password are taken from the first receiver in the group — basic
-// auth credentials are an AM-level setting so all receivers sharing a
-// URL share creds. If they don't, that's a config bug; first-wins is
-// the predictable behavior.
+// amGroup is one Alertmanager URL plus the receivers bound to it.
 type amGroup struct {
 	URL       string
-	User      string
-	Password  string
 	Receivers []alertConfig
 }
 
@@ -196,7 +188,7 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 		len(scoped), len(groups),
 	))
 	statuses, errs := queryGroups(groups, func(g amGroup) (alertmanager.StatusResponse, error) {
-		return alertmanager.Status(context.Background(), g.URL, g.User, g.Password)
+		return alertmanager.Status(context.Background(), g.URL)
 	})
 	for i, g := range groups {
 		status, err := statuses[i], errs[i]
@@ -242,7 +234,7 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 
 	totalCount := 0
 	alertLists, errs := queryGroups(groups, func(g amGroup) ([]*alert.Alert, error) {
-		return alertmanager.ListAlerts(context.Background(), g.URL, g.User, g.Password)
+		return alertmanager.ListAlerts(context.Background(), g.URL)
 	})
 	for i, g := range groups {
 		alerts, err := alertLists[i], errs[i]
@@ -324,7 +316,7 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 	))
 	totalActive := 0
 	silenceLists, errs := queryGroups(groups, func(g amGroup) ([]*models.GettableSilence, error) {
-		return alertmanager.ListSilences(context.Background(), g.URL, g.User, g.Password)
+		return alertmanager.ListSilences(context.Background(), g.URL)
 	})
 	for i, g := range groups {
 		silences, err := silenceLists[i], errs[i]
@@ -484,7 +476,7 @@ func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf("Silence `%s` was not created from this channel with `/alertmanager silence create`, so it cannot be expired here. End it in Alertmanager directly.", silenceID), nil
 	}
 
-	if err := alertmanager.ExpireSilence(context.Background(), silenceID, match.AlertManagerURL, match.User, match.Password); err != nil {
+	if err := alertmanager.ExpireSilence(context.Background(), silenceID, match.AlertManagerURL); err != nil {
 		p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "failure")
 		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %s", silenceID, name, p.amErrorText(args.UserId, err)), nil
 	}

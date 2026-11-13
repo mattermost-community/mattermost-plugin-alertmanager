@@ -115,7 +115,7 @@ func runWithRetry(ctx context.Context, op func() error) error {
 	return err
 }
 
-func newRequest(ctx context.Context, method, url, user, password string, payload []byte) (*http.Request, error) {
+func newRequest(ctx context.Context, method, url string, payload []byte) (*http.Request, error) {
 	var body io.Reader
 	if payload != nil {
 		body = bytes.NewReader(payload)
@@ -126,9 +126,6 @@ func newRequest(ctx context.Context, method, url, user, password string, payload
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
-	}
-	if user != "" {
-		req.SetBasicAuth(user, password)
 	}
 	return req, nil
 }
@@ -158,9 +155,6 @@ func attemptError(err error) error {
 
 // httpRetry sends an idempotent request (GET or DELETE) to the Alertmanager
 // API, retrying transport failures and 5xx, 408 and 429 within RequestBudget.
-// If user is non-empty, HTTP Basic Auth is added, which makes Alertmanager
-// behind an authenticating reverse proxy usable (issue #7, PR #604 by
-// lipaysamart).
 //
 // GET returns the body of a 200 and fails on any other status. DELETE returns
 // the status for the caller to judge and never reads the body, so an unused
@@ -168,7 +162,7 @@ func attemptError(err error) error {
 //
 // The body is read here because the request context is cancelled when this
 // function returns. Errors are *RequestError, safe to show channel members.
-func httpRetry(ctx context.Context, method, url, user, password string) ([]byte, int, error) {
+func httpRetry(ctx context.Context, method, url string) ([]byte, int, error) {
 	if method != http.MethodGet && method != http.MethodDelete {
 		return nil, 0, fmt.Errorf("httpRetry: %s is not idempotent", method)
 	}
@@ -182,7 +176,7 @@ func httpRetry(ctx context.Context, method, url, user, password string) ([]byte,
 	var body []byte
 	var statusCode int
 	err := runWithRetry(ctx, func() error {
-		req, err := newRequest(ctx, method, url, user, password, nil)
+		req, err := newRequest(ctx, method, url, nil)
 		if err != nil {
 			return backoff.Permanent(err)
 		}
@@ -225,7 +219,7 @@ func httpRetry(ctx context.Context, method, url, user, password string) ([]byte,
 //
 // Only a 200 or 201 body is read. Error bodies are discarded unread so they
 // cannot be reflected to the user (CL-08) or cost memory.
-func httpPostJSON(ctx context.Context, url, user, password string, payload []byte) ([]byte, int, error) {
+func httpPostJSON(ctx context.Context, url string, payload []byte) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, RequestBudget)
 	defer cancel()
 	key := breakerKey(url)
@@ -244,7 +238,7 @@ func httpPostJSON(ctx context.Context, url, user, password string, payload []byt
 				}
 			},
 		})
-		req, err := newRequest(traced, http.MethodPost, url, user, password, payload)
+		req, err := newRequest(traced, http.MethodPost, url, payload)
 		if err != nil {
 			return backoff.Permanent(err)
 		}

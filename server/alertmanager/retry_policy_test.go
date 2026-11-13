@@ -80,7 +80,7 @@ func TestCreateSilenceAdoptsTheSilenceWhenTheReplyIsLost(t *testing.T) {
 	srv := httptest.NewServer(am)
 	defer srv.Close()
 
-	id, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers())
+	id, err := CreateSilence(context.Background(), srv.URL, "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers())
 	if err != nil {
 		t.Fatalf("want the stored silence adopted, got %v", err)
 	}
@@ -104,7 +104,7 @@ func TestCreateSilenceAdoptsTheSilenceAfterATruncatedSuccess(t *testing.T) {
 	srv := httptest.NewServer(am)
 	defer srv.Close()
 
-	id, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers())
+	id, err := CreateSilence(context.Background(), srv.URL, "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers())
 	if err != nil || id != testSilenceUUID {
 		t.Fatalf("id %q err %v", id, err)
 	}
@@ -120,7 +120,7 @@ func TestCreateSilenceDoesNotResendAfterAServerError(t *testing.T) {
 	srv := httptest.NewServer(am)
 	defer srv.Close()
 
-	_, err := CreateSilence(shortBudget(t, time.Second), srv.URL, "", "", "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers())
+	_, err := CreateSilence(shortBudget(t, time.Second), srv.URL, "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers())
 	if err == nil || !strings.Contains(err.Error(), "did not confirm") {
 		t.Fatalf("want an unconfirmed-outcome error, got %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCreateSilenceDoesNotAdoptALookalike(t *testing.T) {
 	srv := httptest.NewServer(am)
 	defer srv.Close()
 
-	if _, err := CreateSilence(shortBudget(t, time.Second), srv.URL, "", "", "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers()); err == nil {
+	if _, err := CreateSilence(shortBudget(t, time.Second), srv.URL, "ada", "from mattermost", time.Now().Add(time.Hour), testMatchers()); err == nil {
 		t.Fatal("a silence with a different comment must not be adopted")
 	}
 }
@@ -172,7 +172,7 @@ func TestCreateSilenceResendsWhenNothingWasWritten(t *testing.T) {
 	srv := httptest.NewServer(am)
 	defer srv.Close()
 
-	id, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "c", time.Now().Add(time.Hour), testMatchers())
+	id, err := CreateSilence(context.Background(), srv.URL, "ada", "c", time.Now().Add(time.Hour), testMatchers())
 	if err != nil || id != testSilenceUUID {
 		t.Fatalf("id %q err %v", id, err)
 	}
@@ -190,7 +190,7 @@ func TestPostErrorBodyIsNotReflected(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "c", time.Now().Add(time.Hour), testMatchers())
+	_, err := CreateSilence(context.Background(), srv.URL, "ada", "c", time.Now().Add(time.Hour), testMatchers())
 	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("error reflected the response body or was nil: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestGetDoesNotRetryClientErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := ListAlerts(context.Background(), srv.URL, "u", "wrong"); err == nil || !strings.Contains(err.Error(), "401") {
+	if _, err := ListAlerts(context.Background(), srv.URL); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("want a 401 error, got %v", err)
 	}
 	if n := hits.Load(); n != 1 {
@@ -225,7 +225,7 @@ func TestGetRetriesServerErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := ListSilences(context.Background(), srv.URL, "", ""); err != nil {
+	if _, err := ListSilences(context.Background(), srv.URL); err != nil {
 		t.Fatalf("want success after one 503, got %v", err)
 	}
 	if n := hits.Load(); n != 2 {
@@ -259,7 +259,7 @@ func TestOversizedBodyIsNotFetchedAgain(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			_, err := ListAlerts(context.Background(), srv.URL, "", "")
+			_, err := ListAlerts(context.Background(), srv.URL)
 			if !errors.Is(err, ErrResponseTooLarge) {
 				t.Fatalf("want ErrResponseTooLarge, got %v", err)
 			}
@@ -277,7 +277,7 @@ func TestBlockedDestinationFailsFastWithoutTheAddress(t *testing.T) {
 	defer srv.Close()
 
 	start := time.Now()
-	_, err := ListAlerts(context.Background(), srv.URL, "", "")
+	_, err := ListAlerts(context.Background(), srv.URL)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("blocked destination was retried for %s", elapsed)
 	}
@@ -311,7 +311,7 @@ func TestTransportErrorTextHidesTheAddress(t *testing.T) {
 	ctx := shortBudget(t, 300*time.Millisecond)
 	const addr = "127.0.0.1:9093"
 
-	_, err := ListAlerts(ctx, "http://"+addr, "", "")
+	_, err := ListAlerts(ctx, "http://"+addr)
 	var re *RequestError
 	if !errors.As(err, &re) {
 		t.Fatalf("want a RequestError, got %T %v", err, err)
@@ -333,7 +333,7 @@ func TestRetriesStopAtTheRequestBudget(t *testing.T) {
 	defer srv.Close()
 
 	start := time.Now()
-	_, err := ListAlerts(ctx, srv.URL, "", "")
+	_, err := ListAlerts(ctx, srv.URL)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("retries ran %s past a 400ms budget", elapsed)
 	}
@@ -343,7 +343,7 @@ func TestRetriesStopAtTheRequestBudget(t *testing.T) {
 }
 
 func TestHTTPRetryRefusesNonIdempotentMethods(t *testing.T) {
-	if _, _, err := httpRetry(context.Background(), http.MethodPost, "http://203.0.113.7", "", ""); err == nil {
+	if _, _, err := httpRetry(context.Background(), http.MethodPost, "http://203.0.113.7"); err == nil {
 		t.Fatal("httpRetry must refuse POST")
 	}
 }
@@ -358,7 +358,7 @@ func TestCreateSilenceFindsASilenceStoredAfterTheReply(t *testing.T) {
 	srv := httptest.NewServer(am)
 	defer srv.Close()
 
-	id, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "c", time.Now().Add(time.Hour), testMatchers())
+	id, err := CreateSilence(context.Background(), srv.URL, "ada", "c", time.Now().Add(time.Hour), testMatchers())
 	if err != nil || id != testSilenceUUID {
 		t.Fatalf("want the late silence adopted, got id %q err %v", id, err)
 	}
@@ -379,7 +379,7 @@ func TestCreateSilencePostAndLookupShareOneDeadline(t *testing.T) {
 
 	const budget = 2400 * time.Millisecond
 	start := time.Now()
-	id, err := CreateSilence(shortBudget(t, budget), srv.URL, "", "", "ada", "c", time.Now().Add(time.Hour), testMatchers())
+	id, err := CreateSilence(shortBudget(t, budget), srv.URL, "ada", "c", time.Now().Add(time.Hour), testMatchers())
 	if elapsed := time.Since(start); elapsed > budget+500*time.Millisecond {
 		t.Fatalf("create took %s against a %s deadline", elapsed, budget)
 	}

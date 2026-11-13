@@ -21,10 +21,10 @@ type StatusResponse struct {
 }
 
 // Status queries the Alertmanager /api/v2/status endpoint.
-func Status(ctx context.Context, alertmanagerURL, user, password string) (StatusResponse, error) {
+func Status(ctx context.Context, alertmanagerURL string) (StatusResponse, error) {
 	var statusResponse StatusResponse
 
-	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/status", user, password)
+	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/status")
 	if err != nil {
 		return statusResponse, err
 	}
