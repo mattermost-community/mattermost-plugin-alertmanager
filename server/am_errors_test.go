@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
@@ -58,18 +60,22 @@ func TestAMErrorTextShowsNetworkDetailToSystemAdminsOnly(t *testing.T) {
 	}
 }
 
-func TestValidateFireDoesNotSurfaceTheRawDialError(t *testing.T) {
-	_, loopback, _ := net.ParseCIDR("127.0.0.0/8")
-	alertmanager.SetAllowedNets([]*net.IPNet{loopback})
-	t.Cleanup(func() { alertmanager.SetAllowedNets(nil) })
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+// refusingTransport fails every request the way a closed port does, without
+// freeing a real port that a test process running alongside could take.
+type refusingTransport struct{}
 
-	_, err = postValidateSyntheticAlert("http://"+addr, "high-cpu-usage", "warning", nil, false)
+func (refusingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	addr, _ := net.ResolveTCPAddr("tcp", r.URL.Host)
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Addr: addr, Err: syscall.ECONNREFUSED}
+}
+
+func TestValidateFireDoesNotSurfaceTheRawDialError(t *testing.T) {
+	prev := alertmanager.GetClient()
+	t.Cleanup(func() { alertmanager.SetClient(prev) })
+	alertmanager.SetClient(&http.Client{Transport: refusingTransport{}})
+	const addr = "127.0.0.1:9093"
+
+	_, err := postValidateSyntheticAlert("http://"+addr, "high-cpu-usage", "warning", nil, false)
 	if err == nil || strings.Contains(err.Error(), addr) || strings.Contains(err.Error(), "127.0.0.1") {
 		t.Fatalf("validate fire error names the address: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -292,17 +293,25 @@ func TestBlockedDestinationFailsFastWithoutTheAddress(t *testing.T) {
 	}
 }
 
+// refusingTransport fails every request the way a closed port does. Closing a
+// real listener frees a port that a test process running alongside can take,
+// and the dial then reaches that process's server instead.
+type refusingTransport struct{}
+
+func (refusingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	addr, _ := net.ResolveTCPAddr("tcp", r.URL.Host)
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Addr: addr, Err: syscall.ECONNREFUSED}
+}
+
 func TestTransportErrorTextHidesTheAddress(t *testing.T) {
 	allowTestLoopback(t)
+	prev := GetClient()
+	t.Cleanup(func() { SetClient(prev) })
+	SetClient(&http.Client{Transport: refusingTransport{}})
 	ctx := shortBudget(t, 300*time.Millisecond)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	const addr = "127.0.0.1:9093"
 
-	_, err = ListAlerts(ctx, "http://"+addr, "", "")
+	_, err := ListAlerts(ctx, "http://"+addr, "", "")
 	var re *RequestError
 	if !errors.As(err, &re) {
 		t.Fatalf("want a RequestError, got %T %v", err, err)
