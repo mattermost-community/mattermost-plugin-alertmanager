@@ -135,14 +135,14 @@ The plugin mints an ephemeral PAT for the calling sysadmin to authenticate Clien
 
 ### Posts show as the calling admin, not `@alertmanagerbot`
 
-**Cause:** the System Console toggles for username/icon override are off. The plugin auto-enables them at activation, but if your install has `config.json` mounted read-only (typical in some Helm charts), `SaveConfig` silently fails.
+**Cause:** the System Console toggles for username/icon override are off. The plugin only switches them on when its `EnableIntegrationOverrides` setting is on, and with `config.json` mounted read-only (typical in some Helm charts) `SaveConfig` fails.
 
 **Fix:** Manually set both to true at System Console → Integrations → Integration Management:
 
 - `Enable Integrations to override usernames`
 - `Enable Integrations to override profile picture icons`
 
-The webhook already has the bot username and icon URL stored on its database row; these toggles control whether Mattermost honors them at post time. If they're stuck at false despite the plugin's attempt to flip them, check MM logs for `"could not enable integration override settings"` to see the underlying error.
+The webhook already has the bot username and icon URL stored on its database row; these toggles control whether Mattermost honors them at post time. With the setting off, MM logs a warning at activation (`webhook posts will show as the creating sysadmin`). With it on and the toggles still false, look for `"could not enable the integration override settings"` for the underlying error.
 
 ### `context deadline exceeded` on `/alertmanager alerts`, `alerts status`, or `silence list`
 
