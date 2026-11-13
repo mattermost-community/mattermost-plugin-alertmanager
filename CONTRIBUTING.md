@@ -65,7 +65,7 @@ To add a 21st:
    `<job>`, etc. where labels should be substituted at delivery
    time — the plugin's renderer fills them from the alert's labels.
 3. Add the slug to the appropriate category in
-   `server/cmd_scaffold.go` (the `scaffoldSets` map).
+   `server/runbook_catalog.go` (the `scaffoldSets` map).
 4. Add a corresponding Prometheus alert rule to
    `samples/prometheus-rules.yaml`. Set the rule's `runbook:` label
    to the slug — that's how Alertmanager routes the alert. The
