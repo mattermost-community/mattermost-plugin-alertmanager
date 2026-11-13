@@ -156,7 +156,7 @@ func (p *Plugin) parseFormat(args *model.CommandArgs, verb string) parsedCommand
 	access := map[string]accessLevel{
 		"export": accessChannelAdmin,
 		"diff":   accessSystemAdmin,
-		"rules":  accessAnyone,
+		"rules":  accessChannelAdmin,
 	}
 	level, ok := access[verb]
 	if !ok {
