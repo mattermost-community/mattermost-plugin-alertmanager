@@ -65,6 +65,12 @@ type Plugin struct {
 	reconcilerLastRun    time.Time
 	reconcilerLastPruned int
 
+	// Throttle state for the work inside a reconcile tick, and the sysadmin
+	// the tick acts as. Same lock as the status fields above.
+	reconcilerLastProbe time.Time
+	yamlLastSweep       time.Time
+	cachedSysadminID    string
+
 	// amReachabilityCache is a sync.Map keyed by Alertmanager URL.
 	// Values are *amReachabilityEntry. Probes are deduped per URL
 	// and results cached for amReachabilityTTL — keeps the admin

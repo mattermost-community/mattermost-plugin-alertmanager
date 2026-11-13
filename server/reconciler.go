@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -18,6 +19,25 @@ import (
 // minutes balances "tolerable lag between out-of-band webhook delete
 // and plugin cleanup" against "noise in plugin logs / API call rate."
 const reconcilerInterval = 5 * time.Minute
+
+// reconcilerOrphanProbeInterval is how often a tick checks webhooks. Each check
+// mints and revokes a sysadmin access token and calls the API once per webhook,
+// so it runs far less often than the tick. An out-of-band webhook delete is
+// pruned within this window.
+const reconcilerOrphanProbeInterval = 30 * time.Minute
+
+// yamlSweepInterval is how often a tick scans the plugin's key-value store for
+// expired DM'd YAML. The TTL is measured in hours, so a sweep every few ticks
+// loses nothing.
+const yamlSweepInterval = 15 * time.Minute
+
+// orphanProbeWorkers and orphanProbeBudget bound one orphan check: webhooks are
+// probed concurrently, and any not probed in time are left alone until the next
+// check.
+const (
+	orphanProbeWorkers = 4
+	orphanProbeBudget  = 2 * time.Minute
+)
 
 // reconcilerJobKey is the cluster-mutex key under which the reconcile
 // job runs. Choice of name matters: the pluginapi cluster package uses
@@ -75,30 +95,40 @@ func (p *Plugin) startReconciler() func() {
 // real count — single explicit call here avoids the order-of-ops bug.
 func (p *Plugin) runBackgroundReconcile() {
 	pruneCount := 0
-	// Always stamp at the end. Use a deferred call with a closure that
-	// reads pruneCount at evaluation time (not at defer-registration
-	// time) so the real count gets recorded.
-	defer func() { p.recordReconcileRun(pruneCount) }()
+	probed := false
+	// The closure reads the counters when it runs, so it records the final values.
+	defer func() { p.recordReconcileRun(pruneCount, probed) }()
 
-	// Janitor runs first — independent of reconcileOrphans and doesn't
-	// need a sysadmin context.
-	p.sweepExpiredYAML()
+	now := time.Now()
+	if p.claimYAMLSweep(now) {
+		p.sweepExpiredYAML()
+	}
 
-	if len(p.getConfiguration().AlertConfigs) == 0 {
+	cfg := p.getConfiguration()
+	if len(cfg.AlertConfigs) == 0 {
 		return
 	}
-	sysadminID, err := p.findActiveSysadmin()
+	probeDue := p.orphanProbeDue(now)
+	if !probeDue && cfg.WebhookRotationDays <= 0 {
+		return
+	}
+
+	sysadminID, err := p.activeSysadminID()
 	if err != nil {
 		p.API.LogWarn("reconciler: no active sysadmin available to act as; skipping cycle",
 			"err", err.Error())
 		return
 	}
-	pruned, err := p.reconcileOrphans(sysadminID)
-	if err != nil {
-		p.API.LogWarn("reconciler: cycle failed", "err", err.Error())
-		return
+	if probeDue {
+		pruned, err := p.reconcileOrphans(sysadminID)
+		if err != nil {
+			p.API.LogWarn("reconciler: cycle failed", "err", err.Error())
+			return
+		}
+		p.markOrphanProbe(now)
+		pruneCount = len(pruned)
+		probed = true
 	}
-	pruneCount = len(pruned)
 
 	// Rotation reminders run after orphan pruning so we don't waste
 	// effort reminding for receivers about to be pruned this cycle.
@@ -108,6 +138,32 @@ func (p *Plugin) runBackgroundReconcile() {
 		p.API.LogWarn("reconciler: rotation reminder pass failed (continuing)",
 			"err", err.Error())
 	}
+}
+
+// orphanProbeDue reports whether enough time has passed since the last
+// successful orphan check.
+func (p *Plugin) orphanProbeDue(now time.Time) bool {
+	p.reconcilerStatusLock.Lock()
+	defer p.reconcilerStatusLock.Unlock()
+	return now.Sub(p.reconcilerLastProbe) >= reconcilerOrphanProbeInterval
+}
+
+func (p *Plugin) markOrphanProbe(now time.Time) {
+	p.reconcilerStatusLock.Lock()
+	defer p.reconcilerStatusLock.Unlock()
+	p.reconcilerLastProbe = now
+}
+
+// claimYAMLSweep reports whether a YAML sweep is due and, if so, starts the
+// interval over so a slow sweep is not repeated by the next tick.
+func (p *Plugin) claimYAMLSweep(now time.Time) bool {
+	p.reconcilerStatusLock.Lock()
+	defer p.reconcilerStatusLock.Unlock()
+	if now.Sub(p.yamlLastSweep) < yamlSweepInterval {
+		return false
+	}
+	p.yamlLastSweep = now
+	return true
 }
 
 // rotationOverdueEntry is one receiver flagged as overdue. Hoisted
@@ -323,30 +379,11 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 	}
 	defer cleanup()
 
-	// Probe each UNIQUE WebhookID once — group webhooks (v1.0.3+) share
-	// one hookID across N receivers, so per-receiver probing would
-	// multiply the API call rate. The cache maps hookID to "exists" so
-	// the prune pass below can mark every receiver in a dead group as
-	// orphaned without re-querying.
-	hookStatus := make(map[string]bool)
-	for _, ac := range current {
-		if _, seen := hookStatus[ac.WebhookID]; seen {
-			continue
-		}
-		_, resp, getErr := c.GetIncomingWebhook(context.Background(), ac.WebhookID, "")
-		if getErr == nil {
-			hookStatus[ac.WebhookID] = true
-			continue
-		}
-		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			hookStatus[ac.WebhookID] = false
-			continue
-		}
-		// Transient or permission error — don't cache this hookID's
-		// status. Receivers depending on it stay alive this cycle.
-		p.API.LogWarn("reconciler: error checking webhook (will retry next cycle)",
-			"receiver", ac.Name, "webhook", redactHookID(ac.WebhookID), "err", scrubHookID(getErr.Error(), ac.WebhookID))
-	}
+	// Probe each UNIQUE WebhookID once: group webhooks (v1.0.3+) share one hookID
+	// across N receivers, so per-receiver probing would multiply the API call
+	// rate. The result maps hookID to "exists" so the prune pass below can mark
+	// every receiver in a dead group as orphaned without re-querying.
+	hookStatus := p.probeWebhooks(c, current)
 
 	// Mark every receiver whose shared webhookID came back 404, recording the
 	// SPECIFIC dead webhook ID we probed for each name (not just the name). The
@@ -412,15 +449,17 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 	return pruned, nil
 }
 
-// recordReconcileRun stamps the last-run timestamp + pruned count on
-// the Plugin struct. Read by the admin inventory page's health banner.
-// Memory-only — resets on plugin restart, which is fine for a
+// recordReconcileRun stamps the last-run timestamp, and the pruned count when
+// this tick ran an orphan check. Read by the admin inventory page's health
+// banner. Memory-only — resets on plugin restart, which is fine for a
 // "is the janitor running?" indicator.
-func (p *Plugin) recordReconcileRun(pruned int) {
+func (p *Plugin) recordReconcileRun(pruned int, probed bool) {
 	p.reconcilerStatusLock.Lock()
 	defer p.reconcilerStatusLock.Unlock()
 	p.reconcilerLastRun = time.Now()
-	p.reconcilerLastPruned = pruned
+	if probed {
+		p.reconcilerLastPruned = pruned
+	}
 }
 
 // reconcileStatus returns the last reconcile timestamp + pruned count
@@ -429,6 +468,34 @@ func (p *Plugin) reconcileStatus() (lastRun time.Time, pruned int) {
 	p.reconcilerStatusLock.Lock()
 	defer p.reconcilerStatusLock.Unlock()
 	return p.reconcilerLastRun, p.reconcilerLastPruned
+}
+
+// activeSysadminID returns the admin the reconciler acts as. The last one found
+// is reused while it is still an active human system admin, which costs one
+// cached user lookup instead of a user search on every tick.
+func (p *Plugin) activeSysadminID() (string, error) {
+	p.reconcilerStatusLock.Lock()
+	cached := p.cachedSysadminID
+	p.reconcilerStatusLock.Unlock()
+
+	if cached != "" {
+		if u, appErr := p.API.GetUser(cached); appErr == nil && isActiveSysadmin(u) {
+			return cached, nil
+		}
+	}
+
+	id, err := p.findActiveSysadmin()
+	if err != nil {
+		return "", err
+	}
+	p.reconcilerStatusLock.Lock()
+	p.cachedSysadminID = id
+	p.reconcilerStatusLock.Unlock()
+	return id, nil
+}
+
+func isActiveSysadmin(u *model.User) bool {
+	return u != nil && u.DeleteAt == 0 && !u.IsBot && strings.Contains(u.Roles, model.SystemAdminRoleId)
 }
 
 // findActiveSysadmin returns the user ID of an active (non-deleted,
@@ -446,16 +513,66 @@ func (p *Plugin) findActiveSysadmin() (string, error) {
 		return "", fmt.Errorf("list users: %w", appErr)
 	}
 	for _, u := range users {
-		if u.DeleteAt != 0 {
-			continue
+		if isActiveSysadmin(u) {
+			return u.Id, nil
 		}
-		if u.IsBot {
-			continue
-		}
-		if !strings.Contains(u.Roles, model.SystemAdminRoleId) {
-			continue
-		}
-		return u.Id, nil
 	}
 	return "", errors.New("no active human system admin found")
+}
+
+// probeWebhooks asks Mattermost whether each unique webhook still exists, with a
+// few concurrent loopback calls under one overall time budget. The result maps
+// hook ID to exists. A hook with a transient or permission error, or one the
+// budget ran out before reaching, is absent from the map so its receivers stay
+// alive until the next check.
+func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig) map[string]bool {
+	ctx, cancel := context.WithTimeout(context.Background(), orphanProbeBudget)
+	defer cancel()
+
+	// First receiver per hook, for log context only.
+	owner := make(map[string]string, len(configs))
+	hookIDs := make([]string, 0, len(configs))
+	for _, ac := range configs {
+		if _, seen := owner[ac.WebhookID]; seen {
+			continue
+		}
+		owner[ac.WebhookID] = ac.Name
+		hookIDs = append(hookIDs, ac.WebhookID)
+	}
+
+	var (
+		mu     sync.Mutex
+		status = make(map[string]bool, len(hookIDs))
+		wg     sync.WaitGroup
+		jobs   = make(chan string)
+	)
+	for range min(orphanProbeWorkers, len(hookIDs)) {
+		wg.Go(func() {
+			for id := range jobs {
+				_, resp, err := c.GetIncomingWebhook(ctx, id, "")
+				switch {
+				case err == nil:
+					mu.Lock()
+					status[id] = true
+					mu.Unlock()
+				case resp != nil && resp.StatusCode == http.StatusNotFound:
+					mu.Lock()
+					status[id] = false
+					mu.Unlock()
+				default:
+					p.API.LogWarn("reconciler: error checking webhook (will retry next cycle)",
+						"receiver", owner[id], "webhook", redactHookID(id), "err", scrubHookID(err.Error(), id))
+				}
+			}
+		})
+	}
+	for _, id := range hookIDs {
+		if ctx.Err() != nil {
+			break
+		}
+		jobs <- id
+	}
+	close(jobs)
+	wg.Wait()
+	return status
 }
