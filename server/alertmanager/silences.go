@@ -2,6 +2,7 @@ package alertmanager
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/go-openapi/strfmt"
 	"github.com/prometheus/alertmanager/api/v2/models"
 )
@@ -44,8 +46,8 @@ func silenceEndsAt(s *models.GettableSilence) time.Time {
 // Returns []*models.GettableSilence — that's the swagger-generated type for
 // the GET response in prometheus/alertmanager >= v0.31, which replaced the
 // removed types.Silence struct.
-func ListSilences(alertmanagerURL, user, password string) ([]*models.GettableSilence, error) {
-	body, _, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/silences", user, password)
+func ListSilences(ctx context.Context, alertmanagerURL, user, password string) ([]*models.GettableSilence, error) {
+	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/silences", user, password)
 	if err != nil {
 		return nil, err
 	}
@@ -64,14 +66,14 @@ func ListSilences(alertmanagerURL, user, password string) ([]*models.GettableSil
 // ExpireSilence terminates the silence with the given ID. The Alertmanager
 // API treats DELETE on /silence/{id} as "expire now" rather than literal
 // deletion — the silence remains visible in history with state=expired.
-func ExpireSilence(silenceID, alertmanagerURL, user, password string) error {
+func ExpireSilence(ctx context.Context, silenceID, alertmanagerURL, user, password string) error {
 	// Reject anything that isn't a UUID before it touches the request path (CL-08).
 	if !silenceIDRegex.MatchString(silenceID) {
 		return fmt.Errorf("invalid silence ID: must be a UUID")
 	}
 
 	expireURL := fmt.Sprintf("%s/api/v2/silence/%s", alertmanagerURL, silenceID)
-	_, statusCode, err := httpRetry(http.MethodDelete, expireURL, user, password)
+	_, statusCode, err := httpRetry(ctx, http.MethodDelete, expireURL, user, password)
 	if err != nil {
 		return err
 	}
@@ -100,8 +102,9 @@ type silenceIDResponse struct {
 // CreateSilence posts a new silence. The caller chooses the end time. This
 // function does not invent a duration. The returned id is a UUID. A body that
 // is not that shape is rejected so a hostile Alertmanager cannot put markdown
-// into the command reply.
-func CreateSilence(alertmanagerURL, user, password, createdBy, comment string, endsAt time.Time, matchers []SilenceMatcher) (string, error) {
+// into the command reply. The POST and any lookup after a lost reply share one
+// RequestBudget.
+func CreateSilence(ctx context.Context, alertmanagerURL, user, password, createdBy, comment string, endsAt time.Time, matchers []SilenceMatcher) (string, error) {
 	if len(matchers) == 0 {
 		return "", fmt.Errorf("silence requires at least one matcher")
 	}
@@ -138,9 +141,13 @@ func CreateSilence(alertmanagerURL, user, password, createdBy, comment string, e
 		return "", fmt.Errorf("encode silence: %w", err)
 	}
 
-	body, _, err := httpPostJSON(alertmanagerURL+"/api/v2/silences", user, password, raw)
+	ctx, cancel := context.WithTimeout(ctx, RequestBudget)
+	defer cancel()
+	postCtx, cancelPost := context.WithTimeout(ctx, postShare(ctx))
+	body, _, err := httpPostJSON(postCtx, alertmanagerURL+"/api/v2/silences", user, password, raw)
+	cancelPost()
 	if errors.Is(err, ErrOutcomeUnknown) {
-		if id, ok := findCreatedSilence(alertmanagerURL, user, password, &payload.Silence); ok {
+		if id, ok := findCreatedSilence(ctx, alertmanagerURL, user, password, &payload.Silence); ok {
 			return id, nil
 		}
 		return "", &RequestError{
@@ -161,16 +168,49 @@ func CreateSilence(alertmanagerURL, user, password, createdBy, comment string, e
 	return decoded.SilenceID, nil
 }
 
+// silenceLookupWindow bounds the polling after a lost reply. A proxy that gives
+// up on the POST is usually only seconds ahead of Alertmanager storing it.
+const silenceLookupWindow = 5 * time.Second
+
 // findCreatedSilence looks for the silence a POST with a lost reply may have
 // created, so the caller records it instead of leaving an untracked silence.
-// It matches creator, comment, matchers and end time, which together identify
-// the request; StartsAt is not compared because Alertmanager moves a past
-// start to the time it stored the silence.
-func findCreatedSilence(alertmanagerURL, user, password string, want *models.Silence) (string, bool) {
-	silences, err := ListSilences(alertmanagerURL, user, password)
-	if err != nil {
-		return "", false
-	}
+// A proxy can give up on the POST while Alertmanager is still storing it, so a
+// miss is polled again for up to silenceLookupWindow.
+func findCreatedSilence(ctx context.Context, alertmanagerURL, user, password string, want *models.Silence) (string, bool) {
+	ctx, cancel := context.WithTimeout(ctx, silenceLookupWindow)
+	defer cancel()
+	var id string
+	poll := backoff.NewExponentialBackOff()
+	poll.InitialInterval = 250 * time.Millisecond
+	poll.MaxInterval = 2 * time.Second
+	poll.MaxElapsedTime = 0
+	err := backoff.Retry(func() error {
+		silences, err := ListSilences(ctx, alertmanagerURL, user, password)
+		if err != nil {
+			return backoff.Permanent(err)
+		}
+		var ok bool
+		if id, ok = matchCreatedSilence(silences, want); !ok {
+			return errSilenceNotListed
+		}
+		return nil
+	}, backoff.WithContext(poll, ctx))
+	return id, err == nil
+}
+
+// postShare is two thirds of the time ctx has left. The rest is held back so a
+// lost reply still leaves time to find the silence the POST may have created.
+func postShare(ctx context.Context) time.Duration {
+	deadline, _ := ctx.Deadline()
+	return time.Until(deadline) * 2 / 3
+}
+
+var errSilenceNotListed = errors.New("silence not listed yet")
+
+// matchCreatedSilence matches creator, comment, matchers and end time, which
+// together identify the request. StartsAt is not compared because
+// Alertmanager moves a past start to the time it stored the silence.
+func matchCreatedSilence(silences []*models.GettableSilence, want *models.Silence) (string, bool) {
 	wantEnd := time.Time(*want.EndsAt)
 	for _, s := range silences {
 		if s.ID == nil || !ValidSilenceID(*s.ID) {

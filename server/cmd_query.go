@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -172,7 +173,7 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 		len(scoped), len(groups),
 	))
 	for _, g := range groups {
-		status, err := alertmanager.Status(g.URL, g.User, g.Password)
+		status, err := alertmanager.Status(context.Background(), g.URL, g.User, g.Password)
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"- %s → :x: failed to reach: `%v`\n  Bound receivers: %s\n\n",
@@ -215,7 +216,7 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 
 	totalCount := 0
 	for _, g := range groups {
-		alerts, err := alertmanager.ListAlerts(g.URL, g.User, g.Password)
+		alerts, err := alertmanager.ListAlerts(context.Background(), g.URL, g.User, g.Password)
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
@@ -294,7 +295,7 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 	))
 	totalActive := 0
 	for _, g := range groups {
-		silences, err := alertmanager.ListSilences(g.URL, g.User, g.Password)
+		silences, err := alertmanager.ListSilences(context.Background(), g.URL, g.User, g.Password)
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
@@ -451,7 +452,7 @@ func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 		return fmt.Sprintf("Silence `%s` was not created from this channel with `/alertmanager silence create`, so it cannot be expired here. End it in Alertmanager directly.", silenceID), nil
 	}
 
-	if err := alertmanager.ExpireSilence(silenceID, match.AlertManagerURL, match.User, match.Password); err != nil {
+	if err := alertmanager.ExpireSilence(context.Background(), silenceID, match.AlertManagerURL, match.User, match.Password); err != nil {
 		p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "failure")
 		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %v", silenceID, name, err), nil
 	}

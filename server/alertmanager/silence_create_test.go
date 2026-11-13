@@ -1,6 +1,7 @@
 package alertmanager
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -13,7 +14,11 @@ import (
 func allowTestLoopback(t *testing.T) {
 	t.Helper()
 	SetAllowedNets([]*net.IPNet{mustCIDR("127.0.0.0/8"), mustCIDR("::1/128")})
-	t.Cleanup(func() { SetAllowedNets(nil) })
+	breakers.reset()
+	t.Cleanup(func() {
+		SetAllowedNets(nil)
+		breakers.reset()
+	})
 }
 
 func TestCreateSilencePostsMatchersAndReturnsUUID(t *testing.T) {
@@ -36,7 +41,7 @@ func TestCreateSilencePostsMatchersAndReturnsUUID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := CreateSilence(srv.URL, "user", "pass", "ada", "from mattermost", time.Now().Add(time.Hour), []SilenceMatcher{
+	id, err := CreateSilence(context.Background(), srv.URL, "user", "pass", "ada", "from mattermost", time.Now().Add(time.Hour), []SilenceMatcher{
 		{Name: "alertname", Value: "HighCPUUsage"},
 	})
 	if err != nil {
@@ -62,7 +67,7 @@ func TestCreateSilenceDoesNotRetryRejectedRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CreateSilence(srv.URL, "", "", "ada", "from mattermost", time.Now().Add(time.Minute), []SilenceMatcher{
+	_, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "from mattermost", time.Now().Add(time.Minute), []SilenceMatcher{
 		{Name: "alertname", Value: "HighCPUUsage"},
 	})
 	if err == nil {
@@ -80,7 +85,7 @@ func TestCreateSilenceRejectsNonUUIDResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := CreateSilence(srv.URL, "", "", "ada", "c", time.Now().Add(time.Minute), []SilenceMatcher{
+	if _, err := CreateSilence(context.Background(), srv.URL, "", "", "ada", "c", time.Now().Add(time.Minute), []SilenceMatcher{
 		{Name: "alertname", Value: "HighCPUUsage"},
 	}); err == nil {
 		t.Fatal("expected a non-uuid id to be rejected")

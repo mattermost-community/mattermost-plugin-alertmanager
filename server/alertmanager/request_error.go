@@ -15,6 +15,10 @@ import (
 type RequestError struct {
 	msg string
 	err error
+	// unavailable marks a failure that says the Alertmanager is down or
+	// overloaded, as opposed to a request it refused. Only these trip the
+	// circuit breaker.
+	unavailable bool
 }
 
 func (e *RequestError) Error() string { return e.msg }
@@ -30,7 +34,7 @@ var ErrOutcomeUnknown = errors.New("alertmanager outcome unknown")
 
 func statusError(code int) *RequestError {
 	err := fmt.Errorf("alertmanager returned status %d", code)
-	return &RequestError{msg: err.Error(), err: err}
+	return &RequestError{msg: err.Error(), err: err, unavailable: retryableStatus(code)}
 }
 
 func invalidURL(err error) *RequestError {
@@ -38,7 +42,19 @@ func invalidURL(err error) *RequestError {
 }
 
 func outcomeUnknown(cause *RequestError) *RequestError {
-	return &RequestError{msg: cause.msg, err: fmt.Errorf("%w: %w", ErrOutcomeUnknown, cause)}
+	return &RequestError{msg: cause.msg, err: fmt.Errorf("%w: %w", ErrOutcomeUnknown, cause), unavailable: cause.unavailable}
+}
+
+// AsRequestError sanitizes an error from a direct GetClient().Do call the same
+// way the API helpers do, so callers outside this package never surface the
+// raw transport text.
+func AsRequestError(err error) *RequestError {
+	var re *RequestError
+	if errors.As(err, &re) {
+		return re
+	}
+	re, _ = transportError(err)
+	return re
 }
 
 // transportError classifies a failed round trip or body read. permanent is true
@@ -60,10 +76,15 @@ func transportError(err error) (re *RequestError, permanent bool) {
 	case errors.As(err, &recordErr):
 		return &RequestError{msg: "the TLS handshake with Alertmanager failed. Check whether the URL should be http:// or https://", err: err}, true
 	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
-		return &RequestError{msg: "the Alertmanager host name does not resolve", err: err}, false
+		// Deliberately retried, not permanent: an in-cluster Service name
+		// reports not-found while CoreDNS restarts or the Service is being
+		// recreated, and failing on the first lookup would page nobody but
+		// break every command during a routine rollout. A mistyped host
+		// costs one RequestBudget, then the circuit breaker fails fast.
+		return &RequestError{msg: "the Alertmanager host name does not resolve", err: err, unavailable: true}, false
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
-		return &RequestError{msg: fmt.Sprintf("Alertmanager did not respond within %s", requestBudget), err: err}, false
+		return &RequestError{msg: "Alertmanager did not respond in time", err: err, unavailable: true}, false
 	default:
-		return &RequestError{msg: "could not connect to Alertmanager", err: err}, false
+		return &RequestError{msg: "could not connect to Alertmanager", err: err, unavailable: true}, false
 	}
 }

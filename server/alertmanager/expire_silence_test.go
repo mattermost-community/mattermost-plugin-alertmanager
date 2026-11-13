@@ -1,6 +1,7 @@
 package alertmanager
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ func TestExpireSilenceRejectsNonUUID(t *testing.T) {
 	}
 	for _, id := range bad {
 		hit = false
-		if err := ExpireSilence(id, srv.URL, "user", "pass"); err == nil {
+		if err := ExpireSilence(context.Background(), id, srv.URL, "user", "pass"); err == nil {
 			t.Errorf("id %q: expected rejection, got nil error", id)
 		}
 		if hit {
@@ -59,7 +60,7 @@ func TestExpireSilenceValidUUID(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		if err := ExpireSilence(testSilenceUUID, srv.URL, "", ""); err != nil {
+		if err := ExpireSilence(context.Background(), testSilenceUUID, srv.URL, "", ""); err != nil {
 			t.Fatalf("valid UUID unexpectedly failed: %v", err)
 		}
 		if want := "/api/v2/silence/" + testSilenceUUID; gotPath != want {
@@ -75,7 +76,7 @@ func TestExpireSilenceValidUUID(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		err := ExpireSilence(testSilenceUUID, srv.URL, "", "")
+		err := ExpireSilence(context.Background(), testSilenceUUID, srv.URL, "", "")
 		if err == nil {
 			t.Fatal("expected an error on a 500 response")
 		}
@@ -106,7 +107,7 @@ func TestExpireSilenceDoesNotFollowRedirect(t *testing.T) {
 	}))
 	defer front.Close()
 
-	err := ExpireSilence(testSilenceUUID, front.URL, "user", "pass")
+	err := ExpireSilence(context.Background(), testSilenceUUID, front.URL, "user", "pass")
 	if err == nil {
 		t.Fatal("expected a non-200 error from the unfollowed redirect")
 	}

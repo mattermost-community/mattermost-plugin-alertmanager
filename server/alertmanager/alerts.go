@@ -9,6 +9,7 @@ package alertmanager
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 
 	"github.com/prometheus/alertmanager/alert"
@@ -22,8 +23,8 @@ import (
 // remains in v0.33 as a deprecated alias for alert.Alert — using the
 // canonical path here silences the SA1019 lint and stays current as
 // the alias eventually gets removed upstream.
-func ListAlerts(alertmanagerURL, user, password string) ([]*alert.Alert, error) {
-	body, _, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/alerts", user, password)
+func ListAlerts(ctx context.Context, alertmanagerURL, user, password string) ([]*alert.Alert, error) {
+	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/alerts", user, password)
 	if err != nil {
 		return nil, err
 	}

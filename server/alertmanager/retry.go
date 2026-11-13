@@ -77,19 +77,18 @@ func GetClient() *http.Client { return client.Load() }
 // OnConfigurationChange when the CA bundle setting changes.
 func SetClient(c *http.Client) { client.Store(c) }
 
-// requestBudget bounds one Alertmanager call, retries included, so a slow or
+// RequestBudget bounds one Alertmanager call, retries included, so a slow or
 // failing Alertmanager holds a slash command or probe goroutine for at most
-// this long. A var only so tests can shorten it.
-var requestBudget = 15 * time.Second
+// this long. A caller's context can shorten it but never extend it.
+const RequestBudget = 15 * time.Second
 
-// httpBackoff returns the backoff policy used for Alertmanager API calls.
-// Callers wrap it with the request context, which ends the retries at
-// requestBudget.
+// httpBackoff returns the backoff policy used for Alertmanager API calls. It
+// never gives up on its own; the request context ends the retries.
 func httpBackoff() *backoff.ExponentialBackOff {
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = 200 * time.Millisecond
 	b.MaxInterval = 5 * time.Second
-	b.MaxElapsedTime = requestBudget
+	b.MaxElapsedTime = 0
 	return b
 }
 
@@ -158,7 +157,7 @@ func attemptError(err error) error {
 }
 
 // httpRetry sends an idempotent request (GET or DELETE) to the Alertmanager
-// API, retrying transport failures and 5xx, 408 and 429 within requestBudget.
+// API, retrying transport failures and 5xx, 408 and 429 within RequestBudget.
 // If user is non-empty, HTTP Basic Auth is added, which makes Alertmanager
 // behind an authenticating reverse proxy usable (issue #7, PR #604 by
 // lipaysamart).
@@ -169,12 +168,16 @@ func attemptError(err error) error {
 //
 // The body is read here because the request context is cancelled when this
 // function returns. Errors are *RequestError, safe to show channel members.
-func httpRetry(method, url, user, password string) ([]byte, int, error) {
+func httpRetry(ctx context.Context, method, url, user, password string) ([]byte, int, error) {
 	if method != http.MethodGet && method != http.MethodDelete {
 		return nil, 0, fmt.Errorf("httpRetry: %s is not idempotent", method)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestBudget)
+	ctx, cancel := context.WithTimeout(ctx, RequestBudget)
 	defer cancel()
+	key := breakerKey(url)
+	if err := breakers.allow(key); err != nil {
+		return nil, 0, err
+	}
 
 	var body []byte
 	var statusCode int
@@ -206,6 +209,7 @@ func httpRetry(method, url, user, password string) ([]byte, int, error) {
 		body = b
 		return nil
 	})
+	breakers.record(key, err)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -221,9 +225,13 @@ func httpRetry(method, url, user, password string) ([]byte, int, error) {
 //
 // Only a 200 or 201 body is read. Error bodies are discarded unread so they
 // cannot be reflected to the user (CL-08) or cost memory.
-func httpPostJSON(url, user, password string, payload []byte) ([]byte, int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), requestBudget)
+func httpPostJSON(ctx context.Context, url, user, password string, payload []byte) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, RequestBudget)
 	defer cancel()
+	key := breakerKey(url)
+	if err := breakers.allow(key); err != nil {
+		return nil, 0, err
+	}
 
 	var body []byte
 	var statusCode int
@@ -266,6 +274,7 @@ func httpPostJSON(url, user, password string, payload []byte) ([]byte, int, erro
 			return backoff.Permanent(statusError(statusCode))
 		}
 	})
+	breakers.record(key, err)
 	if err != nil {
 		return nil, statusCode, err
 	}
