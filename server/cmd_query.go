@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hako/durafmt"
@@ -146,6 +147,28 @@ type amGroup struct {
 	Receivers []alertConfig
 }
 
+// maxParallelAMCalls bounds how many Alertmanagers one command calls at once.
+const maxParallelAMCalls = 8
+
+// queryGroups calls every group concurrently and returns the results in group
+// order, so a channel whose Alertmanagers are all down waits one
+// RequestBudget instead of one per backend.
+func queryGroups[T any](groups []amGroup, call func(amGroup) (T, error)) ([]T, []error) {
+	vals := make([]T, len(groups))
+	errs := make([]error, len(groups))
+	sem := make(chan struct{}, maxParallelAMCalls)
+	var wg sync.WaitGroup
+	for i, g := range groups {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			vals[i], errs[i] = call(g)
+		})
+	}
+	wg.Wait()
+	return vals, errs
+}
+
 // receiverNames returns the receivers' Name fields formatted as inline
 // code, joined by commas — used in section headers showing which
 // receivers are bound to a given Alertmanager.
@@ -172,8 +195,11 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 		"**Alertmanager status — %d receiver(s) across %d backend(s):**\n\n",
 		len(scoped), len(groups),
 	))
-	for _, g := range groups {
-		status, err := alertmanager.Status(context.Background(), g.URL, g.User, g.Password)
+	statuses, errs := queryGroups(groups, func(g amGroup) (alertmanager.StatusResponse, error) {
+		return alertmanager.Status(context.Background(), g.URL, g.User, g.Password)
+	})
+	for i, g := range groups {
+		status, err := statuses[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"- %s → :x: failed to reach: `%v`\n  Bound receivers: %s\n\n",
@@ -215,8 +241,11 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 	))
 
 	totalCount := 0
-	for _, g := range groups {
-		alerts, err := alertmanager.ListAlerts(context.Background(), g.URL, g.User, g.Password)
+	alertLists, errs := queryGroups(groups, func(g amGroup) ([]*alert.Alert, error) {
+		return alertmanager.ListAlerts(context.Background(), g.URL, g.User, g.Password)
+	})
+	for i, g := range groups {
+		alerts, err := alertLists[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
@@ -294,8 +323,11 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 		len(scoped), len(groups),
 	))
 	totalActive := 0
-	for _, g := range groups {
-		silences, err := alertmanager.ListSilences(context.Background(), g.URL, g.User, g.Password)
+	silenceLists, errs := queryGroups(groups, func(g amGroup) ([]*models.GettableSilence, error) {
+		return alertmanager.ListSilences(context.Background(), g.URL, g.User, g.Password)
+	})
+	for i, g := range groups {
+		silences, err := silenceLists[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
