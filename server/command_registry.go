@@ -139,14 +139,14 @@ func (p *Plugin) parseSilence(args *model.CommandArgs, verb string, words int) p
 	case "list":
 		return parsedCommand{cmd: p.newCommand("silence list", accessAnyone, p.handleListSilences), args: args}
 	case "expire":
-		return parsedCommand{cmd: p.newCommand("silence expire", accessChannelAdmin, p.handleExpireSilence), args: withoutParent(args)}
+		return parsedCommand{cmd: p.newCommand("silence expire", accessSystemAdmin, p.handleExpireSilence), args: withoutParent(args)}
 	case "create":
 		fields := strings.Fields(args.Command)
 		next := *args
 		next.Command = strings.Join(append([]string{fields[0], fields[1]}, fields[3:]...), " ")
-		return parsedCommand{cmd: p.newCommand("silence create", accessChannelAdmin, p.handleSilence), args: &next}
+		return parsedCommand{cmd: p.newCommand("silence create", accessSystemAdmin, p.handleSilence), args: &next}
 	default:
-		return parsedCommand{cmd: p.newCommand("silence create", accessChannelAdmin, p.handleSilence), args: args}
+		return parsedCommand{cmd: p.newCommand("silence create", accessSystemAdmin, p.handleSilence), args: args}
 	}
 }
 

@@ -61,9 +61,9 @@ func TestEveryVerbHasItsAccessLevel(t *testing.T) {
 		{"/alertmanager format export", "format export", accessChannelAdmin},
 		{"/alertmanager format diff", "format diff", accessSystemAdmin},
 		{"/alertmanager silence list", "silence list", accessAnyone},
-		{"/alertmanager silence create 1h compute", "silence create", accessChannelAdmin},
-		{"/alertmanager silence 1h compute", "silence create", accessChannelAdmin},
-		{"/alertmanager silence expire x y", "silence expire", accessChannelAdmin},
+		{"/alertmanager silence create 1h compute", "silence create", accessSystemAdmin},
+		{"/alertmanager silence 1h compute", "silence create", accessSystemAdmin},
+		{"/alertmanager silence expire x y", "silence expire", accessSystemAdmin},
 		{"/alertmanager admin repair", "admin repair", accessSystemAdmin},
 		{"/alertmanager admin acknowledge", "admin acknowledge", accessSystemAdmin},
 		{"/alertmanager admin allowlist", "admin allowlist", accessSystemAdmin},
@@ -92,8 +92,9 @@ func TestRegistryDeniesBeforeTheHandlerRuns(t *testing.T) {
 	}{
 		{"/alertmanager config remove all", false, false, "team_admin"},
 		{"/alertmanager config add http://am:9093", false, false, "team_admin"},
-		{"/alertmanager silence create 1h compute", false, false, "team_admin"},
-		{"/alertmanager silence expire x y", false, false, "team_admin"},
+		{"/alertmanager silence create 1h compute", false, true, "system_admin"},
+		{"/alertmanager silence 1h all", false, true, "system_admin"},
+		{"/alertmanager silence expire x y", false, true, "system_admin"},
 		{"/alertmanager format export", false, false, "team_admin"},
 		{"/alertmanager format diff", false, true, "system_admin"},
 		{"/alertmanager admin repair", false, true, "system_admin"},
@@ -110,10 +111,10 @@ func TestRegistryDeniesBeforeTheHandlerRuns(t *testing.T) {
 	}
 }
 
-func TestRegistryLetsTeamAdminsRunChannelCommands(t *testing.T) {
-	p := accessPlugin(&accessAPI{teamAdmin: true})
+func TestRegistryLetsSysadminsSilence(t *testing.T) {
+	p := accessPlugin(&accessAPI{sysadmin: true})
 	got := p.executeCommand(&model.CommandArgs{Command: "/alertmanager silence create", ChannelId: "c1", UserId: "u1"})
-	if strings.Contains(got, "team_admin") || !strings.Contains(got, "Allowed times") {
-		t.Fatalf("a team admin should reach the handler, got %q", got)
+	if strings.Contains(got, "system_admin") || !strings.Contains(got, "Allowed times") {
+		t.Fatalf("a system admin should reach the handler, got %q", got)
 	}
 }
