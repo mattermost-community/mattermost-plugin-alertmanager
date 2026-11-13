@@ -46,15 +46,6 @@ func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
 	if err != nil {
 		return ":warning: " + err.Error(), nil
 	}
-	// all matches every runbook receiver in the channel and quiets every
-	// other channel on that Alertmanager. A team admin can mute one alert
-	// or one group. The channel-wide mute stays with system admins, and
-	// the 1h cap still applies.
-	if scope == silenceScopeAll {
-		if adminErr := p.requireSystemAdmin(args.UserId); adminErr != nil {
-			return "Silencing every runbook in this channel (`all`) requires system_admin, and the TTL cannot be longer than 1h. A team admin can still silence one alert or one group.", nil
-		}
-	}
 	duration, err := parseSilenceDuration(fields[2], scope)
 	if err != nil {
 		return silenceTimeRejected(fields[2], scope, err), nil
@@ -135,10 +126,10 @@ func silenceAllowedTimes(reason string) string {
 		b.WriteString(reason)
 		b.WriteString("\n\n")
 	}
-	b.WriteString("`/alertmanager silence create <time> <alert|group|all>`\n\n")
+	b.WriteString("`/alertmanager silence create <time> <alert|group|all>` (system admin)\n\n")
 	b.WriteString("Allowed times:\n")
-	b.WriteString("- An alert (`HighCPUUsage`) or a group (`compute`): `30m`, or a whole hour from `1h` through `72h` (`2h`, `3h`, … `72h`). Team admin.\n")
-	b.WriteString("- `all`: `30m` or `1h` only. System admin. Anything longer is rejected.\n\n")
+	b.WriteString("- An alert (`HighCPUUsage`) or a group (`compute`): `30m`, or a whole hour from `1h` through `72h` (`2h`, `3h`, … `72h`).\n")
+	b.WriteString("- `all`: `30m` or `1h` only. Anything longer is rejected.\n\n")
 	b.WriteString("`90m`, `45m`, `1.5h`, and anything over `72h` are rejected.\n")
 	b.WriteString("An alert name must be one this channel's receivers carry. A custom receiver's alerts are not known to the plugin, so silence those in Alertmanager.")
 	return b.String()

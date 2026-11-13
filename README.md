@@ -110,7 +110,7 @@ the same WHERE / WHAT / READ structure.
 | `/alertmanager format export` | DM this channel's receivers and routes. Add `crd` for an AlertmanagerConfig |
 | `/alertmanager format diff` | Sysadmin. Compare this channel with what Alertmanager has loaded |
 | `/alertmanager admin acknowledge add <name>` | Sysadmin. Hide a receiver another system created from the orange AM-only warning. Does not mute alerts |
-| `/alertmanager silence create <TTL> <alert\|group\|all>` | Mute in Alertmanager. An alert or a group is team admin, up to 72h. `all` is sysadmin and capped at 1h |
+| `/alertmanager silence create <TTL> <alert\|group\|all>` | Mute in Alertmanager. System admin only, because a silence applies to every channel on that Alertmanager. An alert or a group can run up to 72h; `all` is capped at 1h |
 | `/alertmanager config rotate <name>` | Rotate a webhook (new hook-id, paste new YAML, reload AM) |
 | `/alertmanager config rotate all overdue` | Rotate every receiver past the configured threshold |
 | `/alertmanager about` | Plugin info, settings, reconciler health |
