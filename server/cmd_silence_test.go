@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +192,18 @@ func TestSilencePlanAlertStaysInChannelRuleSet(t *testing.T) {
 	}
 	if _, err := silencePlan(silenceScopeAlert, packNames[0], configs[:3]); err == nil {
 		t.Error("a pack alert needs a pack receiver in the channel")
+	}
+
+	postgres, pgErr := postgresAlertnames()
+	if pgErr != nil {
+		t.Fatal(pgErr)
+	}
+	pgJobs, pgErr := silencePlan(silenceScopeAlert, postgres[0], configs)
+	if pgErr != nil || len(pgJobs[0].configs) != 1 || pgJobs[0].configs[0].AlertManagerURL != "http://am-d" {
+		t.Fatalf("the pack route claims %s, so the pack receiver must be able to silence it: %+v, %v", postgres[0], pgJobs, pgErr)
+	}
+	if !slices.Contains(channelAlertNames(configs), postgres[0]) {
+		t.Errorf("silence list must show silences on %s for a pack channel", postgres[0])
 	}
 }
 
