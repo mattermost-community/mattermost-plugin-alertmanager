@@ -268,15 +268,15 @@ func (c *configuration) Clone() *configuration {
 // configMutex guards getConfiguration / setConfiguration. Embedded in Plugin
 // rather than here to keep this file focused on the data model.
 
-// blockedReason is the full SSRF guard explanation, including the CIDR to
-// allowlist. Save-time validation shows it to the admin who typed the literal
-// IP, so none of it is new to them.
-func blockedReason(err error) string {
+// withBlockedDetail spells out an SSRF guard refusal, including the CIDR to
+// allowlist, for System Console saves. Only system admins reach that path;
+// slash commands keep the generic text and go through amErrorText.
+func withBlockedDetail(err error) error {
 	var blocked *alertmanager.BlockedDestinationError
 	if errors.As(err, &blocked) {
-		return blocked.Detail()
+		return errors.New(strings.Replace(err.Error(), blocked.Error(), blocked.Detail(), 1))
 	}
-	return err.Error()
+	return err
 }
 
 // alertManagerHostRegex matches the host of a legitimate Alertmanager base URL:
@@ -338,7 +338,7 @@ func validateAlertManagerURL(raw string) error {
 	// authoritative, rebinding-safe) — see the alertmanager dial guard.
 	if ip := net.ParseIP(host); ip != nil {
 		if err := alertmanager.CheckDestinationIP(ip); err != nil {
-			return fmt.Errorf("AlertManagerURL %q is a blocked destination: %s", host, blockedReason(err))
+			return fmt.Errorf("AlertManagerURL %q is a blocked destination: %w", host, err)
 		}
 	}
 	if !alertManagerHostRegex.MatchString(host) {
@@ -429,7 +429,7 @@ func validateWebhookHost(raw string) error {
 	// or a non-allowlisted private IP is rejected at save, not just at dial.
 	if ip := net.ParseIP(host); ip != nil {
 		if err := alertmanager.CheckDestinationIP(ip); err != nil {
-			return fmt.Errorf("WebhookHost %q is a blocked destination: %s", host, blockedReason(err))
+			return fmt.Errorf("WebhookHost %q is a blocked destination: %w", host, err)
 		}
 	}
 	// Safe host grammar: blocks quotes and other YAML-breaking characters that a
@@ -624,7 +624,7 @@ func (p *Plugin) OnConfigurationChange() error {
 	// still needs the sanity check.
 	effectiveHost := resolveWebhookHost(raw.WebhookHost, raw.WebhookHostPreset)
 	if err := validateWebhookHost(effectiveHost); err != nil {
-		return err
+		return withBlockedDetail(err)
 	}
 
 	// Install the SSRF destination allowlist BEFORE loading the receiver list, so
