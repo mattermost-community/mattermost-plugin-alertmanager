@@ -362,6 +362,37 @@ of scope — that file lives wherever the operator deploys AM). The
 right boundary is "plugin reminds; operator pastes." See
 [`ROTATION.md`](ROTATION.md).
 
+## Calls to Alertmanager
+
+Every API call the plugin makes (`status`, `alerts`, `silence list`,
+`silence create`, `silence expire`) gets one 15-second budget, retries
+included. A command that touches several Alertmanagers calls up to 8 of
+them at once, so a channel with three dead backends waits 15 seconds,
+not 45.
+
+- **Reads and expires** (GET, DELETE) retry connection failures, 5xx,
+  408 and 429 with exponential backoff until the budget runs out. Other
+  4xx responses fail at once.
+- **Silence create** (POST) is not idempotent. The plugin re-sends only
+  when the request never left the socket. If the request went out but no
+  usable reply came back, the plugin looks for the silence it may have
+  created, polling for up to 5 seconds, and adopts it if found.
+  Otherwise the user is told to check `silence list` before trying
+  again. The POST and the lookup share the one budget.
+- **Failing fast.** After 3 requests in a row find a host down, calls to
+  it fail at once for 30 seconds with the last reason. Then one request
+  goes through to test it. Each Mattermost node keeps its own state.
+- **Errors in chat** never carry the resolved IP, port, or the CIDR to
+  allowlist. System admins see that detail. Everyone else gets a
+  sanitized line, and the plugin log always has the raw error.
+
+A DNS not-found answer is retried rather than treated as permanent. An
+in-cluster Service name returns not-found while CoreDNS restarts or the
+Service is recreated. Failing on the first lookup would break every
+command during a routine rollout. The cost is that a mistyped host name
+takes 15 seconds to report, three times, before the breaker starts
+failing it fast.
+
 ## Open questions for v1.x
 
 Known gaps that haven't shipped:
