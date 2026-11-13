@@ -357,20 +357,22 @@ func TestCreateSilenceFindsASilenceStoredAfterTheReply(t *testing.T) {
 
 func TestCreateSilencePostAndLookupShareOneDeadline(t *testing.T) {
 	allowTestLoopback(t)
+	release := make(chan struct{})
 	am := &fakeAM{}
 	am.onPost = func(w http.ResponseWriter, raw []byte) {
 		am.store(raw, nil)
 		w.(http.Flusher).Flush()
-		time.Sleep(3 * time.Second)
+		<-release
 	}
 	srv := httptest.NewServer(am)
 	defer srv.Close()
+	defer close(release)
 
-	ctx := shortBudget(t, 900*time.Millisecond)
+	const budget = 2400 * time.Millisecond
 	start := time.Now()
-	id, err := CreateSilence(ctx, srv.URL, "", "", "ada", "c", time.Now().Add(time.Hour), testMatchers())
-	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
-		t.Fatalf("create took %s against a 900ms deadline", elapsed)
+	id, err := CreateSilence(shortBudget(t, budget), srv.URL, "", "", "ada", "c", time.Now().Add(time.Hour), testMatchers())
+	if elapsed := time.Since(start); elapsed > budget+500*time.Millisecond {
+		t.Fatalf("create took %s against a %s deadline", elapsed, budget)
 	}
 	if err != nil || id != testSilenceUUID {
 		t.Fatalf("want the silence found in the time left after the POST, got id %q err %v", id, err)

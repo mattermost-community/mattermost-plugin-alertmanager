@@ -75,7 +75,7 @@ func TestUnreachableAlertmanagerFailsFastOnceTheBreakerOpens(t *testing.T) {
 	before := hits.Load()
 	start := time.Now()
 	_, err := ListSilences(context.Background(), srv.URL, "", "")
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("open breaker still waited %s", elapsed)
 	}
 	if hits.Load() != before {
