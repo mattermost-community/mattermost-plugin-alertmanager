@@ -1,6 +1,6 @@
 module github.com/mattermost/mattermost-plugin-alertmanager/build
 
-go 1.26.7
+go 1.26.11
 
 require (
 	github.com/mattermost/mattermost/server/public v0.4.4

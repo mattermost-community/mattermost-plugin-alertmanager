@@ -60,3 +60,6 @@ node_modules/
 
 # Claude Code local settings (per-user, not shared).
 .claude/settings.local.json
+
+# Local build output of `go build` in build/render-docs; the Makefile uses go run.
+/build/render-docs/render-docs
