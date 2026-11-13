@@ -111,6 +111,25 @@ Rules for the Mattermost server itself. Requires `ServiceSettings.EnableMetrics:
 | Mattermost DB Slow Query | `mattermost-db-slow-query` | warning | p99 DB store op > 500ms for 5m | Mattermost metrics |
 | Mattermost High Error Rate | `mattermost-high-error-rate` | warning | > 5% of API calls return 5xx for 5m | Mattermost metrics |
 
+### Mattermost operator alerts (`mattermost` with `mm-namespace=<ns>`)
+
+Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come from the Mattermost Operator's own PrometheusRule. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
+
+| Alert | Severity | Fires when | Needs |
+|---|---|---|---|
+| MattermostServerDown | critical | No Mattermost pod is up | Mattermost metrics |
+| MattermostDBReplicaLag | warning | Replica lag over threshold | Read replica |
+| MattermostDBWriterPoolEmpty | critical | Writer connection pool exhausted | Mattermost metrics |
+| MattermostHighHTTPErrorRate | warning | Elevated HTTP error ratio | Mattermost metrics |
+| MattermostLoginFailureSpike | warning | Elevated failed-login ratio | Mattermost metrics |
+| MattermostSearchDown | warning | Search backend unhealthy | Mattermost metrics |
+| MattermostClusterUnhealthy | warning | Cluster nodes disagree | Mattermost metrics |
+| MattermostLogsDropped | warning | Log records dropped | Mattermost metrics |
+| MattermostPodCrashLooping | critical | Pod restarting repeatedly | kube-state-metrics |
+| MattermostHighCPU, MattermostHighMemory, MattermostCPULimitMissing, MattermostMemoryLimitMissing | warning | Resource pressure, missing limits | kube-state-metrics |
+
+Thresholds live in the operator's rules and are filled in by the plugin. Read `samples/mattermost-operator-rules.yaml` for the exact expressions.
+
 ## Wiring a set into a channel
 
 ```
@@ -120,5 +139,5 @@ Rules for the Mattermost server itself. Requires `ServiceSettings.EnableMetrics:
 /alertmanager config validate security simulate runbook=unexpected-container-image severity=warning
 ```
 
-`all` wires every slug above (36) behind one shared webhook. See
+`all` wires every slug above (35) behind one shared webhook. See
 [Slash commands](SLASH_COMMANDS.md) for the full command reference.

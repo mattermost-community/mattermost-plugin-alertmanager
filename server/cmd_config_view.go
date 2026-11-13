@@ -89,10 +89,6 @@ func formatRotationAge(t, now time.Time, overdue bool) string {
 // disambiguating "doesn't exist anywhere" vs "exists elsewhere", to
 // prevent receiver-name enumeration across channels.
 func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
 		return "Usage: `/alertmanager config <name>`\n\nList available receiver names with `/alertmanager config list`.", nil
@@ -115,7 +111,7 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 		), nil
 	}
 
-	yaml := renderReceiverYAMLForKind(match.Name, p.webhookURLForReceiver(*match), match.Channel, p.runbookDefaultURL(receiverBaseSlug(match.Name)), p.siteURL()+webhookIconURL, match.Custom)
+	yaml := renderReceiverYAMLForKind(match.Name, p.webhookURLForReceiver(*match), match.Channel, p.runbookDefaultURL(receiverBaseSlug(match.Name)), p.siteURL()+webhookIconURL, match.resolvedKind())
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("**Receiver `%s`**\n\n", match.Name))

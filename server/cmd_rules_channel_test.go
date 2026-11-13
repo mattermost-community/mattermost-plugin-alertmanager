@@ -48,10 +48,10 @@ func TestRulesFileForChannelCRD(t *testing.T) {
 	p := &Plugin{}
 	p.API = &ruleDMAPI{uploads: map[string]string{}}
 	slug := scaffoldSets["compute"][0]
-	rules, reason := p.rulesFileForChannel("monitoring", []alertConfig{
+	rules, reason := p.rulesFileForChannel(testRulesContext(formatCRD), []alertConfig{
 		{Name: slug + "--ops-alerts", Team: "ops", Channel: "alerts"},
 		{Name: "slo-burn--ops-alerts", Team: "ops", Channel: "alerts", Custom: true},
-	}, formatCRD)
+	})
 	if rules == nil || reason != "" {
 		t.Fatalf("rules=%v reason=%q", rules, reason)
 	}
@@ -73,9 +73,9 @@ func TestRulesFileForChannelCRD(t *testing.T) {
 func TestRulesFileForChannelStandardIsPlain(t *testing.T) {
 	p := &Plugin{}
 	p.API = &ruleDMAPI{uploads: map[string]string{}}
-	rules, _ := p.rulesFileForChannel("monitoring", []alertConfig{
+	rules, _ := p.rulesFileForChannel(testRulesContext(formatStandard), []alertConfig{
 		{Name: scaffoldSets["compute"][0] + "--ops-alerts", Team: "ops", Channel: "alerts"},
-	}, formatStandard)
+	})
 	body := string(rules.data)
 	if !strings.HasPrefix(body, "groups:") || strings.Contains(body, "kind: PrometheusRule") {
 		t.Fatalf("standard format should be a bare rules file:\n%s", body)
@@ -88,9 +88,9 @@ func TestRulesFileForChannelStandardIsPlain(t *testing.T) {
 func TestRulesFileForChannelSkipsCustomOnly(t *testing.T) {
 	p := &Plugin{}
 	p.API = &ruleDMAPI{uploads: map[string]string{}}
-	rules, reason := p.rulesFileForChannel("monitoring", []alertConfig{
+	rules, reason := p.rulesFileForChannel(testRulesContext(formatCRD), []alertConfig{
 		{Name: "slo-burn--ops-alerts", Team: "ops", Channel: "alerts", Custom: true},
-	}, formatCRD)
+	})
 	if rules != nil || !strings.Contains(reason, "No rules file") {
 		t.Fatalf("rules=%v reason=%q", rules, reason)
 	}
@@ -138,7 +138,7 @@ func TestFormatExportStandardIsOneMessageWithConfigRoutesAndRules(t *testing.T) 
 	p := &Plugin{}
 	p.API = api
 	scoped := scopedCompute()
-	rules, _ := p.rulesFileForChannel("monitoring", scoped, formatStandard)
+	rules, _ := p.rulesFileForChannel(testRulesContext(formatStandard), scoped)
 	if err := p.dmYAMLBundle("u1", "receivers", "routes", 1, "", rules); err != nil {
 		t.Fatal(err)
 	}
@@ -147,5 +147,48 @@ func TestFormatExportStandardIsOneMessageWithConfigRoutesAndRules(t *testing.T) 
 	}
 	if got := len(api.posts[0].FileIds); got != 3 {
 		t.Fatalf("want receivers + routes + rules, got %v", api.posts[0].FileIds)
+	}
+}
+
+func testRulesContext(format string) rulesContext {
+	return rulesContext{namespace: "monitoring", format: format, allowlist: true}
+}
+
+type allowlistAPI struct {
+	ruleDMAPI
+	registry string
+}
+
+func (f *allowlistAPI) LoadPluginConfiguration(dst any) error {
+	if raw, ok := dst.(*rawConfiguration); ok {
+		raw.ImageRegistryAllowlist = f.registry
+	}
+	return nil
+}
+
+func TestImageAllowlistExtrasAreAdminOnly(t *testing.T) {
+	const registry = "registry.internal.example/team/"
+	p := &Plugin{}
+	p.API = &allowlistAPI{ruleDMAPI: ruleDMAPI{uploads: map[string]string{}}, registry: registry}
+	spec := rulesSpec{name: "x", scope: "s", slugs: []string{"unexpected-container-image"}}
+
+	for _, tc := range []struct {
+		name      string
+		allowlist bool
+		want      bool
+	}{
+		{"admin", true, true},
+		{"member", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec.rulesContext = rulesContext{namespace: "monitoring", format: formatStandard, allowlist: tc.allowlist}
+			rules, err := p.buildRules(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(rules.data), "internal"); got != tc.want {
+				t.Fatalf("extras present = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

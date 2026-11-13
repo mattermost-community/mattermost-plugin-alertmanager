@@ -6,6 +6,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 )
 
 type channelLookupAPI struct {
@@ -50,21 +51,40 @@ func TestRemovedAddSyntaxMessage(t *testing.T) {
 	}
 }
 
-func TestAddRejectsBeforeAnySideEffect(t *testing.T) {
+// sysadminPlugin is a plugin whose caller passes every access check, so a test
+// can reach the handler it is about.
+func sysadminPlugin(api plugin.API) *Plugin {
 	p := &Plugin{}
+	p.API = &sysadminAPI{API: api}
+	p.client = pluginapi.NewClient(p.API, nil)
+	return p
+}
+
+type sysadminAPI struct{ plugin.API }
+
+func (f *sysadminAPI) HasPermissionTo(string, *model.Permission) bool { return true }
+
+func TestAddRejectsBeforeAnySideEffect(t *testing.T) {
+	p := sysadminPlugin(&channelLookupAPI{channels: map[string]*model.Channel{"c1": {Id: "c1", Type: model.ChannelTypeOpen, TeamId: "t1"}}})
 	cases := map[string]string{
-		"/alertmanager config add":                                       "Usage",
-		"/alertmanager config add a b c d":                               "Usage",
-		"/alertmanager config add ops alerts http://am:9093 compute":     "no longer arguments",
-		"/alertmanager config add not-a-url":                             "Invalid Alertmanager URL",
-		"/alertmanager config add http://am:9093 no-such-runbook":        "unknown target",
-		"/alertmanager config add-custom":                                "Usage",
-		"/alertmanager config add-custom ops alerts http://am:9093 slo":  "no longer arguments",
-		"/alertmanager config add-custom not-a-url slo":                  "Invalid Alertmanager URL",
-		"/alertmanager config add-custom http://am:9093 a b":             "Usage",
-		"/alertmanager config add-custom http://am:9093 crd":             "Usage",
-		"/alertmanager config add-custom http://am:9093 slo namespace=B": "Invalid `namespace`",
-		"/alertmanager config add http://am:9093 compute namespace=B_d!": "Invalid `namespace`",
+		"/alertmanager config add":                                                                  "Usage",
+		"/alertmanager config add a b c d":                                                          "Usage",
+		"/alertmanager config add ops alerts http://am:9093 compute":                                "no longer arguments",
+		"/alertmanager config add not-a-url":                                                        "Invalid Alertmanager URL",
+		"/alertmanager config add http://am:9093 no-such-runbook":                                   "unknown target",
+		"/alertmanager config add-custom":                                                           "Usage",
+		"/alertmanager config add-custom ops alerts http://am:9093 slo":                             "no longer arguments",
+		"/alertmanager config add-custom not-a-url slo":                                             "Invalid Alertmanager URL",
+		"/alertmanager config add-custom http://am:9093 a b":                                        "Usage",
+		"/alertmanager config add-custom http://am:9093 crd":                                        "Usage",
+		"/alertmanager config add-custom http://am:9093 slo namespace=B":                            "Invalid `namespace`",
+		"/alertmanager config add http://am:9093 compute namespace=B_d!":                            "Invalid `namespace`",
+		"/alertmanager config add http://am:9093 compute mm-namespace=chat":                         "only apply to the `mattermost` target",
+		"/alertmanager config add http://am:9093 mattermost mm-namespace=Bad_NS":                    "mm-namespace",
+		"/alertmanager config add http://am:9093 mattermost-operator":                               "unknown target",
+		"/alertmanager config add http://am:9093 compute mm-postgres-pod=true":                      "only apply to the `mattermost` target",
+		"/alertmanager config add http://am:9093 mattermost mm-postgres-pod=true":                   "mm-namespace",
+		"/alertmanager config add http://am:9093 mattermost mm-namespace=chat mm-db-replicas=maybe": "true or false",
 	}
 	for cmd, want := range cases {
 		got := p.executeCommand(&model.CommandArgs{Command: cmd, ChannelId: "c1", UserId: "u1"})
@@ -78,9 +98,7 @@ func TestAddRejectsBeforeAnySideEffect(t *testing.T) {
 // are consumed as words rather than mistaken for the target: each command gets
 // past argument parsing and stops at the destination check.
 func TestAddFormatAndOnAreWordsInAnyOrder(t *testing.T) {
-	dm := &channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}}
-	p := &Plugin{}
-	p.API = dm
+	p := sysadminPlugin(&channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}})
 	for _, cmd := range []string{
 		"/alertmanager config add http://am:9093",
 		"/alertmanager config add http://am:9093 crd",
@@ -96,9 +114,7 @@ func TestAddFormatAndOnAreWordsInAnyOrder(t *testing.T) {
 }
 
 func TestAddCustomFormatAndOnAreWords(t *testing.T) {
-	dm := &channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}}
-	p := &Plugin{}
-	p.API = dm
+	p := sysadminPlugin(&channelLookupAPI{channels: map[string]*model.Channel{"dm1": {Id: "dm1", Type: model.ChannelTypeDirect}}})
 	for _, cmd := range []string{
 		"/alertmanager config add-custom http://am:9093 slo",
 		"/alertmanager config add-custom http://am:9093 slo crd",
@@ -125,9 +141,8 @@ func TestSplitAddWords(t *testing.T) {
 
 func TestCurrentChannelDestination(t *testing.T) {
 	api := &channelLookupAPI{channels: map[string]*model.Channel{
-		"dm":   {Id: "dm", Type: model.ChannelTypeDirect},
-		"gm":   {Id: "gm", Type: model.ChannelTypeGroup},
-		"open": {Id: "open", Name: "alerts", TeamId: "t1", Type: model.ChannelTypeOpen},
+		"dm": {Id: "dm", Type: model.ChannelTypeDirect},
+		"gm": {Id: "gm", Type: model.ChannelTypeGroup},
 	}}
 	p := &Plugin{}
 	p.API = api
@@ -141,7 +156,6 @@ func TestCurrentChannelDestination(t *testing.T) {
 		{"unknown channel", "missing", "Could not look up this channel"},
 		{"direct message", "dm", "direct or group message"},
 		{"group message", "gm", "direct or group message"},
-		{"team channel reaches the permission check", "open", "plugin not fully initialized"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,8 +168,8 @@ func TestCurrentChannelDestination(t *testing.T) {
 }
 
 // TestAddAutocompleteHasNoTeamOrChannel pins the channel-implied design: the
-// typeahead offers the URL first, then target, format, and rotation, and has no
-// dynamic team or channel lists.
+// typeahead offers the URL first, then the target (or custom name), then the
+// trailing options, and has no dynamic team or channel lists.
 func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 	var config *model.AutocompleteData
 	for _, c := range getAutocompleteData().SubCommands {
@@ -163,7 +177,7 @@ func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 			config = c
 		}
 	}
-	for _, trigger := range []string{"add", "add-custom"} {
+	for trigger, slots := range map[string]int{"add": addOptionSlots, "add-custom": addCustomOptionSlots} {
 		var node *model.AutocompleteData
 		for _, c := range config.SubCommands {
 			if c.Trigger == trigger {
@@ -173,32 +187,16 @@ func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 		if node == nil {
 			t.Fatalf("config %s missing from typeahead", trigger)
 		}
-		for _, a := range node.Arguments {
-			if a.Type == model.AutocompleteArgTypeDynamicList {
-				t.Errorf("config %s still has a dynamic list argument: %q", trigger, a.HelpText)
-			}
+		if len(node.Arguments) != 2+slots {
+			t.Fatalf("config %s has %d args, want am-url, target/name and %d option slots", trigger, len(node.Arguments), slots)
 		}
-	}
-
-	// format is the argument after the URL (and target, for add).
-	for trigger, wantArgs := range map[string]int{"add": 4, "add-custom": 4} {
-		var node *model.AutocompleteData
-		for _, c := range config.SubCommands {
-			if c.Trigger == trigger {
-				node = c
-			}
+		if node.Arguments[0].Type != model.AutocompleteArgTypeStaticList {
+			t.Errorf("config %s first arg must be the Alertmanager URL list", trigger)
 		}
-		if len(node.Arguments) != wantArgs {
-			t.Fatalf("config %s has %d args, want %d (am-url, target/name, format, on)", trigger, len(node.Arguments), wantArgs)
-		}
-		format, ok := node.Arguments[2].Data.(*model.AutocompleteStaticListArg)
-		if !ok || len(format.PossibleArguments) != 2 ||
-			format.PossibleArguments[0].Item != "crd" || format.PossibleArguments[1].Item != "standard" {
-			t.Fatalf("config %s third arg should list crd and standard, got %#v", trigger, node.Arguments[2].Data)
-		}
-		for _, it := range format.PossibleArguments {
-			if it.HelpText == "" {
-				t.Errorf("config %s format %q needs a hover explanation", trigger, it.Item)
+		for _, a := range node.Arguments[2:] {
+			dyn, ok := a.Data.(*model.AutocompleteDynamicListArg)
+			if !ok || dyn.FetchURL != addOptionsFetchURL() || !a.Required {
+				t.Errorf("config %s option slot must be a required dynamic list on the add-options path: %+v", trigger, a)
 			}
 		}
 	}

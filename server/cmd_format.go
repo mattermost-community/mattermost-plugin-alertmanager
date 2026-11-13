@@ -11,11 +11,32 @@ import (
 // formatVerbs are the words under `/alertmanager format`.
 var formatVerbs = []string{"diff", "export", "rules"}
 
+// isRulesTarget reports whether word names a group, a runbook slug, or `all`.
+func isRulesTarget(word string) bool {
+	_, _, err := resolveAddTarget(word)
+	return err == nil
+}
+
+// rulesOptions are the parsed words of `/alertmanager format rules`. The parser
+// reads every word any format verb takes into this one type, and
+// handleFormatGroup hands export and diff only their own fields.
+type rulesOptions struct {
+	format    string // "" when not given
+	namespace string // CRD output only, validated
+	target    string // one group or runbook, "" for the full samples
+
+	// mattermost target only
+	mmNamespace string // namespace Mattermost runs in
+	mmName      string // Mattermost custom resource name
+	mmOptions   mattermostOptions
+}
+
 // parseFormatArgs reads the words after `format <verb>`: an optional
-// `standard` or `crd`, and an optional `namespace=<ns>`. Returns a user-facing
-// message when the words are not understood.
-func parseFormatArgs(words []string) (exportOptions, string) {
-	var opts exportOptions
+// `standard` or `crd`, an optional group or runbook name, and an optional
+// `namespace=<ns>`. Returns a user-facing message when the words are not
+// understood.
+func parseFormatArgs(words []string) (rulesOptions, string) {
+	var opts rulesOptions
 	namespace, rest := extractFlagValue(words, "namespace=")
 	if namespace != "" {
 		if err := validateCRDNamespace(namespace); err != nil {
@@ -23,16 +44,39 @@ func parseFormatArgs(words []string) (exportOptions, string) {
 		}
 		opts.namespace = namespace
 	}
-	if len(rest) > 1 {
-		return opts, ":warning: Too many words. Use `standard` or `crd`, and optionally `namespace=<ns>`."
+	opts.mmNamespace, rest = extractFlagValue(rest, mmNamespaceFlag)
+	opts.mmName, rest = extractFlagValue(rest, mmNameFlag)
+	var optsErr error
+	rest, opts.mmOptions, optsErr = extractMattermostOptions(rest)
+	if optsErr != nil {
+		return opts, fmt.Sprintf(":warning: %v", optsErr)
 	}
-	if len(rest) == 1 {
-		switch f := strings.ToLower(rest[0]); f {
-		case formatStandard, formatCRD:
-			opts.format = f
+
+	tooMany := false
+	var unknown []string
+	for _, word := range rest {
+		lower := strings.ToLower(word)
+		switch {
+		case lower == formatStandard || lower == formatCRD:
+			tooMany = tooMany || opts.format != ""
+			opts.format = lower
+		case isRulesTarget(lower):
+			tooMany = tooMany || opts.target != ""
+			if lower != "all" {
+				opts.target = lower
+			}
 		default:
-			return opts, fmt.Sprintf(":warning: Unknown format `%s`. Use `standard` or `crd`.", rest[0])
+			unknown = append(unknown, word)
 		}
+	}
+	if tooMany || len(unknown) > 1 {
+		return opts, ":warning: Too many words. Use `standard` or `crd`, a group or runbook name, and optionally `namespace=<ns>`."
+	}
+	if len(unknown) == 1 {
+		return opts, fmt.Sprintf(":warning: Unknown format or target `%s`. Use `standard` or `crd`, or a group such as `security`.", unknown[0])
+	}
+	if opts.target != mattermostGroup && (opts.mmNamespace != "" || opts.mmName != "" || opts.mmOptions.given) {
+		return opts, fmt.Sprintf(":warning: `mm-namespace`, `mm-name`, `mm-db-replicas` and `mm-postgres-pod` only apply to `%s`.", mattermostGroup)
 	}
 	return opts, ""
 }
@@ -42,6 +86,11 @@ func parseFormatArgs(words []string) (exportOptions, string) {
 //	format export [standard|crd] [namespace=<ns>]   this channel's config plus its rules
 //	format diff [standard|crd]                      Alertmanager config only, against what is loaded
 //	format rules [standard|crd] [namespace=<ns>]    the sample Prometheus rules only
+//	format rules <group|slug> [standard|crd] [namespace=<ns>]
+//	                                                one group's rules, or one runbook's
+//	format rules mattermost [mm-namespace=<ns>] [mm-name=<cr>] [mm-db-replicas=true] [mm-postgres-pod=true] [standard|crd] [namespace=<ns>]
+//	                                                the mattermost group's rules, plus the operator's
+//	                                                Mattermost rules when mm-namespace is given
 func (p *Plugin) handleFormatGroup(args *model.CommandArgs) (string, error) {
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {
@@ -56,12 +105,14 @@ func (p *Plugin) handleFormatGroup(args *model.CommandArgs) (string, error) {
 	if msg != "" {
 		return msg, nil
 	}
+	if opts.target != "" && verb != "rules" {
+		return fmt.Sprintf(":warning: `%s` only applies to `format rules`.", opts.target), nil
+	}
 	switch verb {
 	case "export":
-		return p.handleExport(args, opts)
+		return p.handleExport(args, exportOptions{format: opts.format, namespace: opts.namespace})
 	case "diff":
-		opts.diff = true
-		return p.handleExport(args, opts)
+		return p.handleDiff(args, diffOptions{format: opts.format})
 	default:
 		return p.handleFormatRules(args, opts)
 	}

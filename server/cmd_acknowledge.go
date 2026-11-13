@@ -18,10 +18,6 @@ const kvKeyAcknowledgedReceivers = "acknowledged-receivers:v1"
 const maxAcknowledgedReceivers = 500
 
 func (p *Plugin) handleAcknowledge(args *model.CommandArgs) (string, error) {
-	if err := p.requireSystemAdmin(args.UserId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	action := ""
 	name := ""

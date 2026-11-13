@@ -12,9 +12,9 @@ More than 5% of Mattermost API calls are returning 5xx status codes over
 a 5-minute window. The alert fires on:
 
 ```promql
-sum(rate(mattermost_api_calls_total{status_code=~"5.."}[5m]))
+sum(rate(mattermost_api_time_count{status_code=~"5.."}[5m]))
 /
-sum(rate(mattermost_api_calls_total[5m]))
+sum(rate(mattermost_api_time_count[5m]))
 > 0.05
 ```
 
@@ -42,7 +42,7 @@ kubectl logs -n <namespace> -l app=mattermost --since=15m \
 # READ: the handler with the highest 5xx rate is your bottleneck.
 #   Cross-reference with recent deployments.
 sum by (handler) (
-  rate(mattermost_api_calls_total{status_code=~"5.."}[5m])
+  rate(mattermost_api_time_count{status_code=~"5.."}[5m])
 )
 ```
 
@@ -59,7 +59,7 @@ kubectl get pods -n <namespace> -l app=mattermost \
 
 ### 1. Identify the failing handler
 
-The `handler` label in `mattermost_api_calls_total` tells you which
+The `handler` label in `mattermost_api_time_count` tells you which
 endpoint is failing. Common 5xx-generating endpoints:
 
 | Handler | Common cause |
@@ -155,7 +155,7 @@ kubectl rollout undo deployment -n <namespace> mattermost
 
 ## Required Prometheus labels
 
-`mattermost_api_calls_total` with a `status_code` label is exported by
+`mattermost_api_time_count` (the call count of the `mattermost_api_time` histogram) carries `handler` and `status_code` labels and is exported by
 Mattermost when metrics are enabled. No additional labels are required.
 
 ## Related runbooks

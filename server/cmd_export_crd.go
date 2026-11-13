@@ -71,10 +71,11 @@ func sanitizeK8sName(s string) string {
 const crdNameMaxLen = 253
 
 // crdNameReserve is the room left for the longest prefix + suffix a generated
-// object name can carry ("mattermost-alertmanager-" + base + "-<n>" +
-// "-fallback"), so crdBaseName's budget guarantees the final decorated name fits
-// crdNameMaxLen regardless of which of the three names uses it.
-const crdNameReserve = 48
+// object name can carry ("mattermost-alertmanager-" + base + "-<n>" or
+// "-mattermost-operator" + "-fallback", the longest pack suffix), so crdBaseName's budget guarantees the
+// final decorated name fits crdNameMaxLen regardless of which of the three names
+// uses it.
+const crdNameReserve = 64
 
 // crdBaseName builds the team-qualified base shared by every generated CRD object
 // name (Secret, AlertmanagerConfig, fallback receiver). Channel names are unique
@@ -121,6 +122,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 		url     string
 		team    string
 		channel string
+		pack    string
 		specs   []crdReceiverSpec
 	}
 	order := make([]string, 0)
@@ -128,11 +130,14 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 
 	for _, ac := range scoped {
 		url := p.webhookURLForReceiver(ac)
-		g := groups[url]
+		// A pack gets its own AlertmanagerConfig: it gates the parent route on
+		// alertname, which would hide any runbook receiver sharing the webhook.
+		key := url + "|" + ac.Pack
+		g := groups[key]
 		if g == nil {
-			g = &group{url: url, team: ac.Team, channel: ac.Channel}
-			groups[url] = g
-			order = append(order, url)
+			g = &group{url: url, team: ac.Team, channel: ac.Channel, pack: ac.Pack}
+			groups[key] = g
+			order = append(order, key)
 		}
 		slug := receiverBaseSlug(ac.Name)
 		g.specs = append(g.specs, crdReceiverSpec{
@@ -141,18 +146,35 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 			channel:           ac.Channel,
 			runbookDefaultURL: p.runbookDefaultURL(slug),
 			iconURL:           p.siteURL() + webhookIconURL,
-			custom:            ac.Custom,
+			kind:              ac.resolvedKind(),
 		})
 	}
 
+	runbookGroups := 0
+	for _, key := range order {
+		if groups[key].pack == "" {
+			runbookGroups++
+		}
+	}
+
 	var out strings.Builder
-	for i, url := range order {
-		g := groups[url]
+	numbered := 0
+	for i, key := range order {
+		g := groups[key]
 		// Suffix disambiguates when one channel has receivers across multiple
-		// shared webhooks (multiple /alertmanager config add groups).
+		// shared webhooks (multiple /alertmanager config add groups). Only
+		// runbook groups are counted, so adding the operator alerts to a channel
+		// never renames the runbook group's objects.
 		suffix := ""
-		if len(order) > 1 {
-			suffix = fmt.Sprintf("-%d", i+1)
+		if g.pack != "" {
+			// The alert set always carries its own name, or it would produce the
+			// same object names as the runbook group and overwrite it.
+			suffix = "-" + g.pack
+		} else {
+			numbered++
+			if runbookGroups > 1 {
+				suffix = fmt.Sprintf("-%d", numbered)
+			}
 		}
 		// Team-qualified base so two teams sharing a channel name can't produce
 		// colliding object names in the same namespace (CL-34/CL-35).
@@ -192,7 +214,7 @@ func (p *Plugin) assembleCRDManifest(scoped []alertConfig, namespace string) (st
 // the same message.
 func (p *Plugin) handleExportCRD(args *model.CommandArgs, scoped []alertConfig, namespace string) (string, error) {
 	manifest, crCount := p.assembleCRDManifest(scoped, namespace)
-	rules, rulesReason := p.rulesFileForChannel(namespace, scoped, formatCRD)
+	rules, rulesReason := p.rulesFileForChannel(rulesContext{namespace: namespace, format: formatCRD, allowlist: true}, scoped)
 
 	if err := p.dmCRDBundle(args.UserId, manifest, crCount, namespace, rules); err != nil {
 		// DM failed — inline the manifest so the operator config isn't lost.

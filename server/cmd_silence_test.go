@@ -1,9 +1,18 @@
 package main
 
 import (
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/prometheus/alertmanager/api/v2/models"
+
+	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
 )
 
 func TestParseSilenceDuration(t *testing.T) {
@@ -79,23 +88,205 @@ func TestClassifySilenceTarget(t *testing.T) {
 	}
 }
 
-func TestSilencePlanGroupUsesChannelRunbooks(t *testing.T) {
-	configs := []alertConfig{
-		{Name: "high-cpu-usage--team-chan", AlertManagerURL: "http://am"},
-		{Name: "mattermost-api-high-latency--team-chan", AlertManagerURL: "http://am"},
-		{Name: "custom-hook--team-chan", AlertManagerURL: "http://am", Custom: true},
+func alertFor(t *testing.T, runbook string) string {
+	t.Helper()
+	for alert, rb := range shippedAlertRunbooks() {
+		if rb == runbook {
+			return alert
+		}
 	}
-	got, matchers, err := silencePlan(silenceScopeGroup, "compute", configs)
+	t.Fatalf("no shipped alert for runbook %s", runbook)
+	return ""
+}
+
+func planTestConfigs() []alertConfig {
+	return []alertConfig{
+		{Name: "high-cpu-usage--team-chan", AlertManagerURL: "http://am-a"},
+		{Name: "mattermost-api-high-latency--team-chan", AlertManagerURL: "http://am-b"},
+		{Name: "custom-hook--team-chan", AlertManagerURL: "http://am-c", Kind: kindCustom},
+		{Name: packReceiverSlug + "--team-chan", AlertManagerURL: "http://am-d", Kind: kindPack, Pack: packReceiverSlug},
+	}
+}
+
+func TestSilencePlanGroupUsesChannelRunbooks(t *testing.T) {
+	jobs, err := silencePlan(silenceScopeGroup, "compute", planTestConfigs())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "high-cpu-usage--team-chan" {
-		t.Fatalf("configs = %+v", got)
+	if len(jobs) != 1 || len(jobs[0].configs) != 1 || jobs[0].configs[0].Name != "high-cpu-usage--team-chan" {
+		t.Fatalf("jobs = %+v", jobs)
 	}
-	if len(matchers) != 1 || !matchers[0].Regex || matchers[0].Name != "runbook" {
-		t.Fatalf("matchers = %+v", matchers)
+	if m := jobs[0].matchers; len(m) != 1 || !m[0].Regex || m[0].Name != "runbook" {
+		t.Fatalf("matchers = %+v", m)
 	}
-	if _, _, err := silencePlan(silenceScopeGroup, "database", configs); err == nil {
+	if _, err := silencePlan(silenceScopeGroup, "database", planTestConfigs()); err == nil {
 		t.Fatal("expected a group with no receivers in the channel to fail")
+	}
+}
+
+func TestSilencePlanCoversPackAlerts(t *testing.T) {
+	for _, scope := range []struct {
+		name   string
+		scope  silenceScope
+		target string
+	}{
+		{"all", silenceScopeAll, "all"},
+		{"mattermost group", silenceScopeGroup, mattermostGroup},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			jobs, err := silencePlan(scope.scope, scope.target, planTestConfigs())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pack *silenceJob
+			for i := range jobs {
+				if jobs[i].matchers[0].Name == "alertname" {
+					pack = &jobs[i]
+				}
+			}
+			if pack == nil || !pack.matchers[0].Regex || len(pack.configs) != 1 || pack.configs[0].AlertManagerURL != "http://am-d" {
+				t.Fatalf("want one alertname silence on the pack backend, got %+v", jobs)
+			}
+		})
+	}
+
+	jobs, err := silencePlan(silenceScopeGroup, "compute", planTestConfigs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range jobs {
+		if j.matchers[0].Name == "alertname" {
+			t.Fatal("a compute silence must not reach the pack's alerts")
+		}
+	}
+}
+
+func TestSilencePlanAlertStaysInChannelRuleSet(t *testing.T) {
+	configs := planTestConfigs()
+	cpu := alertFor(t, "high-cpu-usage")
+
+	jobs, err := silencePlan(silenceScopeAlert, cpu, configs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || len(jobs[0].configs) != 1 || jobs[0].configs[0].AlertManagerURL != "http://am-a" {
+		t.Fatalf("alert should be silenced only where its receiver sends it: %+v", jobs)
+	}
+	if m := jobs[0].matchers; len(m) != 1 || m[0].Name != "alertname" || m[0].Value != cpu || m[0].Regex {
+		t.Fatalf("matchers = %+v", m)
+	}
+
+	packNames, err := packAlertnames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err = silencePlan(silenceScopeAlert, packNames[0], configs)
+	if err != nil || len(jobs[0].configs) != 1 || jobs[0].configs[0].AlertManagerURL != "http://am-d" {
+		t.Fatalf("pack alert should go to the pack receiver: %+v, %v", jobs, err)
+	}
+
+	for _, name := range []string{alertFor(t, "persistent-volume-full"), "SomeoneElsesAlert", "MyCustomAlert"} {
+		if _, err := silencePlan(silenceScopeAlert, name, configs); err == nil {
+			t.Errorf("%s is not in this channel's rule set and must be refused", name)
+		}
+	}
+	if _, err := silencePlan(silenceScopeAlert, packNames[0], configs[:3]); err == nil {
+		t.Error("a pack alert needs a pack receiver in the channel")
+	}
+
+	postgres, pgErr := postgresAlertnames()
+	if pgErr != nil {
+		t.Fatal(pgErr)
+	}
+	pgJobs, pgErr := silencePlan(silenceScopeAlert, postgres[0], configs)
+	if pgErr != nil || len(pgJobs[0].configs) != 1 || pgJobs[0].configs[0].AlertManagerURL != "http://am-d" {
+		t.Fatalf("the pack route claims %s, so the pack receiver must be able to silence it: %+v, %v", postgres[0], pgJobs, pgErr)
+	}
+	if !slices.Contains(channelAlertNames(configs), postgres[0]) {
+		t.Errorf("silence list must show silences on %s for a pack channel", postgres[0])
+	}
+}
+
+func TestSilenceTouchesChannel(t *testing.T) {
+	str := func(s string) *string { return &s }
+	flag := func(b bool) *bool { return &b }
+	silence := func(name, value string, regex, equal bool) *models.GettableSilence {
+		return &models.GettableSilence{Silence: models.Silence{Matchers: models.Matchers{
+			{Name: str(name), Value: str(value), IsRegex: flag(regex), IsEqual: flag(equal)},
+		}}}
+	}
+	runbooks := []string{"high-cpu-usage"}
+	alerts := []string{"HighCPUUsage"}
+
+	cases := []struct {
+		name string
+		s    *models.GettableSilence
+		want bool
+	}{
+		{"exact runbook", silence("runbook", "high-cpu-usage", false, true), true},
+		{"other runbook", silence("runbook", "persistent-volume-full", false, true), false},
+		{"exact alertname", silence("alertname", "HighCPUUsage", false, true), true},
+		{"regex alertname", silence("alertname", "High.*", true, true), true},
+		{"regex is anchored", silence("alertname", "CPU", true, true), false},
+		{"regex that matches everything else", silence("alertname", "Other.*", true, true), false},
+		{"negative matcher", silence("alertname", "HighCPUUsage", false, false), false},
+		{"unrelated label", silence("namespace", "prod", false, true), false},
+		{"invalid regex", silence("alertname", "(", true, true), false},
+		{"oversized regex", silence("alertname", strings.Repeat("a", maxSilenceRegexLen+1), true, true), false},
+		{"nil silence", nil, false},
+	}
+	for _, c := range cases {
+		if got := silenceTouchesChannel(c.s, runbooks, alerts); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestListSilencesShowsOnlyThisChannelsSilences(t *testing.T) {
+	const (
+		mine      = "0c1b6c3e-5f0e-4c3a-9a55-2f9d1c7e8a10"
+		byRunbook = "11111111-1111-4111-8111-111111111111"
+		other     = "22222222-2222-4222-8222-222222222222"
+		recorded  = "33333333-3333-4333-8333-333333333333"
+	)
+	silence := func(id, matcherName, matcherValue string) string {
+		return `{"id":"` + id + `","status":{"state":"active"},"matchers":[{"name":"` + matcherName + `","value":"` + matcherValue + `","isRegex":false,"isEqual":true}],` +
+			`"startsAt":"2026-01-01T00:00:00Z","endsAt":"2099-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","createdBy":"x","comment":"c"}`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("[" + strings.Join([]string{
+			silence(byRunbook, "runbook", "high-cpu-usage"),
+			silence(other, "runbook", "persistent-volume-full"),
+			silence(recorded, "namespace", "prod"),
+		}, ",") + "]"))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, ipNet, err := net.ParseCIDR("127.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alertmanager.SetAllowedNets([]*net.IPNet{ipNet})
+	t.Cleanup(func() { alertmanager.SetAllowedNets(nil) })
+
+	p, _ := newSilenceKVPlugin()
+	p.setConfiguration(newConfiguration([]alertConfig{
+		{Name: "high-cpu-usage--ateam-alerts", Team: "ateam", Channel: "alerts", WebhookID: "h1", AlertManagerURL: srv.URL},
+	}, "", 0, "", "", 0))
+	if err = p.recordSilence(recorded, silenceRecord{ChannelID: "chanA", AMURL: srv.URL, CreatedBy: "u1"}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := p.handleListSilences(&model.CommandArgs{ChannelId: "chanA", UserId: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{byRunbook, recorded} {
+		if !strings.Contains(out, id) {
+			t.Errorf("silence %s applies to this channel and should be listed:\n%s", id, out)
+		}
+	}
+	if strings.Contains(out, other) {
+		t.Errorf("a silence for another channel's runbook must not be listed:\n%s", out)
 	}
 }

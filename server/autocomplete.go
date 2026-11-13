@@ -8,7 +8,9 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-const validateTargetsPath = "/autocomplete/validate-targets"
+const (
+	validateTargetsPath = "/autocomplete/validate-targets"
+)
 
 // setHelpText is the hover text for a group offered by validate.
 var setHelpText = map[string]string{

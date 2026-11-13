@@ -57,17 +57,17 @@ a real command, so a custom receiver named `help` still works as an argument.
 |---|---|---|---|
 | `alerts` | `[firing]` | Firing alerts whose `runbook=` label matches a receiver in this channel. | any user |
 | `alerts status` | _(none)_ | Alertmanager version + uptime per backend | any user |
-| `silence create` | `<TTL> <alert\|group\|all>` | Mute matching alerts in Alertmanager. TTL is required: `30m`, or whole hours `1h`–`72h`. An alert name or a group can use the full range. `all` is every runbook in this channel, is capped at `1h`, and requires system_admin. The silence lives in Alertmanager, so other channels that receive the same alert go quiet too. A custom receiver has no `runbook` label, so a group or `all` does not match it. `silence <TTL> <target>` without `create` also works. | alert or group: team_admin. `all`: sysadmin |
-| `silence list` | _(none)_ | Active Alertmanager silences, grouped by AM URL | any user |
-| `silence expire` | `<name> <silence-id>` | Expire a silence created from this channel with `silence create` | team admin |
+| `silence create` | `<TTL> <alert\|group\|all>` | Mute matching alerts in Alertmanager. TTL is required: `30m`, or whole hours `1h`–`72h`. An alert name or a group can use the full range. `all` is every runbook in this channel, is capped at `1h`, and requires system_admin. The silence lives in Alertmanager, so other channels that receive the same alert go quiet too. A custom receiver has no `runbook` label, so a group or `all` does not match it. `silence <TTL> <target>` without `create` also works. | sysadmin |
+| `silence list` | _(none)_ | Active silences that apply to this channel, grouped by AM URL: the ones created from it, and the ones whose `runbook` or `alertname` matchers select its alerts. Other silences on the same Alertmanager are not shown. | any user |
+| `silence expire` | `<name> <silence-id>` | Expire a silence created from this channel with `silence create` | sysadmin |
 | `config` / `config list` | _(none)_ | Receivers bound to this channel (table with Rotated column) | any user |
 | `config <name>` | `<name>` | Detail card for one receiver. Not offered in typeahead, because Mattermost cannot mix subcommands and free text at one level. | team_admin or sysadmin |
-| `config add` | `<am-url> [target] [standard\|crd] [on] [namespace=]` | Create receivers in the channel you run it in, for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`standard`, the default), or an `AlertmanagerConfig` v1alpha1 + Secret (`crd`; `namespace=` default `monitoring`). The rules for the runbooks in that add are attached to the same DM. Trailing `on` opts in to rotation reminders. The channel must already exist, and DMs and group messages are rejected. | team_admin of this channel's team, or sysadmin |
+| `config add` | `<am-url> [target] [standard\|crd] [on] [namespace=] [mm-namespace=] [mm-name=]` | Create receivers in the channel you run it in, for a group set OR individual runbook slug. One shared Mattermost webhook per add invocation. DMs assembled `receivers.yml` + `routes.yml` (`standard`, the default), or an `AlertmanagerConfig` v1alpha1 + Secret (`crd`; `namespace=` default `monitoring`). The rules for the runbooks in that add are attached to the same DM. Trailing `on` opts in to rotation reminders. The channel must already exist, and DMs and group messages are rejected. | team_admin of this channel's team, or sysadmin With target `mattermost`, `mm-namespace=<ns>` also creates one receiver for the alerts the Mattermost Operator generates. It routes by alert name and attaches the matching rules to the same DM. |
 | `config add-custom` | `<am-url> <name> [standard\|crd] [on] [namespace=<ns>] [webhook-host=<url>]` | In the channel you run it in, create ONE generic (non-runbook) receiver named `<name>--<team>-<channel>` with its own webhook. `standard` (default) DMs plain `alertmanager.yml`; `crd` DMs Prometheus Operator objects; `on` opts into rotation reminders. No `runbook=` route is generated — you wire the matcher manually (the DM includes a commented stub). For custom alerts that don't map to a shipped runbook. | sysadmin / team_admin |
 | `config validate` | `[all\|group\|name] [webhook-test\|end-to-end\|simulate <labels>]` | Pipeline diagnostics or read-only route simulation | sysadmin / team_admin |
 | `format export` | `[standard\|crd] [namespace=<ns>]` | DMs every receiver and route in this channel, with the Prometheus rules for the runbooks those receivers cover attached to the same message. `standard` (default): `alertmanager.yml` pieces plus a plain rules file. `crd`: AlertmanagerConfig + Secret plus a PrometheusRule named `mattermost-alertmanager-rules-<team>-<channel>` (`namespace=` defaults to `monitoring`). | team_admin or sysadmin |
 | `format diff` | `[standard\|crd]` | Alertmanager config only, no rules. Compares this channel to Alertmanager's loaded config. With no format, detects standard or CRD from the loaded config. | sysadmin |
-| `format rules` | `[standard\|crd] [namespace=<ns>]` | Rules only, all 36, not limited to this channel. `standard` (default): links to view or download the plain rules file. `crd`: DMs a ready-to-apply `PrometheusRule` (`monitoring.coreos.com/v1`). | any user |
+| `format rules` | `[standard\|crd] [group\|runbook] [namespace=<ns>] [mm-namespace=<ns>] [mm-name=<cr>]` | Rules only, all 36, not limited to this channel. `standard` (default): links to view or download the plain rules file. `crd`: DMs a ready-to-apply `PrometheusRule` (`monitoring.coreos.com/v1`). | any user `all` is every group, the same as leaving the group out, so `all crd` gives one PrometheusRule with all 36. With a group or runbook name, such as `security crd`: only those rules, as the same `mattermost-alertmanager-rules-<group>` object `config add` sends. With `mattermost`: that group's rules only. Add `mm-namespace` for the operator's 13 Mattermost rules too, filled in for one install (`mm-db-replicas=true` adds replica lag, `mm-postgres-pod=true` adds in-cluster Postgres pod alerts; `mm-name` defaults to `mattermost`; the rules match the pod label `installation.mattermost.com/installation`, which your ServiceMonitor must copy onto the series). |
 | `config rotate` | `<name>` \| `all overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
 | `config remove` | `<name>` \| `<set> force` \| `all force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
 | `admin repair` | `[prune] [force]` | Bare is read-only: checks the receiver-list KV store and lists receivers whose webhook was deleted out of band. `prune` removes those receivers (the background job does the same every 5 minutes). `force` rewrites a corrupt KV blob from the plugin's last-known in-memory list. `force` is recovery-only. | sysadmin |
@@ -88,8 +88,12 @@ in the channel.
 `/alertmanager silence create` writes a silence in Alertmanager. It does not
 change `slack_configs`.
 
-* An **alert** (`HighCPUUsage`) matches `alertname` exactly. A team
-  admin can set the TTL from `30m` through `72h`.
+* An **alert** (`HighCPUUsage`) matches `alertname` exactly, and it must
+  be one this channel's receivers carry: an alert from the shipped rules
+  for the channel's runbook receivers, or one of the operator alerts when
+  the channel has the Mattermost operator receiver. The silence goes only
+  to the Alertmanagers of the receivers that carry it. A team admin can
+  set the TTL from `30m` through `72h`.
 * A **group** (`compute`, `database`, `mattermost`, and the other
   scaffold sets) matches the `runbook` labels of that group's
   receivers in this channel. Same TTL range as one alert. `compute`
@@ -100,11 +104,13 @@ change `slack_configs`.
   cannot be longer than `1h` (`30m` or `1h`). Only a system admin can
   run it, because it quiets every channel that receives those alerts
   on the same Alertmanager.
-* A **custom receiver** (`add-custom`) has no `runbook` label. A group
-  silence and `all` both skip it, so that alert keeps firing. Mute it
-  by typing its alert name. This is the uncommon path: a custom
-  receiver exists because the alert does not belong to a shipped
-  runbook.
+* The **Mattermost operator receiver** has no `runbook` label either. The
+  `mattermost` group and `all` add a second silence on its alert names, so
+  they cover it.
+* A **custom receiver** (`add-custom`) has no `runbook` label and the
+  plugin does not know which alerts it takes. A group silence and `all`
+  skip it, and an alert name is refused unless a runbook or operator
+  receiver in the channel carries it. Mute custom alerts in Alertmanager.
 
 ## How receiver names work
 

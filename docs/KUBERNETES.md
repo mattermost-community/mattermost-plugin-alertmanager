@@ -84,7 +84,7 @@ route:
       receiver: pod-crashloopbackoff--sre-alert-slo-channel
       continue: true
       group_by: ['alertname', 'namespace', 'pod']
-    # ... one route per receiver, 36 total for the standard set
+    # ... one route per receiver, 35 total for the standard set
 ```
 
 `group_by` includes `namespace` and `pod` on every generated route. Two pods firing the same alertname become two posts, because a bad image on one deployment is not the same incident as a bad image on another. An alert that does not have those labels stays one post: the missing labels are empty on every instance, so they still share a group. The generated routes set this themselves, so a parent route that only groups by `alertname` does not collapse them again.
@@ -328,6 +328,44 @@ defaultRules:
 Leave `kubeSchedulerRecording` on. The scheduler dashboards use those recording
 rules. To mute one stock alert instead of a whole group, use
 `defaultRules.disabled`, for example `{ KubeCPUOvercommit: true }`.
+
+### Mattermost operator alerts
+
+The Mattermost Operator can generate its own PrometheusRule for an install. Its alerts set `severity`, `summary` and `description`, and no `runbook` label, so the runbook routes above never match them. Add `mm-namespace` to the `mattermost` target and the plugin routes them by alert name through one extra receiver.
+
+From the channel that should receive them:
+
+```
+/alertmanager config add http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093 mattermost crd mm-namespace=<mattermost-namespace>
+```
+
+- **`mm-namespace`** is where Mattermost runs. **`mm-name`** is the Mattermost custom resource name and defaults to `mattermost`. The rules match on `namespace` and the installation name, not on the Service name, so it does not matter which Service Prometheus scrapes. For that to work the ServiceMonitor must copy the pod label `installation.mattermost.com/installation` onto the series (`podTargetLabels`). Prometheus exposes it as `installation_mattermost_com_installation`. Check with `count by (namespace, installation_mattermost_com_installation) (up{namespace="<ns>"})`. If it returns no installation label, add the setting below to the ServiceMonitor that scrapes Mattermost. Without `mm-namespace` you get the five runbook alerts only, as before.
+- The DM carries two Secret and AlertmanagerConfig pairs and one PrometheusRule named `mattermost-alertmanager-rules-mattermost`. It holds the group's runbook rules and the operator's 13 alerts with the thresholds filled in. Apply all of it, with the `release` label set to your Helm release.
+- The operator alerts get their own Secret and AlertmanagerConfig ending in `-mattermost-server`. Adding `mm-namespace` never renames the objects of the runbook group in the same channel.
+- The extra AlertmanagerConfig has one route on the pack's alert names (`alertname=~"^(MattermostServerDown|...)$"`). Severity picks the color: `critical` red, `warning` yellow, resolved green.
+- `format rules mattermost crd mm-namespace=<ns>` sends the rules alone. `format export` leaves the operator rules out, because the plugin does not keep the namespace or name.
+- Kubernetes only. Five of the 13 alerts (crash loop, CPU and memory pressure, missing limits) need kube-state-metrics. The other eight use `mattermost_*` metrics and `up`.
+- `config remove mattermost force` removes the operator receiver along with the group.
+
+This pack stands in for monitoring the Mattermost Operator does not ship yet. It mirrors the rules in the operator's draft monitoring PR ([mattermost-operator #466](https://github.com/mattermost/mattermost-operator/pull/466)): same groups, alert names and labels. If the operator creates these rules itself, stop adding the pack and remove the `mattermost.*` groups from the plugin's file. Nothing else needs to change, since the AlertmanagerConfig matches alert names only.
+
+To add the label to a ServiceMonitor you manage yourself:
+
+```yaml
+spec:
+  podTargetLabels:
+    - installation.mattermost.com/installation
+```
+
+Limits to know about:
+
+- With `mm-namespace`, the group's WebSocket drop and login failure rules are left out. `MattermostWebSocketDrop` and `MattermostLoginFailureSpike` from the operator pack cover them, scoped to one install instead of every Mattermost in the cluster.
+- `MattermostHighErrorRate` overlaps the operator's HTTP error alert. Both fire until a portable replacement lands.
+- `MattermostDBReplicaLag` is off by default. Add `mm-db-replicas=true` only if Mattermost reports replica lag. It does so once `SqlSettings.ReplicaLagSettings` has a lag query for each replica (set it in `config.json`, the System Console or with `mmctl config set`; there is no environment variable for it). Without that, or on a writer-only database such as a single RDS or Azure Postgres instance, the metric has no series and the alert can never fire. Having `MM_SQLSETTINGS_DATASOURCEREPLICAS` is not enough.
+- `mm-postgres-pod=true` adds `MattermostPostgresPodNotReady` (critical) and `MattermostPostgresPodCrashLooping` (warning) for a Postgres that runs as pods in the Mattermost namespace. It matches pods named `*postgres*` there, so the primary and each replica are covered and the `pod` label says which. These two alerts are plugin-only; the Mattermost Operator has no counterpart. Replication lag from a Postgres exporter is not included, because the exporter's series carry no label that ties them to one Mattermost.
+- `silence` and `validate` for `mattermost` cover the runbook alerts only. Silence the operator alerts in Alertmanager directly.
+
+Once your operator creates its own `<name>-rules` PrometheusRule, remove the `mattermost.*` groups from the plugin's file. The AlertmanagerConfig stays as it is, since it matches alert names only.
 
 ### Prometheus ignores objects without the release label
 

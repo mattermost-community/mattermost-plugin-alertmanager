@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -29,14 +30,22 @@ var runbookLabelLine = regexp.MustCompile(`(?m)^[ \t]+runbook:[ \t]+([A-Za-z0-9-
 // With `crd` the command instead DMs a ready-to-apply PrometheusRule CRD
 // manifest (monitoring.coreos.com/v1) that wraps the same groups block, for
 // teams running Prometheus Operator.
-func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts exportOptions) (string, error) {
+func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts rulesOptions) (string, error) {
 	namespace := opts.namespace
 	if namespace == "" {
 		namespace = defaultCRDNamespace
 	}
 
+	// The image-registry allowlist is admin-managed configuration, so only
+	// admins get its extra entries in the generated rules.
+	allowlist := p.requireChannelTeamAdmin(args.UserId, args.ChannelId) == nil
+
+	if opts.target != "" {
+		return p.handleTargetRules(args.UserId, rulesContext{namespace: namespace, format: opts.format, allowlist: allowlist}, opts)
+	}
+
 	if opts.format == formatCRD {
-		return p.handleRulesOperator(args.UserId, namespace)
+		return p.handleRulesOperator(args.UserId, namespace, allowlist)
 	}
 
 	base := fmt.Sprintf("%s/plugins/%s/public/help", p.siteURL(), Manifest.Id)
@@ -56,17 +65,83 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts exportOptions) 
 	), nil
 }
 
+// handleTargetRules DMs the rules for one group or runbook as a plain rules file
+// or a PrometheusRule manifest. For `mattermost`, mm-namespace adds the
+// operator's rules for that install. It carries no secrets.
+func (p *Plugin) handleTargetRules(userID string, rc rulesContext, opts rulesOptions) (string, error) {
+	if rc.format == "" {
+		rc.format = formatStandard
+	}
+	rules, errMsg := p.rulesForTarget(rc, opts)
+	if errMsg != "" {
+		return errMsg, nil
+	}
+
+	dm, appErr := p.API.GetDirectChannel(p.BotUserID, userID)
+	if appErr != nil {
+		return fmt.Sprintf(":warning: Could not open bot DM channel: %v", appErr.Error()), nil
+	}
+	fileID := p.attachRules(dm.Id, rules)
+	if fileID == "" {
+		return ":warning: Could not upload the rules file.", nil
+	}
+	post := &model.Post{
+		UserId:    p.BotUserID,
+		ChannelId: dm.Id,
+		Message:   "Alert rules." + rules.section(),
+		FileIds:   []string{fileID},
+	}
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		return fmt.Sprintf(":warning: Could not send DM: %v", appErr.Error()), nil
+	}
+	return fmt.Sprintf(":page_facing_up: **Sent `%s` (%d rules) to your DM with `@%s`.** Apply it:\n\n%s", rules.name, rules.count, webhookUsername, rules.apply), nil
+}
+
+// rulesForTarget builds the rules file for opts.target. errMsg is a user-facing
+// message when it cannot.
+func (p *Plugin) rulesForTarget(rc rulesContext, opts rulesOptions) (rules *rulesFile, errMsg string) {
+	if opts.target == mattermostGroup {
+		var target *mattermostTarget
+		if opts.mmNamespace != "" || opts.mmName != "" || opts.mmOptions.given {
+			t, err := newMattermostTarget(opts.mmNamespace, opts.mmName)
+			if err != nil {
+				return nil, fmt.Sprintf(":warning: %v", err)
+			}
+			t = t.withOptions(opts.mmOptions)
+			target = &t
+		}
+		built, err := p.mattermostRulesFile(rc, target)
+		if err != nil {
+			return nil, fmt.Sprintf(":warning: Could not build the rules: %v", err)
+		}
+		return built, ""
+	}
+
+	group, slugs, err := resolveAddTarget(opts.target)
+	if err != nil {
+		return nil, fmt.Sprintf(":warning: %v", err)
+	}
+	rules, err = p.rulesFileForAdd(rc, group, slugs, "`"+group+"`")
+	if err != nil {
+		return nil, fmt.Sprintf(":warning: Could not build the rules: %v", err)
+	}
+	return rules, ""
+}
+
 // handleRulesOperator generates a PrometheusRule CRD manifest from the
 // embedded samples file and DMs it to the caller as a downloadable file.
 // No secrets are involved — the manifest contains only alerting rules.
-func (p *Plugin) handleRulesOperator(userID, namespace string) (string, error) {
+func (p *Plugin) handleRulesOperator(userID, namespace string, allowlist bool) (string, error) {
 	rawBytes, err := root.SamplesFS.ReadFile("samples/prometheus-rules.yaml")
 	if err != nil {
 		return fmt.Sprintf(":warning: Could not read embedded rules file: %v", err), nil
 	}
-	extras, err := p.loadImageAllowlist()
-	if err != nil {
-		return fmt.Sprintf(":warning: Could not read the image allowlist: %v", err), nil
+	var extras []string
+	if allowlist {
+		extras, err = p.loadImageAllowlist()
+		if err != nil {
+			return fmt.Sprintf(":warning: Could not read the image allowlist: %v", err), nil
+		}
 	}
 	rawYAML, err := applyImageAllowlist(string(rawBytes), extras)
 	if err != nil {
@@ -156,6 +231,20 @@ func buildPrometheusRuleManifest(rawYAML, namespace, name string) string {
 	return b.String()
 }
 
+// splitLeadingComment moves the trailing blank and comment lines of lines into
+// lead. They sit directly above the next alert.
+func splitLeadingComment(lines []string) (kept, lead []string) {
+	i := len(lines)
+	for i > 0 {
+		trimmed := strings.TrimSpace(lines[i-1])
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		i--
+	}
+	return lines[:i], append([]string{}, lines[i:]...)
+}
+
 // filterPrometheusRules keeps the sample rules whose runbook label is in
 // slugs. Group banners and rules for other slugs are dropped. The result
 // is a bare groups: document, which buildPrometheusRuleManifest wraps.
@@ -206,8 +295,16 @@ func filterPrometheusRules(raw string, slugs []string) (string, int, error) {
 			continue
 		}
 		if strings.HasPrefix(line, "      - alert:") {
+			// Comments above an alert describe it. They were read as the tail of
+			// whatever came before, so take them back before that is dropped.
+			var lead []string
+			if rule != nil {
+				rule, lead = splitLeadingComment(rule)
+			} else {
+				groups[gi].header, lead = splitLeadingComment(groups[gi].header)
+			}
 			flush()
-			rule = []string{line}
+			rule = slices.Concat(lead, []string{line})
 			continue
 		}
 		if rule != nil {
@@ -252,45 +349,63 @@ type rulesFile struct {
 	scope  string // "the `compute` add", "this channel"
 	format string // formatStandard or formatCRD
 	apply  string // markdown telling the user how to apply it
+	tail   string // overrides the default overlap warning in section()
 }
 
 // section is the part of the combined DM message that describes the rules file.
 func (r *rulesFile) section() string {
-	return fmt.Sprintf(
-		"\n\n**Prometheus rules** for %s (%d rule(s), %s) are in `%s`.\n\n%s\n\n"+
-			"Apply it once. Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. "+
+	warning := fmt.Sprintf(
+		"Apply it once. Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. "+
 			"Adjust the `release` label to your Helm release name. Thresholds are demo placeholders.",
-		r.scope, r.count, rulesKind(r.format), r.name, r.apply, prometheusRuleObject,
+		prometheusRuleObject,
+	)
+	if r.tail != "" {
+		warning = "Apply it once. " + r.tail + " Adjust the `release` label to your Helm release name."
+	}
+	return fmt.Sprintf(
+		"\n\n**Prometheus rules** for %s (%d rule(s), %s) are in `%s`.\n\n%s\n\n%s",
+		r.scope, r.count, rulesKind(r.format), r.name, r.apply, warning,
 	)
 }
 
 // rulesFileForAdd builds the rules for the runbooks one add just created. The
 // object name includes the group so a later add of a different group does not
 // replace this one.
-func (p *Plugin) rulesFileForAdd(namespace, groupName string, slugs []string, format string) (*rulesFile, error) {
+func (p *Plugin) rulesFileForAdd(rc rulesContext, groupName string, slugs []string, scope string) (*rulesFile, error) {
 	name := prometheusRuleObject
 	if groupName != "all" {
 		name = prometheusRuleObject + "-" + groupName
 	}
-	return p.buildRulesFile(namespace, name, fmt.Sprintf("the `%s` add", groupName), slugs, format)
+	if scope == "" {
+		scope = fmt.Sprintf("the `%s` add", groupName)
+	}
+	return p.buildRules(rulesSpec{rulesContext: rc, name: name, scope: scope, slugs: slugs})
 }
 
 // rulesFileForChannel builds the rules for every runbook the channel's receivers
 // cover, so an export leaves nothing unfired. The object is named per channel so
 // exporting two channels does not make one overwrite the other. Custom receivers
 // have no sample rules, so a channel with only those returns nil and a reason.
-func (p *Plugin) rulesFileForChannel(namespace string, scoped []alertConfig, format string) (*rulesFile, string) {
+func (p *Plugin) rulesFileForChannel(rc rulesContext, scoped []alertConfig) (*rulesFile, string) {
 	var slugs []string
+	hasPack := false
 	for _, c := range scoped {
-		if !c.Custom {
+		switch c.resolvedKind() {
+		case kindPack:
+			hasPack = true
+		case kindRunbook:
 			slugs = append(slugs, receiverBaseSlug(c.Name))
+		case kindCustom:
 		}
+	}
+	if len(slugs) == 0 && hasPack {
+		return nil, ":information_source: No rules file: the plugin does not keep the Mattermost namespace or name for the Mattermost operator alerts receiver. Run `/alertmanager format rules " + mattermostGroup + " mm-namespace=<ns>` for its rules."
 	}
 	if len(slugs) == 0 {
 		return nil, ":information_source: No rules file: this channel has only custom receivers, and the sample rules are written for the shipped runbooks. Write the Prometheus rule for your own alert and give it the labels your route matches."
 	}
 	name := prometheusRuleObject + "-" + dnsLabel(scoped[0].Team) + "-" + dnsLabel(scoped[0].Channel)
-	rules, err := p.buildRulesFile(namespace, name, "this channel", slugs, format)
+	rules, err := p.buildRules(rulesSpec{rulesContext: rc, name: name, scope: "this channel", slugs: slugs})
 	if err != nil {
 		p.API.LogWarn("export: couldn't build the rules file", "err", err.Error())
 		return nil, fmt.Sprintf(":warning: Couldn't build the rules file for this channel (%v). Run `/alertmanager format rules` for the full set.", err)
@@ -314,30 +429,57 @@ func dnsLabel(s string) string {
 	return strings.Trim(out, "-")
 }
 
-// buildRulesFile filters the sample rules to slugs. For crd it wraps them in a
-// PrometheusRule named name; for standard it keeps the plain rules file.
-func (p *Plugin) buildRulesFile(namespace, name, scope string, slugs []string, format string) (*rulesFile, error) {
+// rulesContext is what every rules builder needs from the command: where the
+// object lands, which format, and whether the caller may see the admin-managed
+// image-registry allowlist entries.
+type rulesContext struct {
+	namespace string
+	format    string
+	allowlist bool
+}
+
+// rulesSpec describes one rules file. extraGroups is a `groups:` body without
+// the key itself and holds extraCount rules; tail replaces the default overlap
+// warning in the DM text.
+type rulesSpec struct {
+	rulesContext
+	name        string
+	scope       string
+	slugs       []string
+	extraGroups string
+	extraCount  int
+	tail        string
+}
+
+// buildRules filters the sample rules to spec.slugs and appends the extra
+// groups. For crd it wraps them in a PrometheusRule named spec.name; for
+// standard it keeps the plain rules file.
+func (p *Plugin) buildRules(spec rulesSpec) (*rulesFile, error) {
 	rawBytes, err := root.SamplesFS.ReadFile("samples/prometheus-rules.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read sample rules: %w", err)
 	}
-	extras, err := p.loadImageAllowlist()
-	if err != nil {
-		return nil, fmt.Errorf("read image allowlist: %w", err)
+	var extras []string
+	if spec.allowlist {
+		extras, err = p.loadImageAllowlist()
+		if err != nil {
+			return nil, fmt.Errorf("read image allowlist: %w", err)
+		}
 	}
 	rawYAML, err := applyImageAllowlist(string(rawBytes), extras)
 	if err != nil {
 		return nil, fmt.Errorf("apply image allowlist: %w", err)
 	}
-	filtered, n, err := filterPrometheusRules(rawYAML, slugs)
+	filtered, n, err := filterPrometheusRules(rawYAML, spec.slugs)
 	if err != nil {
 		return nil, err
 	}
 
-	rules := &rulesFile{name: name + ".yaml", count: n, scope: scope, format: format}
-	if format == formatCRD {
-		rules.data = []byte(buildPrometheusRuleManifest(filtered, namespace, name))
-		rules.apply = fmt.Sprintf("```\nkubectl apply -n %s -f %s\n```", namespace, rules.name)
+	filtered += spec.extraGroups
+	rules := &rulesFile{name: spec.name + ".yaml", count: n + spec.extraCount, scope: spec.scope, format: spec.format, tail: spec.tail}
+	if spec.format == formatCRD {
+		rules.data = []byte(buildPrometheusRuleManifest(filtered, spec.namespace, spec.name))
+		rules.apply = fmt.Sprintf("```\nkubectl apply -n %s -f %s\n```", spec.namespace, rules.name)
 	} else {
 		rules.data = []byte(filtered)
 		rules.apply = "Add it to your Prometheus `rule_files:` glob and reload Prometheus."

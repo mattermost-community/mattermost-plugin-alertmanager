@@ -63,13 +63,8 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	config.AddCommand(model.NewAutocompleteData("list", "", "List receivers bound to this channel. Type a receiver name after config for its detail card."))
 
-	formatItems := []model.AutocompleteListItem{
-		{Item: formatStandard, HelpText: "Plain alertmanager.yml receivers and routes. Paste into a file-based Alertmanager (config file, Docker, VM)."},
-		{Item: formatCRD, HelpText: "Prometheus Operator objects (an AlertmanagerConfig and a Secret, plus a PrometheusRule for any runbooks) to kubectl apply. Use this with kube-prometheus-stack. namespace= sets where they go, default monitoring."},
-	}
-
 	formatExport := model.NewAutocompleteData("export", "[standard|crd]", "DM this channel's receivers and routes, plus the Prometheus rules for their runbooks")
-	formatExport.AddStaticListArgument("Format (default standard).", false, formatItems)
+	formatExport.AddStaticListArgument("Format (default standard).", false, formatItems())
 	format.AddCommand(formatExport)
 
 	formatDiff := model.NewAutocompleteData("diff", "[standard|crd]", "Diff this channel's Alertmanager config against what Alertmanager loaded (sysadmin)")
@@ -79,11 +74,10 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	format.AddCommand(formatDiff)
 
-	formatRules := model.NewAutocompleteData("rules", "[standard|crd]", "The sample Prometheus alerting rules only")
-	formatRules.AddStaticListArgument("Format (default standard).", false, []model.AutocompleteListItem{
-		{Item: formatStandard, HelpText: "Links to view the 36 sample rules in your browser or download them as a plain Prometheus rules file."},
-		{Item: formatCRD, HelpText: "DM a ready-to-apply PrometheusRule (monitoring.coreos.com/v1) with all 36 rules, for Prometheus Operator. namespace=<ns> sets where it goes, default monitoring."},
-	})
+	formatRules := model.NewAutocompleteData("rules", "[standard|crd] [group]", "The sample Prometheus alerting rules, all of them or one group's")
+	for range rulesOptionSlots {
+		formatRules.AddDynamicListArgument("Optional: standard or crd, a group or runbook for just its rules, mm-namespace=<ns> for mattermost", rulesOptionsFetchURL(), true)
+	}
 	format.AddCommand(formatRules)
 
 	acknowledge := model.NewAutocompleteData("acknowledge", "[add|remove] [name]", "Hide a receiver from the AM-only inventory warning. Does not mute alerts. Sysadmin.")
@@ -104,23 +98,22 @@ func getAutocompleteData() *model.AutocompleteData {
 	}
 	const amURLPrompt = "Alertmanager base URL, reachable FROM the Mattermost server (no trailing slash). Pick a pattern or type your own."
 
-	add := model.NewAutocompleteData("add", "[am-url] [target] [standard|crd] [on]", "Create receivers in THIS channel for a group set OR individual runbook slug. One shared webhook per group; individual slugs get their own. (sysadmin/team_admin)")
+	add := model.NewAutocompleteData("add", "[am-url] [target] [standard|crd] [on]", "Create receivers in THIS channel for a group set or an individual runbook slug. One shared webhook per group; individual slugs get their own. (sysadmin/team_admin)")
 	add.AddStaticListArgument(amURLPrompt, false, amURLItems)
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
 		{Item: "all", HelpText: "Every embedded runbook (default — 35 receivers in one shared webhook)"},
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
 		{Item: "compute", HelpText: "CPU, memory, throttling, pod, deployment, node, image-pull, scheduling alerts (9) — one shared webhook"},
 		{Item: "database", HelpText: "Connectivity, replication lag, query latency, connection saturation (4) — one shared webhook"},
-		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate (5) — one shared webhook. Requires Mattermost metrics enabled."},
+		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate (5) — one shared webhook. Requires Mattermost metrics enabled. Add mm-namespace=<ns> to also get the 13 alerts the Mattermost Operator generates. mm-db-replicas=true adds replica lag, mm-postgres-pod=true adds in-cluster Postgres pod alerts."},
 		{Item: "networking", HelpText: "Ingress 5xx, cert expiry, DNS failure (3) — one shared webhook"},
 		{Item: "observability", HelpText: "Prometheus scrape down, Alertmanager notify fail (2) — one shared webhook"},
 		{Item: "security", HelpText: "Unexpected image, API auth spike, privileged container, shell-in-container, RBAC escalation, security tooling down (6) — one shared webhook"},
 		{Item: "storage", HelpText: "PV full, disk fill rate (2) — one shared webhook"},
 	})
-	add.AddStaticListArgument("Optional: format of the config DM'd to you (default standard)", false, formatItems)
-	add.AddStaticListArgument("Optional: enable webhook rotation reminders for these receivers", false, []model.AutocompleteListItem{
-		{Item: "on", HelpText: "Remind sysadmins to rotate these webhooks once they are older than System Console → WebhookRotationDays. Without it, these receivers are never reminded. Applies to this channel only."},
-	})
+	for range addOptionSlots {
+		add.AddDynamicListArgument("Optional: format (standard or crd), mm-namespace=<ns> for mattermost, then on", addOptionsFetchURL(), true)
+	}
 	config.AddCommand(add)
 
 	// add-custom: one generic (non-runbook) receiver with a user-chosen name.
@@ -129,10 +122,9 @@ func getAutocompleteData() *model.AutocompleteData {
 	addCustom := model.NewAutocompleteData("add-custom", "[am-url] [name] [standard|crd] [on]", "Create ONE generic (non-runbook) receiver in THIS channel with a custom name. No auto route — you wire the matcher manually. (sysadmin/team_admin)")
 	addCustom.AddStaticListArgument(amURLPrompt, false, amURLItems)
 	addCustom.AddTextArgument("Custom receiver name: lowercase [a-z0-9_-], no `--`, not a runbook slug, category set, or standard/crd/on. Full name becomes `<name>--<team>-<channel>` (max 190 chars).", "[name]", "")
-	addCustom.AddStaticListArgument("Optional: format of the config DM'd to you (default standard)", false, formatItems)
-	addCustom.AddStaticListArgument("Optional: enable webhook rotation reminders for this receiver", false, []model.AutocompleteListItem{
-		{Item: "on", HelpText: "Remind sysadmins to rotate this webhook once it is older than System Console → WebhookRotationDays. Without it, this receiver is never reminded."},
-	})
+	for range addCustomOptionSlots {
+		addCustom.AddDynamicListArgument("Optional: format (standard or crd), then on", addOptionsFetchURL(), true)
+	}
 	config.AddCommand(addCustom)
 
 	allowlist := model.NewAutocompleteData("allowlist", "[add|remove] [prefix]", "Extra registry prefixes for UnexpectedContainerImage. Included in the next format rules crd file. Sysadmin.")
@@ -145,7 +137,11 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	root.AddCommand(model.NewAutocompleteData("docs", "", "Link to the documentation site, runbook library, and sample rules"))
 
-	root.AddCommand(model.NewAutocompleteData("help", "[command]", "Show help. Type help after any command for more detail."))
+	help := model.NewAutocompleteData("help", "[command]", "Show help. Type help after any command for more detail.")
+	for range helpPathSlots {
+		help.AddDynamicListArgument("A command to get help for, for example config add", helpTopicsFetchURL(), true)
+	}
+	root.AddCommand(help)
 
 	metricsToken := model.NewAutocompleteData("metrics-token", "[generate]", "Show status of the Prometheus /metrics bearer token, or `generate` to mint+reveal a new one with a ready-to-paste scrape_config (sysadmin)")
 	metricsToken.AddStaticListArgument("Optional: `generate` rotates + reveals a new token; omit to just show status", false, []model.AutocompleteListItem{
@@ -228,6 +224,7 @@ func getAutocompleteData() *model.AutocompleteData {
 	})
 	config.AddCommand(validate)
 
+	addHelpWord(root)
 	sortTypeahead(root)
 	return root
 }
@@ -263,32 +260,14 @@ func (p *Plugin) executeCommand(args *model.CommandArgs) string {
 		return msg
 	}
 
-	// Same order as the autocomplete registration. Group handlers drop their
-	// own word and hand the rest to the leaf handlers (see withoutParent).
-	switch fields[1] {
-	case "about":
-		return p.handleAbout(args)
-	case "admin":
-		msg, err := p.handleAdmin(args)
-		return joinErr(msg, err)
-	case "alerts":
-		msg, err := p.handleAlertsGroup(args)
-		return joinErr(msg, err)
-	case "config":
-		msg, err := p.handleConfigGroup(args)
-		return joinErr(msg, err)
-	case "docs":
-		msg, err := p.handleDocs(args)
-		return joinErr(msg, err)
-	case "format":
-		msg, err := p.handleFormatGroup(args)
-		return joinErr(msg, err)
-	case "silence":
-		msg, err := p.handleSilenceGroup(args)
-		return joinErr(msg, err)
-	default:
-		return fmt.Sprintf("Unknown subcommand `%s`. Run `/alertmanager help` for the list.", fields[1])
+	parsed := p.parseCommand(args)
+	if parsed.cmd == nil {
+		return parsed.reply
 	}
+	if err := parsed.cmd.Authorize(args.UserId, args.ChannelId); err != nil {
+		return err.Error()
+	}
+	return joinErr(parsed.cmd.Run(parsed.args))
 }
 
 // removedDashFlagMessage rejects any `--word` argument. Flags are plain words

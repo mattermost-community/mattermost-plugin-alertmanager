@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -39,47 +38,6 @@ func withoutParent(args *model.CommandArgs) *model.CommandArgs {
 	next := *args
 	next.Command = strings.Join(append([]string{fields[0]}, fields[2:]...), " ")
 	return &next
-}
-
-func (p *Plugin) handleConfigGroup(args *model.CommandArgs) (string, error) {
-	fields := strings.Fields(args.Command)
-	rest := fields[2:]
-
-	verbs := map[string]func(*model.CommandArgs) (string, error){
-		"add":        p.handleAdd,
-		"add-custom": p.handleAddCustom,
-		"remove":     p.handleRemove,
-		"rotate":     p.handleRotate,
-		"validate":   p.handleValidate,
-	}
-	if len(rest) > 0 {
-		verb := strings.ToLower(rest[0])
-		if run, ok := verbs[verb]; ok {
-			return run(withoutParent(args))
-		}
-		if verb == "export" || verb == "diff" {
-			return fmt.Sprintf(":warning: `config %s` moved. Run `/alertmanager format %s%s`.", verb, verb, formatTail(rest[1:])), nil
-		}
-	}
-
-	parsed, err := parseConfigPositionals(rest)
-	if errors.Is(err, errConfigUsage) {
-		return renderHelp([]string{"config"}), nil
-	}
-	if err != nil {
-		return err.Error(), nil
-	}
-
-	switch parsed.kind {
-	case configKindList:
-		return p.handleList(args)
-	case configKindDetail:
-		next := *args
-		next.Command = "/alertmanager config " + parsed.name
-		return p.handleConfig(&next)
-	default:
-		return "", fmt.Errorf("unhandled config kind %d", parsed.kind)
-	}
 }
 
 // formatTail renders the old trailing words for a "moved" message.

@@ -37,15 +37,18 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	// receivers (add-custom): the plugin can't know what labels a custom alert
 	// carries, so custom receivers get a COMMENTED matcher stub the user fills
 	// in manually rather than a live route.
-	var customEntries []alertConfig
+	var customEntries, packEntries []alertConfig
 	grouped := make(map[string][]alertConfig)
 	for _, ac := range entries {
-		if ac.Custom {
+		switch ac.resolvedKind() {
+		case kindPack:
+			packEntries = append(packEntries, ac)
+		case kindCustom:
 			customEntries = append(customEntries, ac)
-			continue
+		case kindRunbook:
+			slug := receiverBaseSlug(ac.Name)
+			grouped[slug] = append(grouped[slug], ac)
 		}
-		slug := receiverBaseSlug(ac.Name)
-		grouped[slug] = append(grouped[slug], ac)
 	}
 
 	slugs := make([]string, 0, len(grouped))
@@ -70,7 +73,8 @@ func assembleRoutesYAML(entries []alertConfig) string {
 	// route. A bare `routes:` with nothing but comments underneath is invalid
 	// YAML; when every receiver is custom we emit only the commented stubs,
 	// which the user pastes under their own existing `routes:`.
-	if len(slugs) > 0 {
+	packRoutes := packRoutesYAML(packEntries)
+	if len(slugs) > 0 || packRoutes != "" {
 		b.WriteString("routes:\n")
 		for _, slug := range slugs {
 			group := grouped[slug]
@@ -81,6 +85,7 @@ func assembleRoutesYAML(entries []alertConfig) string {
 				b.WriteString("    group_by: ['alertname', 'namespace', 'pod']\n")
 			}
 		}
+		b.WriteString(packRoutes)
 	}
 
 	if len(customEntries) > 0 {
@@ -134,7 +139,7 @@ func (p *Plugin) assembleReceiversYAML(newEntries []alertConfig, results []scaff
 			y.WriteString(fmt.Sprintf("# WARN: created result for %q has no matching entry — skipping\n\n", r.Slug))
 			continue
 		}
-		rendered := renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL, entry.Custom)
+		rendered := renderReceiverYAMLForKind(entry.Name, p.webhookURLForReceiver(entry), entry.Channel, p.runbookDefaultURL(receiverBaseSlug(entry.Name)), p.siteURL()+webhookIconURL, entry.resolvedKind())
 		y.WriteString(rendered)
 		y.WriteString("\n")
 	}
