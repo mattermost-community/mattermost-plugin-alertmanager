@@ -14,10 +14,8 @@ import (
 // the memory is committed before the deadline fires.
 const MaxResponseBytes = 8 << 20 // 8 MiB — far above any real AM response.
 
-// errResponseTooLarge is returned when a response exceeds MaxResponseBytes.
-func errResponseTooLarge() error {
-	return fmt.Errorf("alertmanager response exceeds %d bytes; refusing to decode", MaxResponseBytes)
-}
+// ErrResponseTooLarge is returned when a response exceeds MaxResponseBytes.
+var ErrResponseTooLarge = fmt.Errorf("alertmanager response exceeds %d bytes; refusing to decode", MaxResponseBytes)
 
 // DecodeJSONLimited decodes a single JSON value from r into v, reading AT MOST
 // MaxResponseBytes+1 bytes. Overflow is rejected explicitly — a plain
@@ -27,7 +25,7 @@ func DecodeJSONLimited(r io.Reader, v any) error {
 	err := json.NewDecoder(limited).Decode(v)
 	if limited.N <= 0 {
 		// We consumed the whole budget: the body was at least MaxResponseBytes+1.
-		return errResponseTooLarge()
+		return ErrResponseTooLarge
 	}
 	return err
 }
@@ -44,7 +42,7 @@ func ReadAllLimited(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(b)) > MaxResponseBytes {
-		return nil, errResponseTooLarge()
+		return nil, ErrResponseTooLarge
 	}
 	return b, nil
 }

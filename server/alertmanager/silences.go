@@ -3,6 +3,7 @@ package alertmanager
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -138,6 +139,15 @@ func CreateSilence(alertmanagerURL, user, password, createdBy, comment string, e
 	}
 
 	body, _, err := httpPostJSON(alertmanagerURL+"/api/v2/silences", user, password, raw)
+	if errors.Is(err, ErrOutcomeUnknown) {
+		if id, ok := findCreatedSilence(alertmanagerURL, user, password, &payload.Silence); ok {
+			return id, nil
+		}
+		return "", &RequestError{
+			msg: "Alertmanager did not confirm the silence, so it may exist anyway. Check `/alertmanager silence list` before trying again",
+			err: err,
+		}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -149,6 +159,71 @@ func CreateSilence(alertmanagerURL, user, password, createdBy, comment string, e
 		return "", fmt.Errorf("alertmanager returned a silence id that is not a UUID")
 	}
 	return decoded.SilenceID, nil
+}
+
+// findCreatedSilence looks for the silence a POST with a lost reply may have
+// created, so the caller records it instead of leaving an untracked silence.
+// It matches creator, comment, matchers and end time, which together identify
+// the request; StartsAt is not compared because Alertmanager moves a past
+// start to the time it stored the silence.
+func findCreatedSilence(alertmanagerURL, user, password string, want *models.Silence) (string, bool) {
+	silences, err := ListSilences(alertmanagerURL, user, password)
+	if err != nil {
+		return "", false
+	}
+	wantEnd := time.Time(*want.EndsAt)
+	for _, s := range silences {
+		if s.ID == nil || !ValidSilenceID(*s.ID) {
+			continue
+		}
+		if s.Status != nil && s.Status.State != nil && *s.Status.State == models.SilenceStatusStateExpired {
+			continue
+		}
+		if deref(s.CreatedBy) != *want.CreatedBy || deref(s.Comment) != *want.Comment {
+			continue
+		}
+		if d := silenceEndsAt(s).Sub(wantEnd); d < -time.Second || d > time.Second {
+			continue
+		}
+		if sameMatchers(s.Matchers, want.Matchers) {
+			return *s.ID, true
+		}
+	}
+	return "", false
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func matcherKey(m *models.Matcher) string {
+	if m == nil {
+		return ""
+	}
+	isEqual := m.IsEqual == nil || *m.IsEqual
+	isRegex := m.IsRegex != nil && *m.IsRegex
+	return fmt.Sprintf("%q %q %t %t", deref(m.Name), deref(m.Value), isEqual, isRegex)
+}
+
+func sameMatchers(a, b models.Matchers) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, m := range a {
+		counts[matcherKey(m)]++
+	}
+	for _, m := range b {
+		k := matcherKey(m)
+		if counts[k] == 0 {
+			return false
+		}
+		counts[k]--
+	}
+	return true
 }
 
 // Resolved reports whether a silence has already ended.
