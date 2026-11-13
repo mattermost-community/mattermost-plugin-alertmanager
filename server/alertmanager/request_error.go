@@ -80,7 +80,8 @@ func transportError(err error) (re *RequestError, permanent bool) {
 		// reports not-found while CoreDNS restarts or the Service is being
 		// recreated, and failing on the first lookup would page nobody but
 		// break every command during a routine rollout. A mistyped host
-		// costs one RequestBudget, then the circuit breaker fails fast.
+		// costs one RequestBudget per call until breakerThreshold calls
+		// have failed, then the circuit breaker fails fast.
 		return &RequestError{msg: "the Alertmanager host name does not resolve", err: err, unavailable: true}, false
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
 		return &RequestError{msg: "Alertmanager did not respond in time", err: err, unavailable: true}, false
