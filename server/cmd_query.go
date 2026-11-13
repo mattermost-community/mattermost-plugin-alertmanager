@@ -109,7 +109,7 @@ func emptyScopeMessage(verb string) string {
 // each URL in the input so output is deterministic across calls.
 //
 // Why this matters: in the common case where one channel hosts N
-// receivers all pointing at the same Alertmanager (e.g. all 36 canonical
+// receivers all pointing at the same Alertmanager (e.g. all 35 canonical
 // runbook receivers in #alerts), the older per-receiver loop hit AM N
 // times and printed N copies of the same "firing alerts" or "loaded
 // silences" block. Querying once per distinct AM URL collapses that to

@@ -81,7 +81,7 @@ the same WHERE / WHAT / READ structure.
    /alertmanager config add http://alertmanager:9093 all
    ```
 
-   The plugin creates receivers for all 36 runbooks bound to this
+   The plugin creates receivers for all 35 runbooks bound to this
    channel (one shared Mattermost webhook per group set) and DMs you
    the assembled `receivers.yml` + `routes.yml`.
 
@@ -126,7 +126,7 @@ track), and a route simulator form.
 Everything is discoverable from chat and the repo:
 
 - **In chat:** `/alertmanager help` (command reference) and `/alertmanager docs` (links to the documentation site, runbook library, and sample rules). Browse topics from the site sidebar.
-- **Runbook library:** [`runbooks/INDEX.md`](runbooks/INDEX.md) — all 36 runbooks by category; each renders to a page linked from its alert.
+- **Runbook library:** [`runbooks/INDEX.md`](runbooks/INDEX.md) — all 35 runbooks by category; each renders to a page linked from its alert.
 - **Setup & ops docs:** [`docs/QUICKSTART.md`](docs/QUICKSTART.md) (first alert end-to-end), [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (settings + Prometheus wiring), [`docs/KUBERNETES.md`](docs/KUBERNETES.md) (HA deploy), [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) (build/test/deploy), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Key features for daily use
@@ -160,7 +160,7 @@ Alertmanager templates the post body — including the inlined Quick
 diagnostics from the runbook — and POSTs to the Mattermost webhook
 URL. The plugin doesn't intercept alert payloads at runtime; it
 only owns the YAML generation, webhook lifecycle, and the inventory
-page. The 36 runbook markdown files ship embedded in the plugin
+page. The 35 runbook markdown files ship embedded in the plugin
 binary via Go's `embed.FS`.
 
 For deeper context: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)

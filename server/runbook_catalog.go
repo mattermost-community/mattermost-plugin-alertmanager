@@ -67,7 +67,6 @@ var scaffoldSets = map[string][]string{
 		"mattermost-websocket-drop",
 		"mattermost-db-slow-query",
 		"mattermost-high-error-rate",
-		"mattermost-license-expiring-soon",
 	},
 }
 

@@ -110,7 +110,6 @@ Rules for the Mattermost server itself. Requires `ServiceSettings.EnableMetrics:
 | Mattermost WebSocket Drop | `mattermost-websocket-drop` | warning | Active WS connections drop > 50% vs 10m ago | Mattermost metrics |
 | Mattermost DB Slow Query | `mattermost-db-slow-query` | warning | p99 DB store op > 500ms for 5m | Mattermost metrics |
 | Mattermost High Error Rate | `mattermost-high-error-rate` | warning | > 5% of API calls return 5xx for 5m | Mattermost metrics |
-| Mattermost License Expiring Soon | `mattermost-license-expiring-soon` | warning | License expires in < 30 days | Mattermost EE metrics |
 
 ## Wiring a set into a channel
 

@@ -47,7 +47,7 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts exportOptions) 
 
 	return fmt.Sprintf(
 		"**Sample Prometheus alerting rules** — the upstream half of the pipeline.\n\n"+
-			"The plugin creates the Alertmanager receivers and routes, but your **Prometheus** has to emit the alerts that carry the `runbook:` label. These samples give you one working rule for every runbook (37 rules across 36 runbooks) so you don't start from a blank page.\n\n"+
+			"The plugin creates the Alertmanager receivers and routes, but your **Prometheus** has to emit the alerts that carry the `runbook:` label. These samples give you one working rule for every runbook (36 rules across 35 runbooks) so you don't start from a blank page.\n\n"+
 			"- 📖 [View the rules in your browser](%s)\n"+
 			"- ⬇️ [Download `prometheus-rules.yaml`](%s) — plain format, add to your Prometheus `rule_files:` glob\n"+
 			"- ⬇️ [Download `mattermost-prometheus-rules-crd.yaml`](%s) — PrometheusRule CRD (`monitoring.coreos.com/v1`, the only version this plugin ships), namespace `monitoring`. It contains every group: compute, application, database, storage, networking, observability, security, and mattermost. For a different namespace run `/alertmanager format rules crd namespace=<ns>` instead\n\n"+
@@ -93,7 +93,7 @@ func (p *Plugin) handleRulesOperator(userID, namespace string) (string, error) {
 		UserId:    p.BotUserID,
 		ChannelId: dm.Id,
 		Message: fmt.Sprintf(
-			"PrometheusRule CRD containing all 37 alert rules across 36 runbooks (`%s`).\n\n"+
+			"PrometheusRule CRD containing all 36 alert rules across 35 runbooks (`%s`).\n\n"+
 				"Review, then apply into the `%s` namespace:\n\n"+
 				"```\nkubectl apply -n %s -f mattermost-prometheus-rules.yaml\n```\n\n"+
 				"Adjust `release: kube-prometheus-stack` to your Helm release name. Every threshold is a demo placeholder — tune before production.%s",

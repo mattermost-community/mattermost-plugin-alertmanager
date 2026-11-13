@@ -286,10 +286,10 @@ var helpRegistry = []helpTopic{
 		Path:        "format rules",
 		Summary:     "Get the sample Prometheus alert rules",
 		Usage:       "/alertmanager format rules [standard|crd] [namespace=<ns>]",
-		Description: "Rules only, all 37 of them, not limited to this channel. For this channel's rules together with its config, use `format export`.",
+		Description: "Rules only, all 36 of them, not limited to this channel. For this channel's rules together with its config, use `format export`.",
 		Options: []helpOption{
 			{"standard", "Links to browse the rules in your browser or download a plain Prometheus rules file. The default."},
-			{"crd", "DM a PrometheusRule (`monitoring.coreos.com/v1`) with all 37 rules, ready to apply."},
+			{"crd", "DM a PrometheusRule (`monitoring.coreos.com/v1`) with all 36 rules, ready to apply."},
 			{"namespace=<ns>", "Namespace for the `crd` object. Default `monitoring`."},
 		},
 		Who: "Any user.",

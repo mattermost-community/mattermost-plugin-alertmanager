@@ -81,8 +81,8 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	formatRules := model.NewAutocompleteData("rules", "[standard|crd]", "The sample Prometheus alerting rules only")
 	formatRules.AddStaticListArgument("Format (default standard).", false, []model.AutocompleteListItem{
-		{Item: formatStandard, HelpText: "Links to view the 37 sample rules in your browser or download them as a plain Prometheus rules file."},
-		{Item: formatCRD, HelpText: "DM a ready-to-apply PrometheusRule (monitoring.coreos.com/v1) with all 37 rules, for Prometheus Operator. namespace=<ns> sets where it goes, default monitoring."},
+		{Item: formatStandard, HelpText: "Links to view the 36 sample rules in your browser or download them as a plain Prometheus rules file."},
+		{Item: formatCRD, HelpText: "DM a ready-to-apply PrometheusRule (monitoring.coreos.com/v1) with all 36 rules, for Prometheus Operator. namespace=<ns> sets where it goes, default monitoring."},
 	})
 	format.AddCommand(formatRules)
 
@@ -107,11 +107,11 @@ func getAutocompleteData() *model.AutocompleteData {
 	add := model.NewAutocompleteData("add", "[am-url] [target] [standard|crd] [on]", "Create receivers in THIS channel for a group set OR individual runbook slug. One shared webhook per group; individual slugs get their own. (sysadmin/team_admin)")
 	add.AddStaticListArgument(amURLPrompt, false, amURLItems)
 	add.AddStaticListArgument("Group set OR individual runbook slug (defaults to `all`). Type a slug freely; static list shows group sets only.", false, []model.AutocompleteListItem{
-		{Item: "all", HelpText: "Every embedded runbook (default — 36 receivers in one shared webhook)"},
+		{Item: "all", HelpText: "Every embedded runbook (default — 35 receivers in one shared webhook)"},
 		{Item: "application", HelpText: "HTTP error, latency, endpoint, request-rate alerts (4) — one shared webhook"},
 		{Item: "compute", HelpText: "CPU, memory, throttling, pod, deployment, node, image-pull, scheduling alerts (9) — one shared webhook"},
 		{Item: "database", HelpText: "Connectivity, replication lag, query latency, connection saturation (4) — one shared webhook"},
-		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate, license expiry (6) — one shared webhook. Requires Mattermost metrics enabled."},
+		{Item: "mattermost", HelpText: "Mattermost-application alerts: API latency, login failures, WebSocket drop, DB slowness, error rate (5) — one shared webhook. Requires Mattermost metrics enabled."},
 		{Item: "networking", HelpText: "Ingress 5xx, cert expiry, DNS failure (3) — one shared webhook"},
 		{Item: "observability", HelpText: "Prometheus scrape down, Alertmanager notify fail (2) — one shared webhook"},
 		{Item: "security", HelpText: "Unexpected image, API auth spike, privileged container, shell-in-container, RBAC escalation, security tooling down (6) — one shared webhook"},

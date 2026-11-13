@@ -279,7 +279,7 @@ Run ` + "`/alertmanager help`" + ` for the command reference.
 // runbookIndexBody is the landing page for the runbook library.
 const runbookIndexBody = `# SRE Runbooks
 
-36 runbooks covering the most common alert categories an SRE
+35 runbooks covering the most common alert categories an SRE
 encounters. Each follows the same structure: severity → what this
 means → diagnostic steps → common causes & fixes → escalation →
 post-incident.
@@ -315,7 +315,7 @@ Spike, Privileged Container Started, Interactive Shell in Container,
 RBAC Privilege Escalation, Security Tooling Down.
 
 **Mattermost Application** — API High Latency, High Login Failures,
-WebSocket Drop, DB Slow Query, High Error Rate, License Expiring Soon.
+WebSocket Drop, DB Slow Query, High Error Rate.
 
 Use the sidebar on the left to navigate. Use the search box up top to
 jump straight to a runbook by name or by error string.
@@ -386,7 +386,7 @@ func buildRulesPage() (page, error) {
 	if err != nil {
 		return page{}, fmt.Errorf("read %s: %w", rulesSrcPath, err)
 	}
-	intro := `<p>Sample Prometheus alerting rules shipped with the plugin — one working rule for every runbook (37 rules across 36 runbooks). Copy them into your Prometheus, tune the thresholds, and alerts route straight to the matching runbook in chat.</p>` +
+	intro := `<p>Sample Prometheus alerting rules shipped with the plugin — one working rule for every runbook (36 rules across 35 runbooks). Copy them into your Prometheus, tune the thresholds, and alerts route straight to the matching runbook in chat.</p>` +
 		`<p>` +
 		`<a href="prometheus-rules.yaml" download><strong>⬇ Download prometheus-rules.yaml</strong></a> — plain format, add to your Prometheus <code>rule_files:</code> glob.` +
 		`&nbsp;&nbsp;|&nbsp;&nbsp;` +

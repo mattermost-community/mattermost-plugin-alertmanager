@@ -67,7 +67,7 @@ a real command, so a custom receiver named `help` still works as an argument.
 | `config validate` | `[all\|group\|name] [webhook-test\|end-to-end\|simulate <labels>]` | Pipeline diagnostics or read-only route simulation | sysadmin / team_admin |
 | `format export` | `[standard\|crd] [namespace=<ns>]` | DMs every receiver and route in this channel, with the Prometheus rules for the runbooks those receivers cover attached to the same message. `standard` (default): `alertmanager.yml` pieces plus a plain rules file. `crd`: AlertmanagerConfig + Secret plus a PrometheusRule named `mattermost-alertmanager-rules-<team>-<channel>` (`namespace=` defaults to `monitoring`). | team_admin or sysadmin |
 | `format diff` | `[standard\|crd]` | Alertmanager config only, no rules. Compares this channel to Alertmanager's loaded config. With no format, detects standard or CRD from the loaded config. | sysadmin |
-| `format rules` | `[standard\|crd] [namespace=<ns>]` | Rules only, all 37, not limited to this channel. `standard` (default): links to view or download the plain rules file. `crd`: DMs a ready-to-apply `PrometheusRule` (`monitoring.coreos.com/v1`). | any user |
+| `format rules` | `[standard\|crd] [namespace=<ns>]` | Rules only, all 36, not limited to this channel. `standard` (default): links to view or download the plain rules file. `crd`: DMs a ready-to-apply `PrometheusRule` (`monitoring.coreos.com/v1`). | any user |
 | `config rotate` | `<name>` \| `all overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
 | `config remove` | `<name>` \| `<set> force` \| `all force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
 | `admin repair` | `[prune] [force]` | Bare is read-only: checks the receiver-list KV store and lists receivers whose webhook was deleted out of band. `prune` removes those receivers (the background job does the same every 5 minutes). `force` rewrites a corrupt KV blob from the plugin's last-known in-memory list. `force` is recovery-only. | sysadmin |
@@ -151,7 +151,7 @@ routes with `continue: true` so AM doesn't stop at the first match.
 
 ## Worked examples
 
-### First-time setup — all 36 canonical receivers in one channel
+### First-time setup — all 35 canonical receivers in one channel
 
 Create the channel if it doesn't exist, then run this in it:
 
@@ -159,7 +159,7 @@ Create the channel if it doesn't exist, then run this in it:
 /alertmanager config add http://alertmanager:9093
 ```
 
-Creates every embedded runbook (the `all` set — 36 receivers) bound
+Creates every embedded runbook (the `all` set — 35 receivers) bound
 to `~alert-slo-channel` **behind one shared Mattermost webhook**.
 The summary lands in the channel; the assembled
 `alertmanager-receivers.yml` + `alertmanager-routes.yml` land in
