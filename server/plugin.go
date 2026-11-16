@@ -70,6 +70,9 @@ type Plugin struct {
 	reconcilerLastProbe time.Time
 	yamlLastSweep       time.Time
 	cachedSysadminID    string
+	// orphanProbeNext is the hook ID the next orphan check starts from, so a
+	// check that runs out of budget does not starve the hooks after it.
+	orphanProbeNext string
 
 	// amReachabilityCache is a sync.Map keyed by Alertmanager URL.
 	// Values are *amReachabilityEntry. Probes are deduped per URL

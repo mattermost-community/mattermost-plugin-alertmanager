@@ -33,7 +33,7 @@ const yamlSweepInterval = 15 * time.Minute
 
 // orphanProbeWorkers and orphanProbeBudget bound one orphan check: webhooks are
 // probed concurrently, and any not probed in time are left alone until the next
-// check.
+// check, which starts where this one stopped.
 const (
 	orphanProbeWorkers = 4
 	orphanProbeBudget  = 2 * time.Minute
@@ -383,7 +383,7 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 	// across N receivers, so per-receiver probing would multiply the API call
 	// rate. The result maps hookID to "exists" so the prune pass below can mark
 	// every receiver in a dead group as orphaned without re-querying.
-	hookStatus := p.probeWebhooks(c, current)
+	hookStatus := p.probeWebhooks(c, current, orphanProbeBudget)
 
 	// Mark every receiver whose shared webhookID came back 404, recording the
 	// SPECIFIC dead webhook ID we probed for each name (not just the name). The
@@ -525,8 +525,8 @@ func (p *Plugin) findActiveSysadmin() (string, error) {
 // hook ID to exists. A hook with a transient or permission error, or one the
 // budget ran out before reaching, is absent from the map so its receivers stay
 // alive until the next check.
-func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig) map[string]bool {
-	ctx, cancel := context.WithTimeout(context.Background(), orphanProbeBudget)
+func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget time.Duration) map[string]bool {
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	// First receiver per hook, for log context only.
@@ -539,6 +539,7 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig) map[stri
 		owner[ac.WebhookID] = ac.Name
 		hookIDs = append(hookIDs, ac.WebhookID)
 	}
+	hookIDs = p.rotateToProbeCursor(hookIDs)
 
 	var (
 		mu     sync.Mutex
@@ -566,13 +567,35 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig) map[stri
 			}
 		})
 	}
+	next := ""
 	for _, id := range hookIDs {
 		if ctx.Err() != nil {
+			next = id
 			break
 		}
 		jobs <- id
 	}
 	close(jobs)
 	wg.Wait()
+	p.setProbeCursor(next)
 	return status
+}
+
+// rotateToProbeCursor reorders hookIDs to start at the hook the last check did
+// not reach. A cursor whose hook has since been removed starts from the top.
+func (p *Plugin) rotateToProbeCursor(hookIDs []string) []string {
+	p.reconcilerStatusLock.Lock()
+	next := p.orphanProbeNext
+	p.reconcilerStatusLock.Unlock()
+	start := slices.Index(hookIDs, next)
+	if start <= 0 {
+		return hookIDs
+	}
+	return append(slices.Clone(hookIDs[start:]), hookIDs[:start]...)
+}
+
+func (p *Plugin) setProbeCursor(next string) {
+	p.reconcilerStatusLock.Lock()
+	defer p.reconcilerStatusLock.Unlock()
+	p.orphanProbeNext = next
 }

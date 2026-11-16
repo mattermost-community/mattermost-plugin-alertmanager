@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,8 +125,44 @@ func TestProbeWebhooksClassifiesEachHookOnce(t *testing.T) {
 		{Name: "r2", WebhookID: "alive"},
 		{Name: "r3", WebhookID: "dead"},
 		{Name: "r4", WebhookID: "flaky"},
-	})
+	}, orphanProbeBudget)
 
 	assert.Equal(t, map[string]bool{"alive": true, "dead": false}, status, "a transient error leaves the hook out")
 	assert.Equal(t, 1, hits["alive"], "a shared hook is probed once")
+}
+
+func TestProbeWebhooksResumesWhereTheBudgetRanOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		_, _ = w.Write([]byte(`{"id":"` + id + `"}`))
+	}))
+	defer srv.Close()
+
+	c := model.NewAPIv4Client(srv.URL)
+	p := &Plugin{}
+	p.API = &reconcilerAPI{}
+	var configs []alertConfig
+	for i := range 40 {
+		configs = append(configs, alertConfig{Name: fmt.Sprintf("r%d", i), WebhookID: fmt.Sprintf("hook%02d", i)})
+	}
+
+	checked := map[string]bool{}
+	for range 40 {
+		for id := range p.probeWebhooks(c, configs, 100*time.Millisecond) {
+			checked[id] = true
+		}
+		if len(checked) == len(configs) {
+			return
+		}
+	}
+	t.Fatalf("after 40 checks that each ran out of budget, %d of %d hooks were never checked", len(configs)-len(checked), len(configs))
+}
+
+func TestProbeCursorStartsOverWhenItsHookIsGone(t *testing.T) {
+	p := &Plugin{}
+	p.setProbeCursor("c")
+	assert.Equal(t, []string{"c", "d", "a", "b"}, p.rotateToProbeCursor([]string{"a", "b", "c", "d"}))
+	p.setProbeCursor("removed")
+	assert.Equal(t, []string{"a", "b", "d"}, p.rotateToProbeCursor([]string{"a", "b", "d"}))
 }
