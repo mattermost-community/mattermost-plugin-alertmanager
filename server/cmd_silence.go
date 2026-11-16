@@ -67,12 +67,19 @@ func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, ":mute: Silencing **%s** for %s.\n\n", silenceTargetLabel(scope, target), duration)
-	okCount := 0
+	var tasks []silenceTask
 	for _, job := range jobs {
 		for _, g := range groupByAMURL(job.configs) {
-			if p.createChannelSilence(&b, args, g, actor, comment, endsAt, duration, target, job.matchers) {
-				okCount++
-			}
+			tasks = append(tasks, silenceTask{group: g, matchers: job.matchers})
+		}
+	}
+	ids, errs := queryGroups(tasks, func(t silenceTask) (string, error) {
+		return alertmanager.CreateSilence(context.Background(), t.group.URL, actor, comment, endsAt, t.matchers)
+	})
+	okCount := 0
+	for i, t := range tasks {
+		if p.reportChannelSilence(&b, args, t.group, ids[i], errs[i], endsAt, duration, target) {
+			okCount++
 		}
 	}
 	if okCount == 0 {
@@ -82,10 +89,17 @@ func (p *Plugin) handleSilence(args *model.CommandArgs) (string, error) {
 	return b.String(), nil
 }
 
-// createChannelSilence creates one silence on one Alertmanager, records it for
-// this channel so it can be expired from here, and writes the result line to b.
-func (p *Plugin) createChannelSilence(b *strings.Builder, args *model.CommandArgs, g amGroup, actor, comment string, endsAt time.Time, duration time.Duration, target string, matchers []alertmanager.SilenceMatcher) bool {
-	id, err := alertmanager.CreateSilence(context.Background(), g.URL, actor, comment, endsAt, matchers)
+// silenceTask is one silence to create: one Alertmanager and the matchers for
+// one part of the silence plan. Two tasks can share an Alertmanager.
+type silenceTask struct {
+	group    amGroup
+	matchers []alertmanager.SilenceMatcher
+}
+
+// reportChannelSilence records a created silence for this channel so it can be
+// expired from here, and writes the result line to b. Each Alertmanager stands
+// alone: a failure on one does not undo the silences created on the others.
+func (p *Plugin) reportChannelSilence(b *strings.Builder, args *model.CommandArgs, g amGroup, id string, err error, endsAt time.Time, duration time.Duration, target string) bool {
 	if err != nil {
 		p.auditLog("silence.create", args.UserId, target, args.ChannelId, "failure")
 		fmt.Fprintf(b, "- `%s` — :x: %s\n", g.URL, p.amErrorText(args.UserId, err))

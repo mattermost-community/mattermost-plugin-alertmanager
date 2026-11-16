@@ -145,7 +145,7 @@ const maxParallelAMCalls = 8
 // queryGroups calls every group concurrently and returns the results in group
 // order, so a channel whose Alertmanagers are all down waits one
 // RequestBudget instead of one per backend.
-func queryGroups[T any](groups []amGroup, call func(amGroup) (T, error)) ([]T, []error) {
+func queryGroups[G, T any](groups []G, call func(G) (T, error)) ([]T, []error) {
 	vals := make([]T, len(groups))
 	errs := make([]error, len(groups))
 	sem := make(chan struct{}, maxParallelAMCalls)

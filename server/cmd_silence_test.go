@@ -290,3 +290,54 @@ func TestListSilencesShowsOnlyThisChannelsSilences(t *testing.T) {
 		t.Errorf("a silence for another channel's runbook must not be listed:\n%s", out)
 	}
 }
+
+type silenceUserAPI struct{ *silenceKVAPI }
+
+func (silenceUserAPI) GetUser(id string) (*model.User, *model.AppError) {
+	return &model.User{Id: id, Username: "ada"}, nil
+}
+
+func TestSilenceCreateCallsAlertmanagersConcurrently(t *testing.T) {
+	slowAM := func(id string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(300 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"silenceID":"` + id + `"}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	const (
+		idA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		idB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	)
+	amA, amB := slowAM(idA), slowAM(idB)
+
+	_, ipNet, err := net.ParseCIDR("127.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alertmanager.SetAllowedNets([]*net.IPNet{ipNet})
+	t.Cleanup(func() { alertmanager.SetAllowedNets(nil) })
+
+	p, api := newSilenceKVPlugin()
+	p.API = silenceUserAPI{api}
+	p.setConfiguration(newConfiguration([]alertConfig{
+		{Name: "high-cpu-usage--ateam-alerts", Team: "ateam", Channel: "alerts", WebhookID: "h1", AlertManagerURL: amA.URL},
+		{Name: "high-cpu-usage--ateam-alerts-b", Team: "ateam", Channel: "alerts", WebhookID: "h2", AlertManagerURL: amB.URL},
+	}, "", 0, "", "", 0))
+
+	start := time.Now()
+	out, err := p.handleSilence(&model.CommandArgs{Command: "/alertmanager silence 1h compute", ChannelId: "chanA", UserId: "u1"})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{idA, idB} {
+		if !strings.Contains(out, id) {
+			t.Fatalf("silence %s missing from the reply:\n%s", id, out)
+		}
+	}
+	if elapsed > 550*time.Millisecond {
+		t.Fatalf("two 300ms Alertmanagers took %s; they were called one at a time", elapsed)
+	}
+}
