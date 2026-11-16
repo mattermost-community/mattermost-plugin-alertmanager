@@ -285,7 +285,7 @@ func (p *Plugin) runInventoryWebhookTest(targetSlugs []string, configs []alertCo
 		if err == nil {
 			item.Detail = "Posted test payload — check the channel for the message."
 		} else {
-			item.Detail = err.Error()
+			item.Detail = webhookTestDetail(err)
 		}
 		res.Items = append(res.Items, item)
 	}

@@ -80,3 +80,38 @@ func TestValidateFireDoesNotSurfaceTheRawDialError(t *testing.T) {
 		t.Fatalf("validate fire error names the address: %v", err)
 	}
 }
+
+type webhookURLErrorTransport struct{}
+
+func (webhookURLErrorTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	addr, _ := net.ResolveTCPAddr("tcp", r.URL.Host)
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Addr: addr, Err: syscall.ECONNREFUSED}
+}
+
+func TestWebhookTestErrorShowsTheHostToSystemAdminsOnly(t *testing.T) {
+	prev := webhookTestClient
+	t.Cleanup(func() { webhookTestClient = prev })
+	webhookTestClient = &http.Client{Transport: webhookURLErrorTransport{}}
+
+	const hookID = "abcdefghijklmnopqrstuvwxyz"
+	err := postValidateTestMessage("http://10.1.2.3:8065/hooks/"+hookID, hookID, "r")
+	if err == nil {
+		t.Fatal("want a transport error")
+	}
+
+	p, api := newSilenceKVPlugin()
+	api.sysadmin = false
+	member := p.webhookTestErrorText("member", err)
+	if strings.Contains(member, "10.1.2.3") || strings.Contains(member, hookID) || !strings.Contains(member, "did not respond") {
+		t.Errorf("team admin text: %q", member)
+	}
+
+	api.sysadmin = true
+	admin := p.webhookTestErrorText("admin", err)
+	if !strings.Contains(admin, "10.1.2.3") || strings.Contains(admin, hookID) {
+		t.Errorf("system admin text should name the host but not the hook ID: %q", admin)
+	}
+	if detail := webhookTestDetail(err); strings.Contains(detail, hookID) {
+		t.Errorf("inventory detail leaks the hook ID: %q", detail)
+	}
+}

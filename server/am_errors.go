@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
@@ -42,6 +43,52 @@ func amAdminErrorText(err error) string {
 	default:
 		return err.Error()
 	}
+}
+
+// webhookTestError is a webhook test POST that never got a reply. Error is the
+// line safe for team admins. detail is the transport text with the hook ID
+// scrubbed, which still names the webhook host and its resolved address.
+type webhookTestError struct {
+	msg    string
+	detail string
+}
+
+func (e *webhookTestError) Error() string { return e.msg }
+
+func newWebhookTestError(err error, scrubbed string) *webhookTestError {
+	var blocked *alertmanager.BlockedDestinationError
+	var netErr net.Error
+	msg := "POST failed: the webhook URL did not respond"
+	switch {
+	case errors.As(err, &blocked):
+		msg = "POST failed: " + blocked.Error()
+	case errors.As(err, &netErr) && netErr.Timeout():
+		msg = "POST failed: no reply within 5s"
+	}
+	return &webhookTestError{msg: msg, detail: "POST failed: " + scrubbed}
+}
+
+// webhookTestDetail is the full text for callers already gated on system admin.
+func webhookTestDetail(err error) string {
+	var te *webhookTestError
+	if errors.As(err, &te) {
+		return te.detail
+	}
+	return err.Error()
+}
+
+// webhookTestErrorText logs a webhook test failure and returns the detail to
+// system admins and the short line to everyone else.
+func (p *Plugin) webhookTestErrorText(userID string, err error) string {
+	var te *webhookTestError
+	if !errors.As(err, &te) {
+		return err.Error()
+	}
+	p.API.LogWarn("webhook test POST failed", "detail", te.detail)
+	if p.requireSystemAdmin(userID) == nil {
+		return webhookTestDetail(err)
+	}
+	return te.msg
 }
 
 // logAMError writes the unsanitized text of an Alertmanager failure to the

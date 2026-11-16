@@ -225,6 +225,9 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig,
 		// schema error still signals a real problem with the receiver/route
 		// structure regardless of deployment method.
 		_, mergedYAML := buildDiffAgainstLoaded(entry.ConfigBody, newRecvs.String(), newRoutes.String())
+		// The raw load error can quote any value in the merged config, other
+		// channels' receivers included. It is shown as is because diff is
+		// system-admin only, and a system admin can already read that config.
 		if err := validateMergedConfig(mergedYAML); err != nil {
 			fmt.Fprintf(&diffOutput, "Validation: :x: merged config would NOT load.\n  Error: %s\n", err.Error())
 			if crdMode {

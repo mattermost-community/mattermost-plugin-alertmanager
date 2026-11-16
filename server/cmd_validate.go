@@ -193,7 +193,7 @@ func (p *Plugin) handleValidate(args *model.CommandArgs) (string, error) {
 		if webhookTest {
 			webhookURL := p.webhookURLForReceiver(c)
 			if err := postValidateTestMessage(webhookURL, c.WebhookID, c.Name); err != nil {
-				r.WebhookAccepts = "✗ " + err.Error()
+				r.WebhookAccepts = "✗ " + p.webhookTestErrorText(args.UserId, err)
 			} else {
 				r.WebhookAccepts = "✓ (test post sent to channel)"
 			}
@@ -544,7 +544,7 @@ func postValidateTestMessage(webhookURL, hookID, receiverName string) error {
 	if err != nil {
 		// Do() returns a *url.Error containing the full webhook URL (with the raw
 		// hook ID) on transport failure — scrub it before it reaches the result.
-		return fmt.Errorf("POST failed: %s", scrubHookID(err.Error(), hookID))
+		return newWebhookTestError(err, scrubHookID(err.Error(), hookID))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
