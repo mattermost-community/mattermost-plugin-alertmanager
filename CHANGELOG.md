@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > credentials, such as an in-cluster Service URL. Entries that still carry the old keys
 > load normally, and the credentials are dropped on the next write.
 
+> **⚠️ Behavior change — webhook override settings are opt-in.** The plugin no longer
+> turns on Mattermost's server-wide `EnablePostUsernameOverride` and
+> `EnablePostIconOverride` at activation. Turn them on in System Console → Integrations
+> → Integration Management, or enable the new `EnableIntegrationOverrides` plugin
+> setting. Until then, alert posts show the name or picture of the sysadmin who ran
+> `config add`, and `config add` says which. Installs where the plugin already turned
+> them on are unaffected.
+
 ### Features
 
 * `/alertmanager format` command group: `format export [standard|crd]` (this channel's config and rules), `format diff [standard|crd]` (Alertmanager config only, sysadmin) and `format rules`.
@@ -39,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `silence expire` only ends silences created from the calling channel with `silence create`. A team admin can no longer end another team's silence on a shared Alertmanager. Silences created before this version have no record and must be ended in Alertmanager.
 * The Alertmanager runbook link in chat messages only follows `http(s)://` URLs. Any other `runbook_url` falls back to the plugin runbook, or to no link for a custom receiver.
 * `silence list` shows only the silences that apply to the channel. `silence create <alert>` is limited to alerts the channel's receivers carry, and `all` and the `mattermost` group also cover the operator alerts.
-* Every command is authorized in one place, before it runs. `format diff`, `silence create`, `silence expire` and the `admin` commands are system admin only, and `config` and `format export` verbs stay team admin.
+* Every command is authorized in one place, before it runs. `format diff`, `silence create`, `silence expire` and the `admin` commands are system admin only, and `config`, `format export` and `format rules` verbs need a team admin.
 * The image-registry allowlist entries go into generated rules only for team admins, and the blocked-address and suggested-CIDR detail of an Alertmanager connection error is shown only to system admins.
 * Autocomplete requests are capped in size, and the runbook list is read once.
 * Alertmanager errors in chat no longer name the resolved IP and port for anyone but system admins, and `config validate webhook-test` no longer names the webhook host for team admins. The full text goes to the plugin log.
@@ -50,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * A channel's Alertmanagers are called concurrently, up to 8 at once, for `alerts`, `silence list`, `silence create` and the inventory page. Each call shares one 15-second budget across its retries, and an Alertmanager that fails 3 times in a row is skipped for 30 seconds.
 
 ### Bug Fixes
+
+* The background webhook check runs every 30 minutes instead of every 5, with up to 4 checks at once and a 2-minute budget. A check that runs out of budget is picked up where it stopped, so every webhook is still checked. The expired-YAML sweep runs every 15 minutes.
 
 * Removed the license-expiry alert and its runbook. Mattermost has no license-expiry metric, so the rule never fired.
 * The Mattermost API latency, DB latency, error-rate and login-failure rules and runbooks now use the metrics Mattermost exports (`mattermost_api_time_*`, `mattermost_db_store_time_*`, `mattermost_login_logins_fail_total`). The old names matched nothing, so those alerts never fired. The docs name `MetricsSettings.Enable`, and no longer tell you to add hosts to `AllowedUntrustedInternalConnections`, which the plugin does not need.
