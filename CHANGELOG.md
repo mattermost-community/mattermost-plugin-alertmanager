@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > rejected with a message showing the new form. `config export`, `config diff` and `rules`
 > now reply with a pointer to the `format` group. Update any saved runbooks or scripts.
 
+> **⚠️ BREAKING — silences are system admin only.** An Alertmanager silence applies to
+> every channel on that Alertmanager, so `silence create` and `silence expire` now need
+> a system admin. Team admins who silenced alerts from their own channel get a denial.
+> `silence list` is unchanged.
+
+> **⚠️ BREAKING — no basic auth to Alertmanager.** The per-receiver `user`/`password`
+> fields are removed. The plugin expects an Alertmanager API it can reach without
+> credentials, such as an in-cluster Service URL. Entries that still carry the old keys
+> load normally, and the credentials are dropped on the next write.
+
 ### Features
 
 * `/alertmanager format` command group: `format export [standard|crd]` (this channel's config and rules), `format diff [standard|crd]` (Alertmanager config only, sysadmin) and `format rules`.
@@ -29,10 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `silence expire` only ends silences created from the calling channel with `silence create`. A team admin can no longer end another team's silence on a shared Alertmanager. Silences created before this version have no record and must be ended in Alertmanager.
 * The Alertmanager runbook link in chat messages only follows `http(s)://` URLs. Any other `runbook_url` falls back to the plugin runbook, or to no link for a custom receiver.
 * `silence list` shows only the silences that apply to the channel. `silence create <alert>` is limited to alerts the channel's receivers carry, and `all` and the `mattermost` group also cover the operator alerts.
-* Every command is authorized in one place, before it runs. `format diff` and the `admin` commands stay system admin only, and `config`, `silence` and `format export` verbs stay team admin.
+* Every command is authorized in one place, before it runs. `format diff`, `silence create`, `silence expire` and the `admin` commands are system admin only, and `config` and `format export` verbs stay team admin.
 * The image-registry allowlist entries go into generated rules only for team admins, and the blocked-address and suggested-CIDR detail of an Alertmanager connection error is shown only to system admins.
 * Autocomplete requests are capped in size, and the runbook list is read once.
+* Alertmanager errors in chat no longer name the resolved IP and port for anyone but system admins, and `config validate webhook-test` no longer names the webhook host for team admins. The full text goes to the plugin log.
 * Dependency updates (x/net 0.61, x/crypto 0.58, otel, grpc 1.85, alertmanager 0.34.1, goldmark 1.8.7) and pinned GitHub Actions bumps. The standing `GO-2026-5932` finding stays open on purpose.
+
+### Performance
+
+* A channel's Alertmanagers are called concurrently, up to 8 at once, for `alerts`, `silence list`, `silence create` and the inventory page. Each call shares one 15-second budget across its retries, and an Alertmanager that fails 3 times in a row is skipped for 30 seconds.
 
 ### Bug Fixes
 
