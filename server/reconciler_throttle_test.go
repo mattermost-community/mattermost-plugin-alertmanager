@@ -166,3 +166,45 @@ func TestProbeCursorStartsOverWhenItsHookIsGone(t *testing.T) {
 	p.setProbeCursor("removed")
 	assert.Equal(t, []string{"a", "b", "d"}, p.rotateToProbeCursor([]string{"a", "b", "d"}))
 }
+
+func TestProbeWebhooksRetriesChecksTheDeadlineCutOff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(60 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		_, _ = w.Write([]byte(`{"id":"` + id + `"}`))
+	}))
+	defer srv.Close()
+
+	c := model.NewAPIv4Client(srv.URL)
+	p := &Plugin{}
+	p.API = &reconcilerAPI{}
+	// Eight hooks on four workers: every hook is handed out, but the second
+	// four are still in flight when the budget ends.
+	var configs []alertConfig
+	for i := range 8 {
+		configs = append(configs, alertConfig{Name: fmt.Sprintf("r%d", i), WebhookID: fmt.Sprintf("hook%d", i)})
+	}
+
+	checked := map[string]bool{}
+	for range 20 {
+		for id := range p.probeWebhooks(c, configs, 100*time.Millisecond) {
+			checked[id] = true
+		}
+		if len(checked) == len(configs) {
+			return
+		}
+	}
+	t.Fatalf("%d of %d hooks were never checked: %v", len(configs)-len(checked), len(configs), checked)
+}
+
+func TestFirstUnfinishedPassesOverAHookThatHangsEveryTime(t *testing.T) {
+	ids := []string{"a", "b", "c", "d"}
+	assert.Equal(t, "", firstUnfinished(ids, map[string]bool{"a": true, "b": true, "c": true, "d": true}))
+	assert.Equal(t, "c", firstUnfinished(ids, map[string]bool{"a": true, "b": true}))
+	assert.Equal(t, "c", firstUnfinished(ids, map[string]bool{"b": true}), "a hung start hook does not pin the cursor")
+	assert.Equal(t, "a", firstUnfinished(ids, map[string]bool{"b": true, "c": true, "d": true}), "the start hook is retried once it is the only one left")
+}

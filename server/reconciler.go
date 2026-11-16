@@ -542,15 +542,21 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget t
 	hookIDs = p.rotateToProbeCursor(hookIDs)
 
 	var (
-		mu     sync.Mutex
-		status = make(map[string]bool, len(hookIDs))
-		wg     sync.WaitGroup
-		jobs   = make(chan string)
+		mu       sync.Mutex
+		status   = make(map[string]bool, len(hookIDs))
+		finished = make(map[string]bool, len(hookIDs))
+		wg       sync.WaitGroup
+		jobs     = make(chan string)
 	)
 	for range min(orphanProbeWorkers, len(hookIDs)) {
 		wg.Go(func() {
 			for id := range jobs {
 				_, resp, err := c.GetIncomingWebhook(ctx, id, "")
+				if ctx.Err() == nil {
+					mu.Lock()
+					finished[id] = true
+					mu.Unlock()
+				}
 				switch {
 				case err == nil:
 					mu.Lock()
@@ -567,18 +573,32 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget t
 			}
 		})
 	}
-	next := ""
 	for _, id := range hookIDs {
 		if ctx.Err() != nil {
-			next = id
 			break
 		}
 		jobs <- id
 	}
 	close(jobs)
 	wg.Wait()
-	p.setProbeCursor(next)
+	p.setProbeCursor(firstUnfinished(hookIDs, finished))
 	return status
+}
+
+// firstUnfinished returns the first hook, in probe order, whose check did not
+// finish before the budget ran out, or "" when every check finished. The hook
+// the check started at is passed over when a later one is unfinished, so a hook
+// that hangs on every check cannot hold the cursor in place.
+func firstUnfinished(hookIDs []string, finished map[string]bool) string {
+	for i, id := range hookIDs {
+		if i > 0 && !finished[id] {
+			return id
+		}
+	}
+	if len(hookIDs) > 0 && !finished[hookIDs[0]] {
+		return hookIDs[0]
+	}
+	return ""
 }
 
 // rotateToProbeCursor reorders hookIDs to start at the hook the last check did
