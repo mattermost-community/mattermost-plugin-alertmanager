@@ -323,6 +323,9 @@ func (p *Plugin) renderAddSummary(args *model.CommandArgs, req addRequest, dest 
 
 	b.WriteString(fmt.Sprintf(":white_check_mark: `/alertmanager config add` complete: %d created, %d skipped, %d failed.\n\n", created, skipped, failed))
 	b.WriteString(fmt.Sprintf("All receivers bound to channel `~%s`. Alertmanager URL: `%s`\n\n", dest.channel, req.amURL))
+	if created > 0 {
+		b.WriteString(p.overrideSetupHint())
+	}
 	b.WriteString("| Receiver | Status | Detail |\n")
 	b.WriteString("|----------|--------|--------|\n")
 	for _, r := range results {

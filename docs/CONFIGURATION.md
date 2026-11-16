@@ -58,8 +58,8 @@ Integration Management). Both are server-wide and affect every
 integration, not just this plugin's webhooks.
 
 With this setting off, the plugin changes nothing. If either toggle is
-off, it logs a warning at activation and posts show as the sysadmin who
-created the receiver. Turn this setting on if you want the plugin to
+off, it logs a warning at activation, `config add` says so in its reply,
+and posts show as the sysadmin who created the receiver. Turn this setting on if you want the plugin to
 switch both on when it activates. It is a no-op when both are already on.
 
 ### `AlertManagerCABundle`

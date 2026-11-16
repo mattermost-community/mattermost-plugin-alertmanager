@@ -135,7 +135,7 @@ func (p *Plugin) applyIntegrationOverridePolicy() {
 	}
 	usernameOn := enabledSetting(cfg.ServiceSettings.EnablePostUsernameOverride)
 	iconOn := enabledSetting(cfg.ServiceSettings.EnablePostIconOverride)
-	if usernameOn && iconOn {
+	if integrationOverridesOn(cfg) {
 		return
 	}
 
@@ -158,6 +158,21 @@ func (p *Plugin) applyIntegrationOverridePolicy() {
 }
 
 func enabledSetting(b *bool) bool { return b != nil && *b }
+
+func integrationOverridesOn(cfg *model.Config) bool {
+	return enabledSetting(cfg.ServiceSettings.EnablePostUsernameOverride) &&
+		enabledSetting(cfg.ServiceSettings.EnablePostIconOverride)
+}
+
+// overrideSetupHint is the line config add appends while Mattermost would still
+// show webhook posts as the creating sysadmin instead of @alertmanagerbot.
+func (p *Plugin) overrideSetupHint() string {
+	cfg := p.API.GetConfig()
+	if cfg == nil || integrationOverridesOn(cfg) {
+		return ""
+	}
+	return ":information_source: Posts will show as you until a sysadmin turns on the two integration override settings (System Console > Integrations > Integration Management: \"Enable integrations to override usernames\" and \"...profile picture icons\") or this plugin's `EnableIntegrationOverrides` setting.\n\n"
+}
 
 func (p *Plugin) OnDeactivate() error {
 	if p.stopReconciler != nil {
