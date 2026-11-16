@@ -74,8 +74,8 @@ Management**:
 - **Enable integrations to override usernames**
 - **Enable integrations to override profile picture icons**
 
-Until both are on, alert posts show as the sysadmin who ran `config add`, and
-`config add` says so in its reply. These settings apply to every integration on
+Until both are on, alert posts show the name, the profile picture, or both of
+the sysadmin who ran `config add`, and `config add` says which in its reply. These settings apply to every integration on
 the server, so the plugin leaves them alone by default. If you would rather the
 plugin turn them on, enable **EnableIntegrationOverrides** in the plugin
 settings (Step 2).
@@ -264,7 +264,7 @@ job:
 | Links in System Console show `__PLUGIN_REPO_URL__` / 404 | Installed the **Source code** archive, not the release **Asset** | Re-install the `com.mattermost.alertmanager-*.tar.gz` from **Assets** |
 | Re-uploaded the fix but it's still broken | Same version reinstalled; MM kept the old copy | Force-overwrite: `mmctl plugin add <bundle> --force` (or delete-then-add), then hard-refresh |
 | Alert commands show `<no value>` for namespace/pod | Alert rule doesn't emit those labels | Add `namespace`/`pod` labels to the rule (Step 6) |
-| Posts show as the sysadmin who ran `config add`, not `@alertmanagerbot` | Override settings off | Turn on both override settings (Step 1), or the plugin's **EnableIntegrationOverrides** setting |
+| Posts show the name or picture of the sysadmin who ran `config add`, not `@alertmanagerbot` | One or both override settings off | Turn on both override settings (Step 1), or the plugin's **EnableIntegrationOverrides** setting |
 | Alertmanager can't reach the webhook | AM can't hit your SiteURL | Set **Webhook host override** (Step 2) / see [KUBERNETES.md](KUBERNETES.md) |
 | `/alertmanager config add`, `validate`, or the inventory page can't reach Alertmanager (connection refused / blocked) | AM is on a private/internal IP, which is blocked by default (SSRF guard) | Add the AM's network to **Alertmanager allowed destinations** (Step 2), e.g. `10.0.0.0/8` |
 | `/metrics` returns 401 | Token mismatch | Match the Prometheus `credentials` to the **MetricsToken** setting |

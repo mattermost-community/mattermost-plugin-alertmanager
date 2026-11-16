@@ -20,25 +20,35 @@ func (a overrideSettingsAPI) GetConfig() *model.Config {
 	return cfg
 }
 
-func TestOverrideSetupHintShowsUntilBothSettingsAreOn(t *testing.T) {
+func TestOverrideSetupHintNamesWhatIsStillOff(t *testing.T) {
 	cases := []struct {
 		username, icon bool
-		wantHint       bool
+		want           []string
+		notWant        []string
 	}{
-		{false, false, true},
-		{true, false, true},
-		{false, true, true},
-		{true, true, false},
+		{false, false, []string{"your name and profile picture", "override usernames", "override profile picture icons"}, nil},
+		{true, false, []string{"your profile picture", "override profile picture icons"}, []string{"your name", "override usernames"}},
+		{false, true, []string{"your name instead", "override usernames"}, []string{"profile picture"}},
 	}
 	for _, c := range cases {
 		p := &Plugin{}
 		p.API = overrideSettingsAPI{username: c.username, icon: c.icon}
 		hint := p.overrideSetupHint()
-		if got := strings.Contains(hint, "Posts will show as you"); got != c.wantHint {
-			t.Errorf("username=%v icon=%v: hint shown=%v, want %v (%q)", c.username, c.icon, got, c.wantHint, hint)
+		for _, w := range append(c.want, "EnableIntegrationOverrides") {
+			if !strings.Contains(hint, w) {
+				t.Errorf("username=%v icon=%v: hint lacks %q: %q", c.username, c.icon, w, hint)
+			}
 		}
-		if c.wantHint && !strings.Contains(hint, "EnableIntegrationOverrides") {
-			t.Errorf("hint does not name the plugin setting: %q", hint)
+		for _, w := range c.notWant {
+			if strings.Contains(hint, w) {
+				t.Errorf("username=%v icon=%v: hint wrongly says %q: %q", c.username, c.icon, w, hint)
+			}
 		}
+	}
+
+	p := &Plugin{}
+	p.API = overrideSettingsAPI{username: true, icon: true}
+	if hint := p.overrideSetupHint(); hint != "" {
+		t.Errorf("both settings on: want no hint, got %q", hint)
 	}
 }
