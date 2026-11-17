@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -289,13 +291,24 @@ func (p *Plugin) rulesFileForChannel(namespace string, scoped []alertConfig, for
 	if len(slugs) == 0 {
 		return nil, ":information_source: No rules file: this channel has only custom receivers, and the sample rules are written for the shipped runbooks. Write the Prometheus rule for your own alert and give it the labels your route matches."
 	}
-	name := prometheusRuleObject + "-" + dnsLabel(scoped[0].Team) + "-" + dnsLabel(scoped[0].Channel)
+	name := channelRuleObjectName(scoped[0].Team, scoped[0].Channel)
 	rules, err := p.buildRulesFile(namespace, name, "this channel", slugs, format)
 	if err != nil {
 		p.API.LogWarn("export: couldn't build the rules file", "err", err.Error())
 		return nil, fmt.Sprintf(":warning: Couldn't build the rules file for this channel (%v). Run `/alertmanager format rules` for the full set.", err)
 	}
 	return rules, ""
+}
+
+// channelRuleObjectName is the per-channel PrometheusRule name. The readable
+// team and channel part alone is ambiguous: team ops-a with channel b and team
+// ops with channel a-b both read ops-a-b, and dnsLabel folds `_` into `-`. The
+// hash of the exact pair keeps two channels from overwriting each other's object.
+// Mattermost team and channel names cannot contain `/`, so the hashed key is
+// unambiguous.
+func channelRuleObjectName(team, channel string) string {
+	sum := sha256.Sum256([]byte(team + "/" + channel))
+	return prometheusRuleObject + "-" + dnsLabel(team) + "-" + dnsLabel(channel) + "-" + hex.EncodeToString(sum[:4])
 }
 
 // dnsLabel lowercases s and swaps anything outside [a-z0-9-] for `-`, so a

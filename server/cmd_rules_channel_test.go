@@ -55,7 +55,7 @@ func TestRulesFileForChannelCRD(t *testing.T) {
 	if rules == nil || reason != "" {
 		t.Fatalf("rules=%v reason=%q", rules, reason)
 	}
-	if rules.name != "mattermost-alertmanager-rules-ops-alerts.yaml" {
+	if rules.name != channelRuleObjectName("ops", "alerts")+".yaml" {
 		t.Fatalf("name = %q", rules.name)
 	}
 	body := string(rules.data)
@@ -122,7 +122,7 @@ func TestFormatExportCRDIsOneMessageWithConfigAndRules(t *testing.T) {
 		t.Fatalf("want one DM post, got %d", len(api.posts))
 	}
 	files := api.posts[0].FileIds
-	if len(files) != 2 || files[0] != "alertmanager-config.yaml" || files[1] != "mattermost-alertmanager-rules-ops-alerts.yaml" {
+	if len(files) != 2 || files[0] != "alertmanager-config.yaml" || files[1] != channelRuleObjectName("ops", "alerts")+".yaml" {
 		t.Fatalf("files = %v", files)
 	}
 	if !strings.Contains(api.posts[0].Message, "Prometheus rules") {
@@ -147,5 +147,23 @@ func TestFormatExportStandardIsOneMessageWithConfigRoutesAndRules(t *testing.T) 
 	}
 	if got := len(api.posts[0].FileIds); got != 3 {
 		t.Fatalf("want receivers + routes + rules, got %v", api.posts[0].FileIds)
+	}
+}
+
+func TestChannelRuleObjectNameKeepsLookalikeChannelsApart(t *testing.T) {
+	pairs := [][2]string{{"ops-a", "b"}, {"ops", "a-b"}, {"ops", "a_b"}}
+	seen := map[string][2]string{}
+	for _, pr := range pairs {
+		name := channelRuleObjectName(pr[0], pr[1])
+		if prev, dup := seen[name]; dup {
+			t.Fatalf("%v and %v both map to %q", prev, pr, name)
+		}
+		seen[name] = pr
+		if !strings.HasPrefix(name, prometheusRuleObject+"-"+dnsLabel(pr[0])+"-"+dnsLabel(pr[1])+"-") {
+			t.Fatalf("name should keep the readable team and channel: %q", name)
+		}
+	}
+	if got := channelRuleObjectName("ops", "alerts"); got != "mattermost-alertmanager-rules-ops-alerts-64fa847e" {
+		t.Fatalf("the name must stay stable so re-exports update the same object, got %q", got)
 	}
 }
