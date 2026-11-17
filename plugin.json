@@ -5,7 +5,7 @@
     "homepage_url": "__PLUGIN_REPO_URL__",
     "support_url": "__PLUGIN_REPO_URL__/issues",
     "icon_path": "assets/alertmanager-logo.svg",
-    "version": "1.5.0",
+    "version": "1.0.4",
     "min_server_version": "10.5.0",
     "server": {
         "executables": {
@@ -20,91 +20,91 @@
                 "header": "## Alertmanager Plugin\n\nPrometheus Alertmanager alerts in Mattermost, with the runbook attached.\n\n- 📚 [Documentation](/plugins/com.mattermost.alertmanager/public/help/home.html)\n- 📖 [Runbook library](/plugins/com.mattermost.alertmanager/public/runbooks/home.html)\n- 📈 [Sample Prometheus rules](/plugins/com.mattermost.alertmanager/public/help/prometheus-rules.html)\n- 📊 [Org-wide inventory (sysadmin)](/plugins/com.mattermost.alertmanager/admin/inventory)\n\nRun `/alertmanager help` in any channel for commands. Version `__PLUGIN_VERSION__` — [release notes](__PLUGIN_RELEASE_URL__).",
                 "footer": "### Most-used commands\n\n| Command | When |\n|---|---|\n| `/alertmanager config add <am-url>` | First-time setup — creates the 36 canonical receivers in a channel |\n| `/alertmanager format rules` | Get the sample Prometheus rules (view or download) |\n| `/alertmanager config` | See receivers bound to this channel |\n\nRun `/alertmanager help` in chat for the full command list.",
                 "settings": [
-            {
-                "key": "AssembledYAMLTTLHours",
-                "display_name": "Auto-delete DM'd YAML files after (hours)",
-                "type": "number",
-                "help_text": "Hours to keep the DM'd receivers.yml/routes.yml (they contain webhook tokens) before auto-deleting; 0 disables auto-delete.",
-                "placeholder": "72",
-                "default": 72
-            },
-            {
-                "key": "AlertManagerCABundle",
-                "display_name": "Alertmanager CA bundle (PEM)",
-                "type": "longtext",
-                "help_text": "Optional PEM CA bundle so the plugin trusts self-signed or internal Alertmanager certs on its outbound calls; empty uses the system CAs.",
-                "placeholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
-                "default": ""
-            },
-            {
-                "key": "AlertManagerAllowedCIDRs",
-                "display_name": "Alertmanager allowed destinations (CIDRs)",
-                "type": "longtext",
-                "help_text": "SSRF allowlist of CIDRs the plugin may connect to for Alertmanager API calls (one per line or comma-separated, e.g. `10.0.0.0/8` or `10.42.7.9/32`). The plugin BLOCKS private/internal, loopback, link-local (incl. cloud metadata 169.254.169.254), multicast, and unspecified addresses by default, so an in-cluster Alertmanager on a private IP / *.svc requires listing its CIDR here. Empty = only PUBLIC destinations are reachable. An explicit entry also re-enables an otherwise-blocked address (e.g. `127.0.0.1/32` for a same-host Alertmanager).",
-                "placeholder": "10.0.0.0/8\n192.168.0.0/16",
-                "default": ""
-            },
-            {
-                "key": "MetricsToken",
-                "display_name": "Metrics endpoint bearer token",
-                "type": "text",
-                "secret": true,
-                "help_text": "Optional bearer token that turns on the Prometheus metrics endpoint at `/plugins/com.mattermost.alertmanager/metrics`; empty disables it (404). Kept secret — it can't be read back here once saved. To mint or rotate a token (and get a ready-to-paste Prometheus scrape_config), run `/alertmanager metrics-token generate` in any channel as a system admin; run `/alertmanager metrics-token` to check status without rotating.",
-                "placeholder": "(random 64-character hex string)",
-                "default": ""
-            },
-            {
-                "key": "WebhookHostPreset",
-                "display_name": "Webhook host — preset",
-                "type": "dropdown",
-                "help_text": "Quick-fill for how Alertmanager reaches Mattermost to POST alerts. Pick a common setup, or leave 'None' and type a custom value below (a custom value overrides this preset).",
-                "default": "",
-                "options": [
                     {
-                        "display_name": "None — use the custom field below (blank there = Mattermost SiteURL)",
-                        "value": ""
+                        "key": "AssembledYAMLTTLHours",
+                        "display_name": "Auto-delete DM'd YAML files after (hours)",
+                        "type": "number",
+                        "help_text": "Hours to keep the DM'd receivers.yml/routes.yml (they contain webhook tokens) before auto-deleting; 0 disables auto-delete.",
+                        "placeholder": "72",
+                        "default": 72
                     },
                     {
-                        "display_name": "Docker Desktop / Compose — host.docker.internal:8065",
-                        "value": "http://host.docker.internal:8065"
+                        "key": "AlertManagerCABundle",
+                        "display_name": "Alertmanager CA bundle (PEM)",
+                        "type": "longtext",
+                        "help_text": "Optional PEM CA bundle so the plugin trusts self-signed or internal Alertmanager certs on its outbound calls; empty uses the system CAs.",
+                        "placeholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+                        "default": ""
                     },
                     {
-                        "display_name": "Kubernetes service DNS — namespace 'mattermost' (edit custom field if yours differs)",
-                        "value": "http://mattermost.mattermost.svc.cluster.local:8065"
+                        "key": "AlertManagerAllowedCIDRs",
+                        "display_name": "Alertmanager allowed destinations (CIDRs)",
+                        "type": "longtext",
+                        "help_text": "SSRF allowlist of CIDRs the plugin may connect to for Alertmanager API calls (one per line or comma-separated, e.g. `10.0.0.0/8` or `10.42.7.9/32`). The plugin BLOCKS private/internal, loopback, link-local (incl. cloud metadata 169.254.169.254), multicast, and unspecified addresses by default, so an in-cluster Alertmanager on a private IP / *.svc requires listing its CIDR here. Empty = only PUBLIC destinations are reachable. An explicit entry also re-enables an otherwise-blocked address (e.g. `127.0.0.1/32` for a same-host Alertmanager).",
+                        "placeholder": "10.0.0.0/8\n192.168.0.0/16",
+                        "default": ""
+                    },
+                    {
+                        "key": "MetricsToken",
+                        "display_name": "Metrics endpoint bearer token",
+                        "type": "text",
+                        "secret": true,
+                        "help_text": "Optional bearer token that turns on the Prometheus metrics endpoint at `/plugins/com.mattermost.alertmanager/metrics`; empty disables it (404). Kept secret — it can't be read back here once saved. To mint or rotate a token (and get a ready-to-paste Prometheus scrape_config), run `/alertmanager metrics-token generate` in any channel as a system admin; run `/alertmanager metrics-token` to check status without rotating.",
+                        "placeholder": "(random 64-character hex string)",
+                        "default": ""
+                    },
+                    {
+                        "key": "WebhookHostPreset",
+                        "display_name": "Webhook host — preset",
+                        "type": "dropdown",
+                        "help_text": "Quick-fill for how Alertmanager reaches Mattermost to POST alerts. Pick a common setup, or leave 'None' and type a custom value below (a custom value overrides this preset).",
+                        "default": "",
+                        "options": [
+                            {
+                                "display_name": "None — use the custom field below (blank there = Mattermost SiteURL)",
+                                "value": ""
+                            },
+                            {
+                                "display_name": "Docker Desktop / Compose — host.docker.internal:8065",
+                                "value": "http://host.docker.internal:8065"
+                            },
+                            {
+                                "display_name": "Kubernetes service DNS — namespace 'mattermost' (edit custom field if yours differs)",
+                                "value": "http://mattermost.mattermost.svc.cluster.local:8065"
+                            }
+                        ]
+                    },
+                    {
+                        "key": "WebhookHost",
+                        "display_name": "Webhook host — custom (overrides preset)",
+                        "type": "text",
+                        "help_text": "Optional custom host:port for the `api_url` written into alertmanager.yml; overrides the preset above. Use for a non-default K8s namespace or a bare-metal FQDN. Blank = use the preset (or SiteURL if that's None too).",
+                        "placeholder": "http://mattermost.<your-namespace>.svc.cluster.local:8065",
+                        "default": ""
+                    },
+                    {
+                        "key": "ImageRegistryAllowlist",
+                        "display_name": "Extra container-image registry prefixes",
+                        "type": "longtext",
+                        "help_text": "Registry prefixes to add to the UnexpectedContainerImage allowlist, one per line (for example `ghcr.io/myorg/`). Included the next time someone runs `/alertmanager format rules crd`. The plugin does not patch a running PrometheusRule. Apply the DM'd file, or the stock rule keeps firing. A missing trailing `/` is added so the prefix cannot match a longer name.",
+                        "placeholder": "ghcr.io/myorg/\nregistry.example.com:5000/team/",
+                        "default": ""
+                    },
+                    {
+                        "key": "WebhookRotationDays",
+                        "display_name": "Webhook rotation reminder period (days)",
+                        "type": "number",
+                        "help_text": "Days before the plugin DMs sysadmins to rotate a receiver's webhook (reminder only — no auto-rotation); 0 disables, 90 is a good baseline.",
+                        "placeholder": "0",
+                        "default": 0
+                    },
+                    {
+                        "key": "EnableIntegrationOverrides",
+                        "display_name": "Turn on Mattermost's webhook username and icon overrides",
+                        "type": "bool",
+                        "help_text": "Webhook posts show as @alertmanagerbot only when System Console > Integrations has 'Enable integrations to override usernames' and 'Enable integrations to override profile picture icons' on. Turning this on lets the plugin switch both on, and keeps them on while this setting is on. They are server-wide settings that affect every integration, so this is off by default; with it off the plugin only logs a warning when they are off.",
+                        "default": false
                     }
-                ]
-            },
-            {
-                "key": "WebhookHost",
-                "display_name": "Webhook host — custom (overrides preset)",
-                "type": "text",
-                "help_text": "Optional custom host:port for the `api_url` written into alertmanager.yml; overrides the preset above. Use for a non-default K8s namespace or a bare-metal FQDN. Blank = use the preset (or SiteURL if that's None too).",
-                "placeholder": "http://mattermost.<your-namespace>.svc.cluster.local:8065",
-                "default": ""
-            },
-            {
-                "key": "ImageRegistryAllowlist",
-                "display_name": "Extra container-image registry prefixes",
-                "type": "longtext",
-                "help_text": "Registry prefixes to add to the UnexpectedContainerImage allowlist, one per line (for example `ghcr.io/myorg/`). Included the next time someone runs `/alertmanager format rules crd`. The plugin does not patch a running PrometheusRule. Apply the DM'd file, or the stock rule keeps firing. A missing trailing `/` is added so the prefix cannot match a longer name.",
-                "placeholder": "ghcr.io/myorg/\nregistry.example.com:5000/team/",
-                "default": ""
-            },
-            {
-                "key": "WebhookRotationDays",
-                "display_name": "Webhook rotation reminder period (days)",
-                "type": "number",
-                "help_text": "Days before the plugin DMs sysadmins to rotate a receiver's webhook (reminder only — no auto-rotation); 0 disables, 90 is a good baseline.",
-                "placeholder": "0",
-                "default": 0
-            },
-            {
-                "key": "EnableIntegrationOverrides",
-                "display_name": "Turn on Mattermost's webhook username and icon overrides",
-                "type": "bool",
-                "help_text": "Webhook posts show as @alertmanagerbot only when System Console > Integrations has 'Enable integrations to override usernames' and 'Enable integrations to override profile picture icons' on. Turning this on lets the plugin switch both on, and keeps them on while this setting is on. They are server-wide settings that affect every integration, so this is off by default; with it off the plugin only logs a warning when they are off.",
-                "default": false
-            }
                 ]
             }
         ]

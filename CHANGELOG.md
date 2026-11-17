@@ -5,6 +5,160 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.5.0...v1.0.4) (2026-11-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* the receiver list moved from the plugin config map (`alertconfigsjson`) to the plugin KV store (`alertconfigs:v1`) with no automatic migration. After upgrading, receivers must be re-created with `/alertmanager add`; the old config value is ignored and its webhooks are orphaned.
+
+### Features
+
+* 30-runbook catalog, in-plugin sample rules, WebhookHost UX + cross-team receiver-name fix ([b45c29b](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/b45c29b87ce60f214c8def9d04685ad07ce300f2))
+* add Mattermost Operator alerts to the mattermost target, fix dead metric names ([c225db3](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/c225db3bf6b5474dcd06bdd2cf4ab0ec03c4277e))
+* **add:** --private to create the destination channel as private ([64aa9b3](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/64aa9b317c64fff54551a6589cc4a4954bca494a))
+* **add:** say when posts will show as the caller instead of [@alertmanagerbot](https://github.com/alertmanagerbot) ([48bdd23](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/48bdd23921e44da82c57b424c62f63770bbac861))
+* admin route-tester — severity only for end-to-end + by-team scope ([0d205ad](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/0d205ad072fd9077e688be9f0e1869d67d099c06))
+* AlertmanagerConfig (v1alpha1) CRD renderer ([cccd405](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/cccd405f0885525689bb9c5059c1ca8884a75a3f))
+* **autocomplete:** add Prometheus Operator Alertmanager URL suggestion ([6b39aec](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/6b39aec9553175f0674fff770eab099f8371e2fb))
+* channel-scoped diff with Prometheus Operator CRD auto-detect ([9ef9879](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/9ef9879c44f1c5891461733abd950ee50dd6526d))
+* **commands:** add-custom for generic (non-runbook) receivers ([3d14717](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/3d147177c432662ce7abcac8ce604fe8a57b88ef))
+* complete sample rules to 31 rules (all 30 runbooks) + CI validation ([93fd044](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/93fd0449432eee523c8e23293183babe99e3f85a))
+* expand alert catalog to 30 runbooks with a security category ([56e6633](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/56e6633fcd27a48f0de45363cbeb9364405893fa))
+* format command group, plain-word syntax, single-DM exports, channel-scoped silence expire ([bfec97f](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/bfec97fc0862929695a5d11e3486988ab1c95509))
+* format command group, plain-word syntax, single-DM exports, scoped silence expire ([9c9f6f5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/9c9f6f5ca467104b03850910f0730c4e74049ea2))
+* generic (non-runbook) receivers via /alertmanager add-custom ([30f8feb](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/30f8febd2c2229b05bbde475f0bb5cb6abba0f76))
+* **ha:** propagate receiver-list writes across cluster nodes ([8d3ddce](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/8d3ddce1d60875eb5cf0029fe7585611e30a58b3))
+* **inventory:** recognize CRD-managed receivers as OK ([959202a](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/959202a59dcd456090052044d7d82b6b5a271578))
+* mattermost target with operator alerts, per-group format rules, autocomplete fixes (includes [#70](https://github.com/mattermost-community/mattermost-plugin-alertmanager/issues/70)) ([746ab61](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/746ab61f6bc73322deafc5c948301130a8db4d96))
+* **mattermost:** add WebSocketDrop to the operator pack, drop the rules it replaces ([9fde179](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/9fde1795453f0228bd7154cc325c3d8c81d74032))
+* **mattermost:** mm-db-replicas and mm-postgres-pod for the Mattermost pack ([0802325](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/08023255d49ce047757e100edd514681755a7b67))
+* **metrics:** add metrics-token generate/reveal slash command ([f9f445c](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/f9f445cdc0462c0ab8432887d81f1ba1c4904ba1))
+* offline CRD schema validation + simpler fallback receiver ([feec9de](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/feec9de85f20b64a35bad58a21e55e7fce90b982))
+* Prometheus Operator (CRD) deployment support ([c8ea602](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/c8ea6024f6d7eb5385a5c499ab5b7ee035d4d6c1))
+* **rules:** format rules takes any group or runbook, with one-at-a-time hover ([480ffe6](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/480ffe676cbf88e892c8e80391f9cef7f6fced3b))
+* **rules:** match Mattermost operator alerts on namespace and installation, drop mm-service ([ea1ad3d](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/ea1ad3d3917c23c5b5622813b3e4e2a4e6f8422d))
+* **security:** central command registry, receiver kinds, channel-scoped silences ([787dfbe](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/787dfbe772d9cc0be19612f8f4b4157cf4a3ce85))
+* **settings:** only turn on the server-wide webhook override settings when an admin opts in ([97e7235](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/97e7235fb1021414d58bf71425cf53976a16ae13))
+* ship sample Prometheus rules in-plugin + trim System Console settings ([ea2f522](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/ea2f522df4b2252ffca140e3cb25e8445c666938))
+* split am-url hint into three hover-able suggestions ([2c6edc0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/2c6edc0dcdb4de8adae4e6b9fd06ce32d2bcb84b))
+* WebhookHost preset dropdown + richer am-url autocomplete hint ([72f7131](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/72f7131557ed3b32ad91da0f55979e28e8ac838e))
+* **webhook:** name Mattermost webhooks to mirror the receiver format ([b577fc7](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/b577fc74e98bc725aed6f41b617d423eb5fcfe6d))
+* wire --format=standard|crd into add and export ([53537f7](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/53537f7df3f4086a9779eaa27258a30e804a8c2d))
+
+
+### Bug Fixes
+
+* **access:** format rules needs a team admin or sysadmin ([cae0ccb](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/cae0ccb45bde8826a495fbb3b9cf6ea46ad66b05))
+* add releases the config lock before the DM; DM fallback and export say what is missing ([73575d8](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/73575d89e653170a39238f9f9f69a510911624f0))
+* **add-custom:** address Copilot review (auth, runbook rendering, DM, CRD) ([3f54633](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/3f546335b840114fcd3ec28ef963ffdb5be70d20))
+* **add-custom:** address Copilot suppressed-review findings (C8-C12) ([71af32e](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/71af32e5f815bf3b2aa0f9648f88681e0ea850b2))
+* **add-custom:** custom-only CRD group must not emit ^()$ parent matcher ([84713df](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/84713dfa5b9d717d4e63fc35daa72c06ded65a39))
+* **add-custom:** valid empty routes array for custom-only CRD; harden /add auth ([1afa3a0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/1afa3a096484721e7b92289adea4ba19db4323d2))
+* **add:** name which override setting is off in the config add hint ([e7eefdc](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/e7eefdcb607ad3038b042794931917290e28b9a4))
+* **alertmanager:** never re-send a silence POST, stop retrying hopeless requests, keep addresses out of replies ([227d7cb](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/227d7cb4886191bc87b39f840f7cb8b916435865))
+* **alertmanager:** one caller-owned deadline per call, a circuit breaker, and polling for lost silences ([eba47a8](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/eba47a8381e70b7e3b07d6301f9d9da33a1f9080))
+* **autocomplete:** load channel list for add-custom, not just add ([ddb67c3](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/ddb67c3a0d0023ace06827ac9886db45ba897e36))
+* **autocomplete:** one option at a time after config add, and help typeahead ([44e0f5f](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/44e0f5ffbbd56ea98944f9219a9cd05e707d0dac))
+* **build:** cache manifest vars (:=) so clean can't empty the release bundle ([5f2bc6a](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/5f2bc6a2819cf383e2a9bb2f84321b2204fe0523))
+* **build:** cache manifest vars once (:=) so clean can't break the release ([b64be68](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/b64be68d487affbddc8eed3ad25324605f9f5016))
+* **ci:** make Grype SARIF ingestible by Code Scanning ([48369ef](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/48369ef52c21903fd964d1ae8d3a752331bb8cc9))
+* **ci:** make Grype SARIF ingestible by Code Scanning ([d1c511d](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/d1c511d61917551d256653bafae93f6765eb263e))
+* **config:** address review nits on RMW lock ([75f34d0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/75f34d095a0c08e38f7b1021358519627620557d))
+* **config:** close the config lost-update race (atomic read-modify-write) ([f83ffa9](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/f83ffa9060b3e9f0918987b3d0ba4d3cf8f8dd28))
+* **config:** keep SSRF guard detail out of slash-command validation errors ([c8c8e82](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/c8c8e827abb2effa2b9a37ef8d90b0955097c700))
+* **config:** make config read-modify-write atomic to close lost-update race ([ecdb128](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/ecdb1285fd7ef659b6a3525e17c82b0df8371585))
+* **deps:** build with Go 1.26.11 for the net/http, crypto/tls and crypto/x509 fixes ([87198c5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/87198c5fb8defd39ce25d43c4c30041ba7249b46))
+* **deps:** bump golang.org/x/crypto to v0.56.0 ([3e93b1b](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/3e93b1b892db15b125d949b947d825f5ea3c2f96))
+* **deps:** bump golang.org/x/mod to v0.40.0 (clear HIGH CVEs blocking the v1.4.17 release) ([15a8fa3](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/15a8fa3fd74f64b394e4655671f135d1f428199e))
+* **deps:** bump golang.org/x/mod to v0.40.0 to clear HIGH CVEs ([3be8759](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/3be8759aab23d34929a53f638bc5f9cf8db2026c))
+* **deps:** bump grpc + x/text to clear HIGH CVEs (combines dependabot [#42](https://github.com/mattermost-community/mattermost-plugin-alertmanager/issues/42)-45) ([79ed360](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/79ed360ab258277f1d3e067a856205fdd70dbc9e))
+* **deps:** bump grpc and x/text to clear HIGH CVEs; fold in dependabot updates ([4359876](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/43598764b5bfbcd1c4bcebb36cba3d5e0d8c4e51))
+* **deps:** bump indirect x/net, x/crypto, klauspost/compress past grype advisories ([8b87dcc](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/8b87dccd95fe82f304acd1d399f174eeccf8c80c))
+* **dm:** only ask for the routes file when it is attached, and never print a broken reload command ([8f6aa65](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/8f6aa65846b6f3f42bf122768f5ad01c16756c65))
+* **errors:** sanitize every Alertmanager error shown in chat and log the raw text ([7a3b8a8](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/7a3b8a8394f81ae58f73da9fa11f9b38a9e6428f))
+* **ha:** serialize peer config reload with local writes ([adba264](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/adba26467d2174123b05979b61a9615993d35f41))
+* **inventory:** parse operator column-0 receiver dashes in AM config ([c1554a5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/c1554a56e399c5cef2a0fbd9ed1f605d762a796f))
+* **inventory:** send X-CSRF-Token on route-tester POST (not just XHR header) ([648e1f5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/648e1f5eb0f09e0eae8efd593f358c4b0bb52d07))
+* keep look-alike team and channel names in separate rules objects ([6388094](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/6388094d7f087eca7bcd3a3c580a7662d3b0dee2))
+* **lint:** use strings.Cut in currentTargetSection (modernize) ([9eb65d5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/9eb65d530ff95c20a74bdebde4359e07e924e279))
+* make channel-scoped diff matching and SSRF hints precise ([5664b33](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/5664b3368b0b002574ad450e6d26d0ddf2f6c2ac))
+* make the Alertmanager HTTP client swap race-free + close bodies on retry (4th-pass review) ([e14be77](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/e14be7782685e3a4ccd58be082c44859987837dd))
+* Mattermost alert rules use the exported metric names; rotate reports a live old webhook and a failed DM ([1313f11](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/1313f113cdbbbc10c5b38213be9cc3fadd20562f))
+* migrate to prometheus/alertmanager v0.33 API surface ([64dce85](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/64dce850168a54acba76512c9b52ac12e17272d8))
+* PersistentVolumeFull and WebSocketDrop sample rules ([5d66c4c](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/5d66c4c89e094fb36ffbb8d1231553fde0e46980))
+* **reconciler:** admin repair reports unchecked webhooks; banner dates the prune count ([c90ee8a](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/c90ee8af228144ed0bb4fbd81e696c24ab81dd39))
+* **reconciler:** resume from the first check the deadline cut off ([073ef66](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/073ef669e055b1415d524b4b49435895530b1847))
+* **reconciler:** resume the orphan check where the last one ran out of budget ([6691b84](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/6691b844ec23efa2932c9ea8c99fb3bde14b61c6))
+* **repair:** admin repair and admin repair prune keep separate places ([39aa54e](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/39aa54eef3b13e1d6c5bfab78daa0e01d27194c5))
+* **repair:** admin repair resumes where the last manual run stopped ([b442a68](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/b442a68e25f08d29d878f815f5d4cff6a552bce5))
+* **rotate:** dedup group-webhook double-rotation in rotate --overdue (pre-existing, review) ([4fbc9f2](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/4fbc9f2ab6ff1bf0bc85db080147f77b161c970d))
+* **rotate:** delete the old webhook only after the CAS write commits (CL-24 review) ([1ab6ff9](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/1ab6ff9a48c52685b58e8764feaaa00c4b2a3101))
+* **rotate:** report all overdue group members when a group rotation fails (2nd-pass review) ([1a66f44](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/1a66f44d1a0014259668e1e4e35ea3d2c1d20ed9))
+* **rules:** keep each comment with the alert it describes when filtering ([1a7addc](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/1a7addcfda258bdc19bdb218b6e282fef66b6273))
+* **rules:** PersistentVolumeFull join and Bitnami registry allowlist ([7e05aa0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/7e05aa00644e4222c33c6eb9fc4bd0faf1dd104a))
+* **rules:** remove MattermostLicenseExpiringSoon and its runbook ([6cbcdf8](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/6cbcdf8ba92ec2cf3ba515b37bb1eb30c73ddaa8))
+* **security:** address Copilot review findings on [#57](https://github.com/mattermost-community/mattermost-plugin-alertmanager/issues/57) ([a5c1b4f](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/a5c1b4faade7c816b1e9f8b160cb65f2479fa7f8))
+* **security:** fifth review pass (F1-3) — cold-start deny-all allowlist, flow-style diff redaction, repair applies sanitized list to memory ([492da4d](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/492da4dfdb73ccf83f481407ec54b22ff73c2931))
+* **security:** fourth review pass (F1-4) — proxy SSRF, repair sanitize, block-scalar/proxy_url redaction ([0a9e372](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/0a9e3728d723aba51e15c0f3dcf2d49f791784a3))
+* **security:** reject trailing ?/# in AM URL; sanitize on load (F-002) ([838a935](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/838a9359b001f21da88276581e8e041ceaaa83bf))
+* **security:** resolve independent security review (F-001..F-007) ([615abc8](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/615abc875caa6ff1f25d3e3cf3755a52a4efcc7d))
+* **security:** scrub hook ID from Client4 error text; fail-closed rollback ([2b9471c](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/2b9471c166e75907e4a0be32547cd2c66685e42b))
+* **security:** second review pass — block private by default + leak/HA fixes ([9995d02](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/9995d029e3d7b8b3ca8b41bd769b8baf8eb2c7eb))
+* **security:** sixth review pass (F1-5) — webhook-host SSRF/injection parity + remove-identity + info-disclosure ([fb1e17a](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/fb1e17a64f92854e96e21e4aebc3ee5af519d137))
+* **security:** third review pass (F1-4) — allowlist guardrails + safe repair + diff redaction ([e867773](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/e867773235078e9ec174de8a7ce45bb028734d55))
+* **settings:** apply the override setting when it is saved, not only at activation ([0d970c6](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/0d970c61b01def4db57a150f128d0242f597b1cc))
+* **silence:** let pack channels silence and list the Postgres pod alerts ([3a880bf](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/3a880bf357447f425c7ae58bd616a05549e51f6c))
+* **silence:** only system admins can create or expire silences ([e62e474](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/e62e474321bf6db7788694884c0d39aadcf1e784))
+* team-qualify receiver names to prevent cross-team channel collisions ([ccacf30](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/ccacf303246443ef7aa923dd48702e2516a21475))
+* **validate:** keep the webhook host out of webhook-test errors for team admins ([75c56a4](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/75c56a4e3d237e5d67a8ec7071ae292b98da4192))
+* **validate:** pad synthetic firing alert TTL past group_wait ([3f46770](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/3f4677093948a1692b128f337d4e8456c67086cb))
+* **webhook:** guard webhookDeleteError against a nil cause ([8c92d43](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/8c92d434314d3a4ddcd4c45692feff917dd843d7))
+
+
+### Performance
+
+* **ha:** broadcast peer reload off the write lock ([ae6dfe1](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/ae6dfe1eecf1c2a8ef6f91c79f9f718025e940a7))
+* **inventory:** probe the page's Alertmanagers concurrently ([a8b1737](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/a8b17374b4c2a9011b03ccf0f3cc5c111c0e88fa))
+* **query:** call a channel's Alertmanagers concurrently ([2f89ef0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/2f89ef02988699b4210187459dd27e47975932d5))
+* **reconciler:** throttle orphan probes and YAML sweeps within a tick ([193de10](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/193de10748debdaf141a73dcdfdfb32b846de1b8))
+* **silence:** create a silence on every Alertmanager concurrently ([3a24d8c](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/3a24d8cae5db9d1dcc0fbac412104b741151b016))
+* **silence:** read each silence's record once when listing ([44bb6ec](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/44bb6ec7b989dd237d1fd101b409f00b0032a377))
+
+
+### Dependencies
+
+* **actions:** Bump actions/checkout from 4.2.2 to 7.0.0 ([9f6772f](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/9f6772fe3b807358f069fef6fa05a076d049beed))
+* **actions:** bump actions/configure-pages from 5.0.0 to 6.0.0 ([907bf65](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/907bf65cff6f0b68a9cd5502991ffa30eb78ac47))
+* **actions:** Bump actions/deploy-pages from 4.0.5 to 5.0.0 ([b15de40](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/b15de40681a20bd842ae4de3639e0afc0b24bac2))
+* **actions:** bump actions/setup-go from 5.5.0 to 6.5.0 ([8693c64](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/8693c64e9ccaaabd1fe673abea21f84c2e2b749c))
+* **actions:** bump actions/setup-go from 6.5.0 to 7.0.0 ([342f5df](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/342f5df72c603e17cb887ec03e926189158df6b4))
+* **actions:** bump actions/upload-artifact from 4.4.3 to 7.0.1 ([35a5da5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/35a5da5f99ef125c3991e54359d59a2c90bec862))
+* **actions:** bump actions/upload-pages-artifact from 3.0.1 to 5.0.0 ([26c5e86](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/26c5e86585e2888f5cbebeaa1be9641a8d7c3c80))
+* **actions:** bump anchore/scan-action from 5.2.0 to 7.4.0 ([f3ace25](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/f3ace259f01a28ebd1afafc807a6cfac9bc5d735))
+* **actions:** bump golangci/golangci-lint-action ([2f14ec5](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/2f14ec5829bf9e29eaa1d47de07495ad8f6b41e7))
+* **actions:** bump googleapis/release-please-action from 4.2.0 to 5.0.0 ([4590003](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/459000386b7e567c28cebbd557b002d55e2d3645))
+* **actions:** bump softprops/action-gh-release from 2.3.2 to 3.0.1 ([32e18a6](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/32e18a6b3602b28714046c0f1bcf06bd1727d188))
+* **actions:** bump the actions-minor-patch group across 1 directory with 4 updates ([766a456](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/766a456d51c42db186283889433161bfbcf0096a))
+* **actions:** bump the actions-minor-patch group across 1 directory with 5 updates ([ee6c9a8](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/ee6c9a85e3362ebae1d264ec6ad7d4dc4f65bc92))
+* **actions:** bump the actions-minor-patch group with 4 updates ([59b103c](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/59b103ca41dae84d6dee6b2cdb0e099df2561bae))
+* **actions:** Bump the actions-minor-patch group with 4 updates ([d312f7c](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/d312f7c54e945baf7699447366edfb92ac3fbff4))
+* **actions:** bump the actions-minor-patch group with 5 updates ([c0035e0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/c0035e0ee80bf7d250a2718b74816d89299e7022))
+* **build/render-docs:** bump github.com/yuin/goldmark ([d6a5cda](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/d6a5cda8f952c2d2608a7ef12d26e0424d76db7a))
+* **build/render-docs:** Bump github.com/yuin/goldmark ([beb0e7f](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/beb0e7f6b90a3aca95f20a4e05a56c8b780593f5))
+* **build/render-docs:** Bump github.com/yuin/goldmark ([94a0c1b](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/94a0c1b3454f4497381b4183dd258c08f4e393c7))
+* **build/render-docs:** bump goldmark to 1.8.7 ([6a61078](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/6a610782e31ee9eeb13a9d54abe730a24d62ae48))
+
+
+### Documentation
+
+* document the intentional config→KV clean break + fix stale comments (CL-19 review) ([bc66078](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/bc6607878028c90c1f276e44a0ac21b56c9d6b28))
+
+
+### Chores
+
+* release 1.0.4 ([dca70a8](https://github.com/mattermost-community/mattermost-plugin-alertmanager/commit/dca70a8b00284f503d9a65387e9953e8619610bf))
+
 ## [1.5.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.4.17...v1.5.0) (2026-11-03)
 
 > **⚠️ BREAKING — command syntax.** Every `--flag` is gone. Switches are now bare words
