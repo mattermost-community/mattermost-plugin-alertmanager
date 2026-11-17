@@ -57,7 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * When the `config add` DM fails, the inline copy includes the routes, and the config lock is no longer held while the DM is sent.
 * `format export` for a channel with both runbook and Mattermost operator receivers says the operator rules are left out and how to get them.
 * `MattermostPostgresPodNotReady` no longer fires for a finished backup Job pod.
-* `PersistentVolumeFull` join and the Bitnami registry allowlist for `UnexpectedContainerImage`, with promtool unit tests.
+* `PersistentVolumeFull` join and the Bitnami registry allowlist for `UnexpectedContainerImage`, with promtool unit tests. The join also works when two kubelets report the same claim.
+* The sample `MattermostWebSocketDrop` compares connection totals per namespace and job, so it fires when a replaced pod comes back with fewer connections.
+* `format export crd` names each channel's PrometheusRule `mattermost-alertmanager-rules-<team>-<channel>-<hash>`. Before, look-alike names such as `ops-a`/`b` and `ops`/`a-b` produced the same object and one channel's export overwrote the other's. After you apply the new export, delete the old `mattermost-alertmanager-rules-<team>-<channel>` object, or Prometheus evaluates both and the alerts fire twice.
 * SSRF hints and channel-scoped diff matching are more precise.
 
 ### Internal
