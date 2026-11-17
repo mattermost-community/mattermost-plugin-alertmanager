@@ -34,7 +34,7 @@ func TestOverrideSetupHintNamesWhatIsStillOff(t *testing.T) {
 		p := &Plugin{}
 		p.API = overrideSettingsAPI{username: c.username, icon: c.icon}
 		hint := p.overrideSetupHint()
-		for _, w := range append(c.want, "EnableIntegrationOverrides") {
+		for _, w := range append(c.want, "Turn on Mattermost's webhook username and icon overrides") {
 			if !strings.Contains(hint, w) {
 				t.Errorf("username=%v icon=%v: hint lacks %q: %q", c.username, c.icon, w, hint)
 			}
