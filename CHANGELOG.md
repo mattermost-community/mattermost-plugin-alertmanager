@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `EnablePostIconOverride` at activation. Turn them on in System Console → Integrations
 > → Integration Management, or enable the new `EnableIntegrationOverrides` plugin
 > setting. Until then, alert posts show the name or picture of the sysadmin who ran
-> `config add`, and `config add` says which. Installs where the plugin already turned
+> `config add`, and `config add` says which. The setting takes effect when saved and
+> keeps both toggles on while it is on. Installs where the plugin already turned
 > them on are unaffected.
 
 ### Features
@@ -59,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
-* The background webhook check runs every 30 minutes instead of every 5, with up to 4 checks at once and a 2-minute budget. A check that runs out of budget is picked up where it stopped, so every webhook is still checked. The expired-YAML sweep runs every 15 minutes.
+* The background webhook check runs every 30 minutes instead of every 5, with up to 4 checks at once and a 2-minute budget. A check that runs out of budget is picked up where it stopped, so every webhook is still checked. The expired-YAML sweep runs every 15 minutes. `admin repair` uses the same budget without moving the background check's place, and says how many webhooks it could not check instead of reporting none orphaned. `/alertmanager about` and the inventory page show when the last orphan check ran next to its pruned count.
 
 * Removed the license-expiry alert and its runbook. Mattermost has no license-expiry metric, so the rule never fired.
 * The Mattermost API latency, DB latency, error-rate and login-failure rules and runbooks now use the metrics Mattermost exports (`mattermost_api_time_*`, `mattermost_db_store_time_*`, `mattermost_login_logins_fail_total`). The old names matched nothing, so those alerts never fired. The docs name `MetricsSettings.Enable`, and no longer tell you to add hosts to `AllowedUntrustedInternalConnections`, which the plugin does not need.
