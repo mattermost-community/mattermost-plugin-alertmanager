@@ -114,7 +114,7 @@ func TestDashFlagsAreRejectedWithTheNewSpelling(t *testing.T) {
 }
 
 func TestGroupUsageReplies(t *testing.T) {
-	p := &Plugin{}
+	p := sysadminPlugin(nil)
 	cases := map[string]string{
 		"/alertmanager alerts bogus":               "alerts status",
 		"/alertmanager admin":                      "admin repair",
@@ -190,9 +190,10 @@ func TestAutocompleteTreeShape(t *testing.T) {
 		}
 	}
 
-	for _, verb := range []string{"export", "diff", "rules"} {
-		if got := len(child(child(root, "format"), verb).Arguments); got != 1 {
-			t.Errorf("format %s has %d args, want 1 format list", verb, got)
+	// rules takes a group, a format and the mattermost flags, one hover each.
+	for verb, want := range map[string]int{"export": 1, "diff": 1, "rules": rulesOptionSlots} {
+		if got := len(child(child(root, "format"), verb).Arguments); got != want {
+			t.Errorf("format %s has %d args, want %d", verb, got, want)
 		}
 	}
 }

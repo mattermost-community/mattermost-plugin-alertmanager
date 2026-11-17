@@ -80,6 +80,7 @@ type sanTitleData struct {
 // body relies on. reReplaceAll is AM's own (regexp-backed) helper; toUpper is in
 // AM's funcmap too. printf is a text/template builtin, so it needs no entry.
 var amLikeFuncMap = template.FuncMap{
+	"match": regexp.MatchString,
 	"reReplaceAll": func(pattern, repl, text string) string {
 		return regexp.MustCompile(pattern).ReplaceAllString(text, repl)
 	},
@@ -264,5 +265,63 @@ func TestCRDFallbackReceiverSanitizerWired(t *testing.T) {
 	}
 	if !strings.Contains(out, `reReplaceAll "[`) {
 		t.Fatalf("CRD fallback receiver did not expand the sanitizer directive:\n%s", out)
+	}
+}
+
+func TestRunbookLinkOnlyFollowsPlainHTTPURLs(t *testing.T) {
+	const fallback = "https://mm.example/runbook-default"
+	standard := extractTextTemplate(t, renderReceiverYAML("no-such-runbook--team-chan", "https://mm.example/hooks/x", "alerts", fallback, "https://mm.example/icon.png"))
+	custom := extractTextTemplate(t, renderReceiverYAMLForKind("slo-burn--team-chan", "https://mm.example/hooks/x", "alerts", fallback, "https://mm.example/icon.png", kindCustom))
+
+	cases := []struct {
+		name, annotation, want string // want "" means the alert's URL is not linked
+	}{
+		{"https is used", "https://wiki.example/runbooks/cpu", "https://wiki.example/runbooks/cpu"},
+		{"http is used", "http://wiki.example/cpu", "http://wiki.example/cpu"},
+		{"javascript scheme", "javascript:alert(1)", ""},
+		{"data scheme", "data:text/html;base64,AAAA", ""},
+		{"relative path", "/admin_console", ""},
+		{"markdown breakout", "https://ok](https://evil)", ""},
+		{"title injection", "https://ok.example/x \"title\"", ""},
+		{"angle brackets", "https://ok.example/<x>", ""},
+		{"newline", "https://ok.example/x\nINJECT", ""},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for kind, text := range map[string]string{"standard": standard, "custom": custom} {
+				tmpl, err := template.New("text").Funcs(amLikeFuncMap).Parse(text)
+				if err != nil {
+					t.Fatalf("%s template does not parse: %v", kind, err)
+				}
+				data := struct{ Alerts []sanAlert }{Alerts: []sanAlert{{
+					Labels:      sanKV{"alertname": "A", "severity": "critical"},
+					Annotations: sanKV{"runbook_url": c.annotation},
+				}}}
+				var sb strings.Builder
+				if err := tmpl.Execute(&sb, data); err != nil {
+					t.Fatalf("%s template failed: %v", kind, err)
+				}
+				out := sb.String()
+
+				switch {
+				case c.want != "":
+					if !strings.Contains(out, "[runbook]("+c.want+")") {
+						t.Errorf("%s: want a link to %q:\n%s", kind, c.want, out)
+					}
+				case kind == "standard":
+					if !strings.Contains(out, "[runbook]("+fallback+")") {
+						t.Errorf("standard: want the plugin runbook as fallback:\n%s", out)
+					}
+				default:
+					if strings.Contains(out, "**Runbook:**") {
+						t.Errorf("custom: no runbook line expected:\n%s", out)
+					}
+				}
+				if strings.Count(out, "](") > 1 {
+					t.Errorf("%s: more than one markdown link:\n%s", kind, out)
+				}
+			}
+		})
 	}
 }

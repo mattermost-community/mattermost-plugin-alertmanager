@@ -155,7 +155,7 @@ kubectl rollout undo deployment -n <namespace> mattermost
 
 ## Required Prometheus labels
 
-`mattermost_api_time_count` with a `status_code` label is exported by
+`mattermost_api_time_count` (the call count of the `mattermost_api_time` histogram) carries `handler` and `status_code` labels and is exported by
 Mattermost when metrics are enabled. No additional labels are required.
 
 ## Related runbooks

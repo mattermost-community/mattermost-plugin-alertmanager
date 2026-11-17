@@ -315,6 +315,9 @@ func (p *Plugin) requireChannelTeamAdmin(userID, channelID string) error {
 	if appErr != nil {
 		return fmt.Errorf("could not resolve channel: %w", appErr)
 	}
+	if channel.TeamId == "" {
+		return fmt.Errorf("this command works in a team channel, not a direct or group message")
+	}
 	member, appErr := p.API.GetTeamMember(channel.TeamId, userID)
 	if appErr != nil {
 		return fmt.Errorf("you must be a member of this channel's team")

@@ -9,11 +9,15 @@ import (
 	amconfig "github.com/prometheus/alertmanager/config"
 )
 
-// exportOptions are the parsed words of `/alertmanager format export|diff`.
+// exportOptions are the parsed words of `/alertmanager format export`.
 type exportOptions struct {
 	format    string // "" when not given
 	namespace string // CRD output only, validated
-	diff      bool
+}
+
+// diffOptions are the parsed words of `/alertmanager format diff`.
+type diffOptions struct {
+	format string // "" detects the deployment form from the loaded config
 }
 
 // handleExport renders fresh YAML for every receiver bound to the
@@ -41,7 +45,6 @@ type exportOptions struct {
 // with the assembled receivers.yml (or alertmanager-diff.txt for diff) and
 // the PrometheusRule for the runbooks those receivers cover.
 func (p *Plugin) handleExport(args *model.CommandArgs, opts exportOptions) (string, error) {
-	requestedFormat := opts.format
 	format := opts.format
 	if format == "" {
 		format = formatStandard
@@ -50,30 +53,10 @@ func (p *Plugin) handleExport(args *model.CommandArgs, opts exportOptions) (stri
 	if namespace == "" {
 		namespace = defaultCRDNamespace
 	}
-	diffMode := opts.diff
-
-	// diff stays sysadmin-only. Output is channel-scoped,
-	// but it still prints this channel's webhook URLs (bearer tokens)
-	// taken from Alertmanager's loaded config. Plain export stays
-	// team_admin: it only emits the channel-scoped receivers the caller
-	// already manages.
-	if diffMode {
-		if err := p.requireSystemAdmin(args.UserId); err != nil {
-			return err.Error(), nil
-		}
-	} else {
-		if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-			return err.Error(), nil
-		}
-	}
 
 	scoped := p.configsForCurrentChannel(args)
 	if len(scoped) == 0 {
 		return ":information_source: No receivers bound to this channel — nothing to export.", nil
-	}
-
-	if diffMode {
-		return p.handleExportDiff(args, scoped, requestedFormat)
 	}
 
 	if format == formatCRD {
@@ -91,7 +74,7 @@ func (p *Plugin) handleExport(args *model.CommandArgs, opts exportOptions) (stri
 	y.WriteString(fmt.Sprintf("# Receivers: %d\n", len(scoped)))
 	y.WriteString("\n")
 	for _, ac := range scoped {
-		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
+		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.resolvedKind()))
 		y.WriteString("\n")
 	}
 
@@ -99,7 +82,7 @@ func (p *Plugin) handleExport(args *model.CommandArgs, opts exportOptions) (stri
 	// Same delivery path as /alertmanager config add — ephemeral file
 	// attachments are unreliable in Mattermost, DMs persist normally.
 	routesYAML := assembleRoutesYAML(scoped)
-	rules, rulesReason := p.rulesFileForChannel(namespace, scoped, formatStandard)
+	rules, rulesReason := p.rulesFileForChannel(rulesContext{namespace: namespace, format: formatStandard, allowlist: true}, scoped)
 	dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(scoped), "", rules)
 	if dmErr != nil {
 		return fmt.Sprintf(
@@ -128,6 +111,17 @@ func (p *Plugin) handleExport(args *model.CommandArgs, opts exportOptions) (stri
 		b.WriteString(":bulb: **Sysadmin tip:** run `/alertmanager format diff` to compare Alertmanager's loaded config with what this channel would add.\n")
 	}
 	return b.String(), nil
+}
+
+// handleDiff is `format diff`, which the registry limits to system admins: the
+// output is channel-scoped, but it prints this channel's webhook URLs (bearer
+// tokens) taken from Alertmanager's loaded config.
+func (p *Plugin) handleDiff(args *model.CommandArgs, opts diffOptions) (string, error) {
+	scoped := p.configsForCurrentChannel(args)
+	if len(scoped) == 0 {
+		return ":information_source: No receivers bound to this channel — nothing to export.", nil
+	}
+	return p.handleExportDiff(args, scoped, opts.format)
 }
 
 // handleExportDiff is the format diff path. Fetches AM's
@@ -215,7 +209,7 @@ func (p *Plugin) handleExportDiff(args *model.CommandArgs, scoped []alertConfig,
 		// Render the receivers + routes that would be added.
 		var newRecvs, newRoutes strings.Builder
 		for _, ac := range toAdd {
-			newRecvs.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
+			newRecvs.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.resolvedKind()))
 			newRecvs.WriteString("\n")
 		}
 		newRoutes.WriteString(assembleRoutesYAML(toAdd))

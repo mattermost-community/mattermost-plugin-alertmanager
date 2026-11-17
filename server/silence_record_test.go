@@ -15,12 +15,18 @@ const testSilenceID = "0c1b6c3e-5f0e-4c3a-9a55-2f9d1c7e8a10"
 
 type silenceKVAPI struct {
 	plugin.API
-	kv       map[string][]byte
-	expiry   map[string]int64
-	sysadmin bool
+	kv          map[string][]byte
+	expiry      map[string]int64
+	sysadmin    bool
+	recordReads int
 }
 
-func (f *silenceKVAPI) KVGet(key string) ([]byte, *model.AppError) { return f.kv[key], nil }
+func (f *silenceKVAPI) KVGet(key string) ([]byte, *model.AppError) {
+	if strings.HasPrefix(key, kvKeySilencePrefix) {
+		f.recordReads++
+	}
+	return f.kv[key], nil
+}
 
 func (f *silenceKVAPI) KVSetWithExpiry(key string, value []byte, exp int64) *model.AppError {
 	f.kv[key] = value

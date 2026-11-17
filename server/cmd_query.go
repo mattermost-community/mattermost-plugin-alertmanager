@@ -145,7 +145,7 @@ const maxParallelAMCalls = 8
 // queryGroups calls every group concurrently and returns the results in group
 // order, so a channel whose Alertmanagers are all down waits one
 // RequestBudget instead of one per backend.
-func queryGroups[T any](groups []amGroup, call func(amGroup) (T, error)) ([]T, []error) {
+func queryGroups[G, T any](groups []G, call func(G) (T, error)) ([]T, []error) {
 	vals := make([]T, len(groups))
 	errs := make([]error, len(groups))
 	sem := make(chan struct{}, maxParallelAMCalls)
@@ -194,7 +194,7 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 		status, err := statuses[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
-				"- %s → :x: failed to reach: `%v`\n  Bound receivers: %s\n\n",
+				"- %s → :x: failed to reach: `%s`\n  Bound receivers: %s\n\n",
 				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
@@ -240,7 +240,7 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 		alerts, err := alertLists[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
-				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
+				"**Alertmanager %s** — :x: failed to query: `%s`\n  Bound receivers: %s\n\n",
 				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
@@ -297,11 +297,9 @@ func formatAlertLine(a *alert.Alert) string {
 		sanitizeInlineMarkdown(a.Name()), status, sanitizeInlineMarkdown(severity), resolved, sanitizeInlineMarkdown(summary))
 }
 
-// handleListSilences lists active silences for receivers in the current
-// channel. Per-silence Expire actions aren't wired in v1.0 — those need
-// the legacy interactive-post-action path which we no longer have since
-// the plugin doesn't post directly anymore. v1.1: re-evaluate whether
-// we can attach interactive elements to ephemeral responses.
+// handleListSilences lists the active silences that apply to this channel: the
+// ones created from it, and the ones whose matchers select its runbooks or alert
+// names. An Alertmanager is shared, so every other silence on it stays hidden.
 func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 	scoped := p.configsForCurrentChannel(args)
 	if len(scoped) == 0 {
@@ -309,9 +307,11 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 	}
 
 	groups := groupByAMURL(scoped)
+	runbooks := channelRunbookSlugs(scoped)
+	alerts := channelAlertNames(scoped)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(
-		"**Active silences — %d receiver(s) across %d backend(s):**\n\n",
+		"**Active silences for this channel — %d receiver(s) across %d backend(s):**\n\n",
 		len(scoped), len(groups),
 	))
 	totalActive := 0
@@ -322,12 +322,16 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 		silences, err := silenceLists[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
-				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
+				"**Alertmanager %s** — :x: failed to query: `%s`\n  Bound receivers: %s\n\n",
 				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
 		}
-		active := make([]*models.GettableSilence, 0, len(silences))
+		type listedSilence struct {
+			s         *models.GettableSilence
+			expirable bool
+		}
+		active := make([]listedSilence, 0, len(silences))
 		for _, s := range silences {
 			// Status + State are pointer fields in the v2 model.
 			// Treat a missing Status as "not expired" so a malformed
@@ -336,8 +340,12 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 			if s != nil && s.Status != nil {
 				state = derefStr(s.Status.State)
 			}
-			if state != "expired" {
-				active = append(active, s)
+			if state == "expired" || s == nil {
+				continue
+			}
+			expirable := p.silenceExpirable(derefStr(s.ID), args.ChannelId, g.URL)
+			if expirable || silenceTouchesChannel(s, runbooks, alerts) {
+				active = append(active, listedSilence{s: s, expirable: expirable})
 			}
 		}
 		if len(active) == 0 {
@@ -356,11 +364,8 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 		// check), so pick the first receiver in the group as the handle
 		// for any expire commands shown in this section.
 		expireHandle := g.Receivers[0].Name
-		for _, s := range active {
-			if s == nil {
-				continue
-			}
-			b.WriteString(formatSilenceLine(expireHandle, s, p.silenceExpirable(derefStr(s.ID), args.ChannelId, g.URL)))
+		for _, ls := range active {
+			b.WriteString(formatSilenceLine(expireHandle, ls.s, ls.expirable))
 		}
 		b.WriteString("\n")
 	}
@@ -431,15 +436,9 @@ func formatSilenceLine(configName string, s *models.GettableSilence, expirable b
 // associated with the receiver, or by using the unscoped form once we
 // add it (future v1.x).
 func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
-	// CL-07: silence expire mutates external Alertmanager state (deletes a
-	// silence, re-firing every alert it suppressed). It was the ONLY mutating
-	// subcommand with no authorization gate — a guest could paste the ready-made
-	// command surfaced by `/alertmanager silence list`. Require team_admin of this
-	// channel's team, matching remove/rotate/config, and audit the mutation.
-	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
-		return err.Error(), nil
-	}
-
+	// Expire mutates external Alertmanager state (it re-fires every alert the
+	// silence suppressed). The registry limits it to system admins, since a
+	// silence is global to its Alertmanager; the mutation is audited below.
 	fields := strings.Fields(args.Command)
 	if len(fields) != 4 {
 		return "Usage: `/alertmanager silence expire <name> <silence-id>`", nil

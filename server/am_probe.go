@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mattermost/mattermost-plugin-alertmanager/server/alertmanager"
@@ -300,7 +299,3 @@ func uniqueAMURLs(configs []alertConfig) []string {
 	}
 	return urls
 }
-
-// Make sure sync is used (the cache is on Plugin, not in this file —
-// keep the import explicit in case a future refactor lifts the cache).
-var _ sync.Map

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	root "github.com/mattermost/mattermost-plugin-alertmanager"
 )
@@ -85,10 +86,19 @@ func scaffoldSetNames() []string {
 	return names
 }
 
-// runbookSlugs reads the embedded runbooks/ directory and returns the
-// slugs (filename without .md, lowercased) in stable alphabetical order.
-// Filters out INDEX.md and TEMPLATE.md which are meta files.
+// runbookSlugs returns the shipped runbook slugs in alphabetical order. The
+// embedded directory never changes at runtime, so it is read once. Callers get
+// their own copy and may modify it.
 func runbookSlugs() []string {
+	return slices.Clone(shippedRunbookSlugs())
+}
+
+var shippedRunbookSlugs = sync.OnceValue(loadRunbookSlugs)
+
+// loadRunbookSlugs reads the embedded runbooks/ directory and returns the
+// slugs (filename without .md, lowercased). Filters out INDEX.md and TEMPLATE.md
+// which are meta files.
+func loadRunbookSlugs() []string {
 	skip := map[string]bool{"INDEX.md": true, "TEMPLATE.md": true}
 
 	var slugs []string

@@ -33,10 +33,6 @@ var imageAllowlistExpr = regexp.MustCompile(`image!~"\^\(([^"]+)\)\.\*"`)
 // setting. It changes the next `/alertmanager format rules crd` file.
 // Prometheus keeps evaluating the rule that was last applied.
 func (p *Plugin) handleAllowlist(args *model.CommandArgs) (string, error) {
-	if err := p.requireSystemAdmin(args.UserId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	action := ""
 	prefix := ""

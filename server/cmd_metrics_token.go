@@ -57,10 +57,6 @@ func (p *Plugin) metricsEndpointURL() string {
 // invocation reports status without rotating; `generate` mints a new token and
 // reveals it once.
 func (p *Plugin) handleMetricsToken(args *model.CommandArgs) (string, error) {
-	if err := p.requireSystemAdmin(args.UserId); err != nil {
-		return err.Error(), nil
-	}
-
 	fields := strings.Fields(args.Command)
 	action := ""
 	if len(fields) >= 3 {
