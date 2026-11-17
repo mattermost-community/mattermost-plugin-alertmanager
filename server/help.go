@@ -320,7 +320,7 @@ var helpRegistry = []helpTopic{
 		Summary: "Check receiver health and fix drift",
 		Usage:   "/alertmanager admin repair [prune] [force]",
 		Description: "A bare run changes nothing. It checks the stored receiver list and lists receivers whose Mattermost webhook was deleted out of band. " +
-			"A background job prunes those every 5 minutes, and `prune` does it now.",
+			"A background job prunes those every 30 minutes, and `prune` does it now.",
 		Options: []helpOption{
 			{"prune", "Remove receivers whose webhook no longer exists."},
 			{"force", "Rewrite a corrupt stored receiver list from the plugin's in-memory copy. Use it only when a bare run reports the list as unreadable."},

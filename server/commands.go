@@ -171,7 +171,7 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	repair := model.NewAutocompleteData("repair", "[prune] [force]", "Check the receiver list and preview orphaned receivers. prune removes them, force rewrites a corrupt list.")
 	repair.AddStaticListArgument("Optional flag. Bare repair is read-only.", false, []model.AutocompleteListItem{
-		{Item: "prune", HelpText: "Remove receivers whose Mattermost webhook was deleted out of band. Also runs every 5 minutes in the background."},
+		{Item: "prune", HelpText: "Remove receivers whose Mattermost webhook was deleted out of band. Also runs every 30 minutes in the background."},
 		{Item: "force", HelpText: "Rewrite a corrupt receiver-list KV value from the plugin's last-known in-memory list. Use only when repair reports it unreadable."},
 	})
 	admin.AddCommand(repair)

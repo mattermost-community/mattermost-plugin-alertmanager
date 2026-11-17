@@ -70,7 +70,7 @@ a real command, so a custom receiver named `help` still works as an argument.
 | `format rules` | `[standard\|crd] [group\|runbook] [namespace=<ns>] [mm-namespace=<ns>] [mm-name=<cr>]` | Rules only, all 36, not limited to this channel. `standard` (default): links to view or download the plain rules file. `crd`: DMs a ready-to-apply `PrometheusRule` (`monitoring.coreos.com/v1`). | team admin or sysadmin. `all` is every group, the same as leaving the group out, so `all crd` gives one PrometheusRule with all 36. With a group or runbook name, such as `security crd`: only those rules, as the same `mattermost-alertmanager-rules-<group>` object `config add` sends. With `mattermost`: that group's rules only. Add `mm-namespace` for the operator's 13 Mattermost rules too, filled in for one install (`mm-db-replicas=true` adds replica lag, `mm-postgres-pod=true` adds in-cluster Postgres pod alerts; `mm-name` defaults to `mattermost`; the rules match the pod label `installation.mattermost.com/installation`, which your ServiceMonitor must copy onto the series). |
 | `config rotate` | `<name>` \| `all overdue` | Recreate one webhook (new hook-id), or batch-rotate all overdue receivers in this channel | sysadmin / team_admin |
 | `config remove` | `<name>` \| `<set> force` \| `all force` | Delete one receiver, one set, or all receivers in this channel | sysadmin / team_admin |
-| `admin repair` | `[prune] [force]` | Bare is read-only: checks the receiver-list KV store and lists receivers whose webhook was deleted out of band. `prune` removes those receivers (the background job does the same every 5 minutes). `force` rewrites a corrupt KV blob from the plugin's last-known in-memory list. `force` is recovery-only. | sysadmin |
+| `admin repair` | `[prune] [force]` | Bare is read-only: checks the receiver-list KV store and lists receivers whose webhook was deleted out of band. `prune` removes those receivers (the background job does the same every 30 minutes). `force` rewrites a corrupt KV blob from the plugin's last-known in-memory list. `force` is recovery-only. | sysadmin |
 | `admin acknowledge` | `[add\|remove <name>]` | Hide a receiver from the orange AM-only inventory warning. Bare lists the hidden names. Use this when GitOps or another tool created the receiver on purpose. Alerts that receiver sends still fire. | sysadmin |
 | `admin allowlist` | `[add\|remove <prefix>]` | Extra registry prefixes for `UnexpectedContainerImage`. Bare lists the shipped prefixes and yours. `add` and `remove` change the list baked into the next `/alertmanager format rules crd` file. The plugin does not patch a running PrometheusRule. | sysadmin |
 | `admin metrics-token` | `[generate]` | Prometheus `/metrics` bearer token: bare shows status + endpoint; `generate` mints a new token (rotating the old one), reveals it once, and prints a ready-to-paste `scrape_config`. The `MetricsToken` setting is `secret:true` and can't be read back from System Console — regenerate here if lost. | sysadmin |
@@ -462,8 +462,8 @@ observability, security) — pick one or type a receiver name freely.
 ### Find orphaned receivers
 
 If you deleted a webhook via System Console manually, the plugin's
-config entry becomes an orphan. The reconciler runs every 5 minutes
-to prune these automatically, but to trigger immediately:
+config entry becomes an orphan. The reconciler checks every 30 minutes
+and prunes these automatically, but to trigger immediately:
 
 ```
 /alertmanager admin repair prune

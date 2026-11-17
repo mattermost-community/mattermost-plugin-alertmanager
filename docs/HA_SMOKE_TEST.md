@@ -25,7 +25,7 @@ pod runs `runBackgroundReconcile` at a time, even with N pods
 active." If that contract breaks, two failure modes appear:
 
 1. **Multiple pods run concurrently** — duplicate audit log
-   entries every 5 minutes, duplicate webhook API calls, and
+   entries every orphan check, duplicate webhook API calls, and
    races on `saveConfigs` write paths.
 2. **No pod runs** — silent failure where automatic orphan
    pruning stops working. Symptoms: `/alertmanager about`
@@ -55,16 +55,17 @@ kubectl logs -n mattermost -l app=mattermost --tail=0 -f \
   | grep -E 'reconciler:|YAML janitor:'
 ```
 
-Wait one reconciler cycle (≤5 min). You should see:
+The reconciler ticks every 5 minutes, but a tick with nothing due logs
+nothing. Orphan checks run every 30 minutes, so give one a receiver to
+prune: delete a test receiver's incoming webhook in System Console →
+Integrations → Incoming Webhooks, then wait for the next orphan check
+(≤30 min). You should see:
 
-- Exactly one `reconciler: pruned ...` OR `reconciler: cycle
-  completed (no orphans)` log line per cycle (we don't currently
-  log the no-op case; absence of the prune line + a present
-  `recordReconcileRun` is also valid evidence — check
-  `/alertmanager about`).
+- Exactly one `reconciler: pruned orphan receivers` log line for that
+  receiver.
 - The pod name in `kubectl logs` output is the leader for that
-  cycle. It may rotate across cycles, but it should never be
-  two pod names within the same 5-minute window.
+  check. It may rotate across checks, but it should never be
+  two pod names for the same receiver.
 
 **Pass:** one leader per cycle.
 **Fail:** two pods both logging reconciler activity within the
@@ -81,15 +82,15 @@ LEADER_POD=$(kubectl logs -n mattermost -l app=mattermost --tail=2000 \
 # Kill the leader pod
 kubectl delete pod -n mattermost "$LEADER_POD"
 
-# Within the next reconciler cycle (≤5 min), another pod must
-# pick up. Watch the logs:
+# Delete another test receiver's webhook. Within the next orphan
+# check (≤30 min), another pod must prune it. Watch the logs:
 kubectl logs -n mattermost -l app=mattermost --tail=0 -f \
   | grep -E 'reconciler:|YAML janitor:'
 ```
 
-**Pass:** a different pod logs reconciler activity within
-one cycle of the kill.
-**Fail:** no pod logs reconciler activity for >10 minutes after
+**Pass:** a different pod logs the prune within 30 minutes of
+the kill.
+**Fail:** no pod prunes the receiver for >40 minutes after
 the kill. The KV mutex didn't release on pod death — file a bug
 against `pluginapi/cluster.Schedule` upstream and surface as a
 plugin-level workaround.

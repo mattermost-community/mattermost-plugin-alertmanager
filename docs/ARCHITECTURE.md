@@ -349,8 +349,8 @@ per-receiver opt-in via `on` flag on `/alertmanager config add`. Both
 required — the global threshold alone fires nothing without the
 per-receiver opt-in.
 
-Background reconciler runs the reminder pass alongside orphan
-pruning every 5 minutes. When threshold > 0 AND receiver has opted
+Background reconciler runs the reminder pass on every 5-minute
+tick. Orphan pruning runs every 30 minutes. When threshold > 0 AND receiver has opted
 in AND age > threshold AND no reminder sent in the last 7 days,
 DMs the calling sysadmin with the per-channel summary and the exact
 `/alertmanager config rotate all overdue` command.
