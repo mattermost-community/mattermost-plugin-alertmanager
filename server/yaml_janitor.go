@@ -19,8 +19,8 @@ import (
 // until MM's own GC runs, but it's not retrievable through chat).
 //
 // Storage: plugin KV under the prefix `yaml-delivery:`. Each entry
-// records the post ID + creation timestamp. The reconciler ticks
-// every 5 min and prunes entries past TTL via DeletePost.
+// records the post ID + creation timestamp. The reconciler sweeps every
+// 15 minutes and prunes entries past TTL via DeletePost.
 
 // yamlDeliveryKeyPrefix isolates auto-delete-tracked post IDs in the
 // plugin KV namespace. Don't change without coordinating a migration.

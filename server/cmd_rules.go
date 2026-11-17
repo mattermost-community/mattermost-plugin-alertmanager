@@ -38,16 +38,12 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts rulesOptions) (
 		namespace = defaultCRDNamespace
 	}
 
-	// The image-registry allowlist is admin-managed configuration, so only
-	// admins get its extra entries in the generated rules.
-	allowlist := p.requireChannelTeamAdmin(args.UserId, args.ChannelId) == nil
-
 	if opts.target != "" {
-		return p.handleTargetRules(args.UserId, rulesContext{namespace: namespace, format: opts.format, allowlist: allowlist}, opts)
+		return p.handleTargetRules(args.UserId, rulesContext{namespace: namespace, format: opts.format, allowlist: true}, opts)
 	}
 
 	if opts.format == formatCRD {
-		return p.handleRulesOperator(args.UserId, namespace, allowlist)
+		return p.handleRulesOperator(args.UserId, namespace)
 	}
 
 	base := fmt.Sprintf("%s/plugins/%s/public/help", p.siteURL(), Manifest.Id)
@@ -133,17 +129,14 @@ func (p *Plugin) rulesForTarget(rc rulesContext, opts rulesOptions) (rules *rule
 // handleRulesOperator generates a PrometheusRule CRD manifest from the
 // embedded samples file and DMs it to the caller as a downloadable file.
 // No secrets are involved — the manifest contains only alerting rules.
-func (p *Plugin) handleRulesOperator(userID, namespace string, allowlist bool) (string, error) {
+func (p *Plugin) handleRulesOperator(userID, namespace string) (string, error) {
 	rawBytes, err := root.SamplesFS.ReadFile("samples/prometheus-rules.yaml")
 	if err != nil {
 		return fmt.Sprintf(":warning: Could not read embedded rules file: %v", err), nil
 	}
-	var extras []string
-	if allowlist {
-		extras, err = p.loadImageAllowlist()
-		if err != nil {
-			return fmt.Sprintf(":warning: Could not read the image allowlist: %v", err), nil
-		}
+	extras, err := p.loadImageAllowlist()
+	if err != nil {
+		return fmt.Sprintf(":warning: Could not read the image allowlist: %v", err), nil
 	}
 	rawYAML, err := applyImageAllowlist(string(rawBytes), extras)
 	if err != nil {

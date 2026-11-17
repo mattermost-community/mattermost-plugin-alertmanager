@@ -71,10 +71,9 @@ func (p *Plugin) updateAlertmanagerAllowlist(raw string) {
 	alertmanager.SetAllowedNets(nets)
 }
 
-// outboundHTTPTimeout caps how long any single Alertmanager API call
-// can hang before failing. Slash-command response budget is ~10s in
-// Mattermost, so a 30s upper bound here keeps us under that even when
-// the backoff retries kick in.
+// outboundHTTPTimeout caps one Alertmanager request. httpRetry adds its own
+// 15s ceiling across all retries of a call, so a slash command that talks to an
+// unreachable Alertmanager waits at most that long.
 const outboundHTTPTimeout = 30 * time.Second
 
 // updateAlertmanagerHTTPClient rebuilds the alertmanager package's

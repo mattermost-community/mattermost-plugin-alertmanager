@@ -5,7 +5,7 @@ what your `alertmanager.yml` needs around it.
 
 ## Plugin settings
 
-System Console → Plugins → Alertmanager exposes 5 settings. All are
+System Console → Plugins → Alertmanager exposes the settings below. All are
 optional — the plugin runs with defaults on a fresh install.
 
 ### `WebhookHost`
@@ -48,6 +48,23 @@ Recommended values:
 
 Values below `30` produce noise unless your secret-rotation policy
 actually rotates that frequently.
+
+### `EnableIntegrationOverrides`
+
+Shown in System Console as **Turn on Mattermost's webhook username and icon
+overrides**. Default off. Webhook posts show as `@alertmanagerbot` only when
+`ServiceSettings.EnablePostUsernameOverride` and
+`EnablePostIconOverride` are on (System Console → Integrations →
+Integration Management). Both are server-wide and affect every
+integration, not just this plugin's webhooks.
+
+With this setting off, the plugin changes nothing. If either toggle is
+off, it logs a warning at activation, `config add` says so in its reply,
+and posts show as the sysadmin who created the receiver. Turn this setting on if you want the plugin to
+switch both on. It takes effect when you save it, with no restart, and is a
+no-op when both are already on. While it is on, the plugin keeps both
+toggles on: if someone switches one off in the System Console, the plugin
+switches it back on. Turn this setting off first if you want them off.
 
 ### `AlertManagerCABundle`
 

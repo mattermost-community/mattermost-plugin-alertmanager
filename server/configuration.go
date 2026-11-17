@@ -34,14 +34,15 @@ import (
 // free-text WebhookHost always wins, so existing installs and custom URLs
 // are unaffected.
 type rawConfiguration struct {
-	WebhookHost              string
-	WebhookHostPreset        string
-	AssembledYAMLTTLHours    int
-	AlertManagerCABundle     string
-	AlertManagerAllowedCIDRs string
-	MetricsToken             string
-	ImageRegistryAllowlist   string
-	WebhookRotationDays      int
+	WebhookHost                string
+	WebhookHostPreset          string
+	AssembledYAMLTTLHours      int
+	AlertManagerCABundle       string
+	AlertManagerAllowedCIDRs   string
+	MetricsToken               string
+	ImageRegistryAllowlist     string
+	WebhookRotationDays        int
+	EnableIntegrationOverrides bool
 }
 
 // toConfigMap renders every settings_schema field as the lowercased-key map that
@@ -52,14 +53,15 @@ type rawConfiguration struct {
 // stale key list in a distant file. Guarded by TestRawConfigMapCoversSchema.
 func (r rawConfiguration) toConfigMap() map[string]any {
 	return map[string]any{
-		"webhookhost":              r.WebhookHost,
-		"webhookhostpreset":        r.WebhookHostPreset,
-		"assembledyamlttlhours":    r.AssembledYAMLTTLHours,
-		"alertmanagercabundle":     r.AlertManagerCABundle,
-		"alertmanagerallowedcidrs": r.AlertManagerAllowedCIDRs,
-		"metricstoken":             r.MetricsToken,
-		"imageregistryallowlist":   r.ImageRegistryAllowlist,
-		"webhookrotationdays":      r.WebhookRotationDays,
+		"webhookhost":                r.WebhookHost,
+		"webhookhostpreset":          r.WebhookHostPreset,
+		"assembledyamlttlhours":      r.AssembledYAMLTTLHours,
+		"alertmanagercabundle":       r.AlertManagerCABundle,
+		"alertmanagerallowedcidrs":   r.AlertManagerAllowedCIDRs,
+		"metricstoken":               r.MetricsToken,
+		"imageregistryallowlist":     r.ImageRegistryAllowlist,
+		"webhookrotationdays":        r.WebhookRotationDays,
+		"enableintegrationoverrides": r.EnableIntegrationOverrides,
 	}
 }
 
@@ -690,6 +692,10 @@ func (p *Plugin) OnConfigurationChange() error {
 	}
 	p.setConfiguration(newConfiguration(entries, effectiveHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
 	p.configWriteMu.Unlock()
+
+	if raw.EnableIntegrationOverrides && p.API != nil {
+		p.enableIntegrationOverrides()
+	}
 
 	// Best-effort team verification, OUTSIDE the lock (these are network calls we
 	// don't want to hold configWriteMu across) and log-only: a since-deleted team

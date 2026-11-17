@@ -18,7 +18,7 @@ const repairUsage = "Usage: `/alertmanager admin repair [prune] [force]`"
 //     duplicate names, …) makes them all fail. The plugin keeps running on its
 //     last-known in-memory list, and force writes that snapshot back.
 //   - Orphans: receivers whose Mattermost webhook was deleted out of band. A
-//     background job prunes these every 5 minutes. prune runs it now.
+//     background job prunes these every 30 minutes. prune runs it now.
 //
 // The KV check always runs first. Pruning rewrites the same KV value, so it
 // cannot succeed on a corrupt blob.
@@ -54,30 +54,57 @@ func parseRepairFlags(args []string) (force, prune, ok bool) {
 // orphanSection reports receivers whose webhook no longer exists. With prune it
 // removes them, otherwise it only lists what a prune would remove.
 func (p *Plugin) orphanSection(userID string, prune bool) string {
+	verb := "admin repair"
+	if prune {
+		verb = "admin repair prune"
+	}
 	if !prune {
-		orphans, err := p.findOrphanedReceivers(userID)
+		res, err := p.findOrphanedReceivers(userID)
 		if err != nil {
 			return fmt.Sprintf(":warning: Could not check for orphaned receivers: %v", err)
 		}
-		if len(orphans) == 0 {
+		if len(res.names) == 0 {
+			if res.cutOff+res.failed > 0 {
+				return ":warning: No orphaned receivers among the webhooks checked." + uncheckedWebhooksNote(res, verb)
+			}
 			return ":white_check_mark: No orphaned receivers. Every registered webhook still exists in Mattermost."
 		}
 		return fmt.Sprintf(
-			":mag: %d receiver(s) point at a deleted webhook:\n\n- `%s`\n\nRemove them now with `/alertmanager admin repair prune`. The background job also does this every 5 minutes.",
-			len(orphans), strings.Join(orphans, "`\n- `"))
+			":mag: %d receiver(s) point at a deleted webhook:\n\n- `%s`\n\nRemove them now with `/alertmanager admin repair prune`. The background job also does this every 30 minutes.",
+			len(res.names), strings.Join(res.names, "`\n- `")) + uncheckedWebhooksNote(res, verb)
 	}
 
-	pruned, err := p.reconcileOrphans(userID)
+	res, err := p.pruneOrphansNow(userID)
 	if err != nil {
 		return fmt.Sprintf(":warning: Prune failed: %v\n\nIf the receiver-list KV value is unreadable, fix it first with `/alertmanager admin repair force`.", err)
 	}
-	if len(pruned) == 0 {
+	if len(res.names) == 0 {
+		if res.cutOff+res.failed > 0 {
+			return ":warning: Nothing pruned among the webhooks checked." + uncheckedWebhooksNote(res, verb)
+		}
 		return ":white_check_mark: Nothing to prune. Every registered webhook still exists in Mattermost."
 	}
 	return fmt.Sprintf(
 		":wastebasket: Pruned %d orphaned receiver(s) whose webhooks were deleted out of band:\n\n- `%s`\n\n"+
 			"_Delete the matching `slack_configs` blocks from your `alertmanager.yml` if you have not already, then reload Alertmanager._",
-		len(pruned), strings.Join(pruned, "`\n- `"))
+		len(res.names), strings.Join(res.names, "`\n- `")) + uncheckedWebhooksNote(res, verb)
+}
+
+// uncheckedWebhooksNote tells the admin the check did not cover every webhook,
+// so a clean result is not proof that none are orphaned. A rerun resumes after
+// the last webhook this one reached and retries the ones that errored.
+func uncheckedWebhooksNote(res orphanCheck, verb string) string {
+	var lines []string
+	if res.cutOff > 0 {
+		lines = append(lines, fmt.Sprintf("%d webhook(s) were not reached before the time limit.", res.cutOff))
+	}
+	if res.failed > 0 {
+		lines = append(lines, fmt.Sprintf("%d webhook(s) could not be checked because Mattermost returned an error.", res.failed))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n\n:hourglass: %s Their receivers were left alone. Run `/alertmanager %s` again to continue where this check stopped.", strings.Join(lines, " "), verb)
 }
 
 // repairAlertConfigsKV is the KV-recovery core of handleRepair, split out (no

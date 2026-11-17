@@ -112,6 +112,7 @@ func (p *Plugin) handleAddCustom(args *model.CommandArgs) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, ":white_check_mark: Created custom receiver `%s`\n", receiverName)
 	fmt.Fprintf(&b, "Webhook created and bound to `%s` (team `%s`). No runbook is attached — alerts render as raw content.\n\n", channel, team)
+	b.WriteString(p.overrideSetupHint())
 	b.WriteString(":warning: **No route exists yet — you must wire it manually.** Add a matcher selecting the alerts you want here, e.g.:\n\n")
 	b.WriteString("```yaml\n")
 	b.WriteString("  - matchers: [ alertname=\"MyCustomAlert\" ]   # <-- set to labels YOUR rules emit\n")
