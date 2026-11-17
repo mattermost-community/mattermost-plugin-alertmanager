@@ -95,10 +95,20 @@ not the client's.
 # Nginx ingress: add the source to this ingress's denylist.
 # The annotation replaces the existing list and any global denylist from the
 # controller ConfigMap, so carry those ranges over instead of overwriting them.
-current=$(kubectl get ingress -n <namespace> <mattermost-ingress> \
-  -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/denylist-source-range}')
-kubectl annotate ingress -n <namespace> <mattermost-ingress> --overwrite \
-  nginx.ingress.kubernetes.io/denylist-source-range="${current:+${current},}<attacker-cidr>"
+# The subshell stops if either read fails: an empty list would drop every
+# existing block.
+(
+  set -euo pipefail
+  current=$(kubectl get ingress -n <namespace> <mattermost-ingress> \
+    -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/denylist-source-range}')
+  if [ -z "${current}" ]; then
+    # Controller ConfigMap, for example ingress-nginx/ingress-nginx-controller.
+    current=$(kubectl get configmap -n <controller-namespace> <controller-configmap> \
+      -o jsonpath='{.data.denylist-source-range}')
+  fi
+  kubectl annotate ingress -n <namespace> <mattermost-ingress> --overwrite \
+    nginx.ingress.kubernetes.io/denylist-source-range="${current:+${current},}<attacker-cidr>"
+)
 ```
 
 Rate-limit `/api/v4/users/login` at the WAF, or with a separate Ingress for

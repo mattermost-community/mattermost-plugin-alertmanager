@@ -64,8 +64,9 @@ kubectl exec -n <namespace> <pod> -- du -hx --max-depth=2 $MOUNT_PATH | sort -hr
 
 | Severity | Pager? | Target response | Business impact |
 |---|---|---|---|
-| Warning (>85%) | No | 30 min | Capacity planning needed |
-| Critical (>95%) | Yes | 5 min | Imminent write failure |
+| Critical (>90%) | Yes | 5 min | Imminent write failure |
+
+For an earlier warning, see [Disk Fill Rate High](disk-fill-rate-high.md).
 
 ## Diagnostic steps
 
