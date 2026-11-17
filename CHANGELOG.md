@@ -52,7 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Bug Fixes
 
 * Removed the license-expiry alert and its runbook. Mattermost has no license-expiry metric, so the rule never fired.
-* Stale metric names fixed in the Mattermost runbooks.
+* The Mattermost API latency, DB latency, error-rate and login-failure rules and runbooks now use the metrics Mattermost exports (`mattermost_api_time_*`, `mattermost_db_store_time_*`, `mattermost_login_logins_fail_total`). The old names matched nothing, so those alerts never fired. The docs name `MetricsSettings.Enable`, and no longer tell you to add hosts to `AllowedUntrustedInternalConnections`, which the plugin does not need.
+* `config rotate all overdue` lists each receiver whose old webhook could not be deleted, instead of saying the old URLs are dead. Group and bulk rotation say when the YAML DM failed and point to `format export`.
+* When the `config add` DM fails, the inline copy includes the routes, and the config lock is no longer held while the DM is sent.
+* `format export` for a channel with both runbook and Mattermost operator receivers says the operator rules are left out and how to get them.
+* `MattermostPostgresPodNotReady` no longer fires for a finished backup Job pod.
 * `PersistentVolumeFull` join and the Bitnami registry allowlist for `UnexpectedContainerImage`, with promtool unit tests.
 * SSRF hints and channel-scoped diff matching are more precise.
 
