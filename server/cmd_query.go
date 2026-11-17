@@ -327,7 +327,11 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 			))
 			continue
 		}
-		active := make([]*models.GettableSilence, 0, len(silences))
+		type listedSilence struct {
+			s         *models.GettableSilence
+			expirable bool
+		}
+		active := make([]listedSilence, 0, len(silences))
 		for _, s := range silences {
 			// Status + State are pointer fields in the v2 model.
 			// Treat a missing Status as "not expired" so a malformed
@@ -339,8 +343,9 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 			if state == "expired" || s == nil {
 				continue
 			}
-			if p.silenceExpirable(derefStr(s.ID), args.ChannelId, g.URL) || silenceTouchesChannel(s, runbooks, alerts) {
-				active = append(active, s)
+			expirable := p.silenceExpirable(derefStr(s.ID), args.ChannelId, g.URL)
+			if expirable || silenceTouchesChannel(s, runbooks, alerts) {
+				active = append(active, listedSilence{s: s, expirable: expirable})
 			}
 		}
 		if len(active) == 0 {
@@ -359,11 +364,8 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 		// check), so pick the first receiver in the group as the handle
 		// for any expire commands shown in this section.
 		expireHandle := g.Receivers[0].Name
-		for _, s := range active {
-			if s == nil {
-				continue
-			}
-			b.WriteString(formatSilenceLine(expireHandle, s, p.silenceExpirable(derefStr(s.ID), args.ChannelId, g.URL)))
+		for _, ls := range active {
+			b.WriteString(formatSilenceLine(expireHandle, ls.s, ls.expirable))
 		}
 		b.WriteString("\n")
 	}

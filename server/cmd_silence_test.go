@@ -269,7 +269,7 @@ func TestListSilencesShowsOnlyThisChannelsSilences(t *testing.T) {
 	alertmanager.SetAllowedNets([]*net.IPNet{ipNet})
 	t.Cleanup(func() { alertmanager.SetAllowedNets(nil) })
 
-	p, _ := newSilenceKVPlugin()
+	p, api := newSilenceKVPlugin()
 	p.setConfiguration(newConfiguration([]alertConfig{
 		{Name: "high-cpu-usage--ateam-alerts", Team: "ateam", Channel: "alerts", WebhookID: "h1", AlertManagerURL: srv.URL},
 	}, "", 0, "", "", 0))
@@ -288,6 +288,9 @@ func TestListSilencesShowsOnlyThisChannelsSilences(t *testing.T) {
 	}
 	if strings.Contains(out, other) {
 		t.Errorf("a silence for another channel's runbook must not be listed:\n%s", out)
+	}
+	if api.recordReads != 3 {
+		t.Errorf("each silence's record should be read once, got %d reads for 3 silences", api.recordReads)
 	}
 }
 
