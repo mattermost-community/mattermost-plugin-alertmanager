@@ -20,6 +20,18 @@ path targets. See [Kubernetes deployment](KUBERNETES.md) for the full operator
 storage version. `v1beta1` has been stalled since 2022 and there is no `v1`.
 `PrometheusRule` is GA at `v1`.
 
+## System Console links on Mattermost 12
+
+Mattermost 12.0.0 skips `settings_schema.header` on a plugin page.
+`schema_admin_settings.tsx` only renders that field when
+`!this.props.plugin`, so the docs, runbook, rules, and inventory links
+disappear and the first setting is drawn directly under the plugin
+card. Section headers are still rendered.
+
+The links live on the `AlertmanagerSettings` section header for that
+reason. The section also has a footer. A section with no footer made
+the whole page read-only on the builds before that v12 fix.
+
 ## Why only one version
 
 The plugin tracks the **latest** operator CRD formatting and only that — it does

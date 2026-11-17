@@ -2,23 +2,14 @@ package main
 
 import (
 	"fmt"
-	"io/fs"
-	"sort"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
-
-	root "github.com/mattermost/mattermost-plugin-alertmanager"
 )
 
-// Mattermost's default post length limit is around 16k. Cap doc output
-// well below that so the "...truncated..." footer fits and the post
-// pipeline has overhead headroom.
-const maxDocPostBytes = 14000
-
-// docTopics maps the slash-command argument (lowercase, hyphenless) to
-// the embedded filename. Explicit map so we can rename embedded files
-// without breaking the user-facing argument vocabulary.
+// docTopics maps the old `/alertmanager docs <topic>` argument to its source
+// file so a typed topic still lands on the right rendered page. Explicit map so
+// embedded files can be renamed without breaking the argument vocabulary.
 var docTopics = map[string]string{
 	"alerts":         "ALERT_CATALOG.md",
 	"alert-catalog":  "ALERT_CATALOG.md",
@@ -33,74 +24,37 @@ var docTopics = map[string]string{
 	"slash-commands": "SLASH_COMMANDS.md",
 }
 
-// handleDocs serves embedded docs from inside Mattermost. With no
-// argument, it lists available topics. With a topic, it prints the body
-// (truncated with a GitHub link if it exceeds maxDocPostBytes).
+// handleDocs links to the rendered documentation site. Docs are no longer
+// printed in chat. A topic argument is still accepted so old muscle memory and
+// saved messages keep working, and it links straight to that page.
 func (p *Plugin) handleDocs(args *model.CommandArgs) (string, error) {
+	var b strings.Builder
 	fields := strings.Fields(args.Command)
-	if len(fields) < 3 {
-		return listDocTopics(), nil
+	if len(fields) >= 3 {
+		if filename, ok := docTopics[strings.ToLower(fields[2])]; ok {
+			fmt.Fprintf(&b, ":book: [%s](%s)\n\n", filename, p.helpPageURL(filename))
+			b.WriteString("`/alertmanager docs <topic>` is deprecated. Docs are not printed in chat anymore. Open the site and use the sidebar.\n\n")
+		}
 	}
-
-	topic := strings.ToLower(fields[2])
-	filename, ok := docTopics[topic]
-	if !ok {
-		return fmt.Sprintf("Unknown docs topic %q. %s", topic, listDocTopics()), nil
-	}
-
-	body, err := root.DocsFS.ReadFile("docs/" + filename)
-	if err != nil {
-		return "", fmt.Errorf("read embedded doc %q: %w", filename, err)
-	}
-
-	githubURL := fmt.Sprintf("%s/blob/main/docs/%s", root.RepoURL, filename)
-	if len(body) <= maxDocPostBytes {
-		return fmt.Sprintf("**%s** — [view on GitHub](%s)\n\n%s", filename, githubURL, string(body)), nil
-	}
-	truncated := body[:maxDocPostBytes]
-	return fmt.Sprintf("**%s** — [view on GitHub](%s)\n\n%s\n\n_...truncated at %d bytes. Read the rest at the GitHub link above._",
-		filename, githubURL, string(truncated), maxDocPostBytes), nil
+	fmt.Fprintf(&b, ":book: [Documentation](%s)\n", p.docsHomeURL())
+	fmt.Fprintf(&b, ":notebook: [Runbook library](%s)\n", p.runbookLibraryURL())
+	fmt.Fprintf(&b, ":chart_with_upwards_trend: [Sample Prometheus rules](%s)\n", p.helpPageURL("prometheus-rules.md"))
+	return b.String(), nil
 }
 
-// listDocTopics enumerates the embedded docs by walking the embed.FS.
-// Dynamic walk so unregistered files surface as missing entries rather
-// than silently disappearing.
-func listDocTopics() string {
-	var embeddedFiles []string
-	_ = fs.WalkDir(root.DocsFS, "docs", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(path, ".md") {
-			embeddedFiles = append(embeddedFiles, strings.TrimPrefix(path, "docs/"))
-		}
-		return nil
-	})
-	sort.Strings(embeddedFiles)
+// helpPageURL is the on-server HTML page for an embedded doc. Mattermost
+// does not linkify a bare docs/FILE.md path in a post.
+func (p *Plugin) helpPageURL(filename string) string {
+	slug := strings.ToLower(strings.TrimSuffix(filename, ".md"))
+	return fmt.Sprintf("%s/plugins/%s/public/help/%s.html", p.siteURL(), Manifest.Id, slug)
+}
 
-	topicByFile := make(map[string]string, len(docTopics))
-	for topic, file := range docTopics {
-		// Prefer snake_case display when both variants register the
-		// same file (so the user sees `slash_commands` not
-		// `slash-commands` first).
-		if existing, ok := topicByFile[file]; ok && !strings.Contains(existing, "-") {
-			continue
-		}
-		topicByFile[file] = topic
-	}
+// docsHomeURL is the documentation landing page. It is home.html because
+// Mattermost's public file handler 404s a directory or index.html URL.
+func (p *Plugin) docsHomeURL() string {
+	return p.helpPageURL("home")
+}
 
-	var b strings.Builder
-	b.WriteString("**Available docs topics:**\n\n")
-	b.WriteString("| Topic | File | View on GitHub |\n")
-	b.WriteString("|-------|------|----------------|\n")
-	for _, file := range embeddedFiles {
-		topic := topicByFile[file]
-		if topic == "" {
-			topic = "(unregistered)"
-		}
-		b.WriteString(fmt.Sprintf("| `%s` | `docs/%s` | [link](%s/blob/main/docs/%s) |\n",
-			topic, file, root.RepoURL, file))
-	}
-	b.WriteString("\nUsage: `/alertmanager docs <topic>`")
-	return b.String()
+func (p *Plugin) runbookLibraryURL() string {
+	return fmt.Sprintf("%s/plugins/%s/public/runbooks/home.html", p.siteURL(), Manifest.Id)
 }

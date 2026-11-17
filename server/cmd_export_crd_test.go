@@ -6,7 +6,7 @@ import (
 )
 
 // TestValidateCRDNamespace pins the namespace guard added for review feedback:
-// --namespace comes straight from user input and flows into generated
+// namespace= comes straight from user input and flows into generated
 // AlertmanagerConfig/Secret manifests, so invalid values must be rejected
 // rather than silently coerced.
 func TestValidateCRDNamespace(t *testing.T) {

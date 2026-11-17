@@ -1,6 +1,8 @@
 package alertmanager
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"time"
 )
@@ -19,16 +21,15 @@ type StatusResponse struct {
 }
 
 // Status queries the Alertmanager /api/v2/status endpoint.
-func Status(alertmanagerURL, user, password string) (StatusResponse, error) {
+func Status(ctx context.Context, alertmanagerURL string) (StatusResponse, error) {
 	var statusResponse StatusResponse
 
-	resp, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/status", user, password)
+	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/status")
 	if err != nil {
 		return statusResponse, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
-	if err := DecodeJSONLimited(resp.Body, &statusResponse); err != nil {
+	if err := DecodeJSONLimited(bytes.NewReader(body), &statusResponse); err != nil {
 		return statusResponse, err
 	}
 	return statusResponse, nil

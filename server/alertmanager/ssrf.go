@@ -111,6 +111,25 @@ func IsBlockedIP(ip net.IP) bool {
 	return n.IsLoopback() || n.IsPrivate() || cgnatNet.Contains(n)
 }
 
+// suggestedAllowlistCIDR returns a ready-to-paste CIDR the operator should add
+// to AlertManagerAllowedCIDRs to permit ip.
+//
+// RFC1918 IPv4 gets a /16 (10.43.5.164 → 10.43.0.0/16). In-cluster Alertmanager
+// addresses are almost always a service ClusterIP, and that IP changes on
+// recreate; a /16 covers a typical service CIDR without asking the operator to
+// re-paste after every redeploy. Every other address gets the exact host
+// (/32 or /128): a public /16 or 127.0.0.0/16 would open far more than the
+// one destination that was blocked. Widening those is a deliberate edit.
+func suggestedAllowlistCIDR(ip net.IP) string {
+	if v4 := ip.To4(); v4 != nil {
+		if v4.IsPrivate() {
+			return fmt.Sprintf("%d.%d.0.0/16", v4[0], v4[1])
+		}
+		return v4.String() + "/32"
+	}
+	return ip.String() + "/128"
+}
+
 // CheckDestinationIP reports whether ip may be dialed for an Alertmanager call,
 // returning a descriptive error when it may not. Single source of truth for both
 // the dial-time guard and the save-time URL validation, so the two never disagree
@@ -128,11 +147,15 @@ func IsBlockedIP(ip net.IP) bool {
 //     public addresses.
 func CheckDestinationIP(ip net.IP) error {
 	if isHardBlockedIP(ip) {
-		return fmt.Errorf("refusing to connect to %s: link-local/cloud-metadata/multicast/unspecified addresses are never valid Alertmanager targets (not overridable by AlertManagerAllowedCIDRs)", ip)
+		return &BlockedDestinationError{
+			detail: fmt.Sprintf("refusing to connect to %s: link-local/cloud-metadata/multicast/unspecified addresses are never valid Alertmanager targets (not overridable by AlertManagerAllowedCIDRs)", ip),
+		}
 	}
 	if st := allowlist.Load(); st != nil {
 		if st.denyAll {
-			return fmt.Errorf("refusing to connect to %s: AlertManagerAllowedCIDRs is set but has no usable CIDRs; all Alertmanager egress is denied until the setting is fixed", ip)
+			return &BlockedDestinationError{
+				detail: fmt.Sprintf("connection to %s blocked: AlertManagerAllowedCIDRs is configured but has no usable CIDRs. Add %s to the setting in System Console to allow this destination", ip, suggestedAllowlistCIDR(ip)),
+			}
 		}
 		if len(st.nets) > 0 {
 			for _, n := range st.nets {
@@ -140,13 +163,35 @@ func CheckDestinationIP(ip net.IP) error {
 					return nil
 				}
 			}
-			return fmt.Errorf("refusing to connect to %s: not in the configured Alertmanager allowlist (AlertManagerAllowedCIDRs)", ip)
+			return &BlockedDestinationError{
+				detail: fmt.Sprintf("connection to %s blocked by the SSRF allowlist. Add %s to AlertManagerAllowedCIDRs in System Console", ip, suggestedAllowlistCIDR(ip)),
+			}
 		}
 	}
 	if IsBlockedIP(ip) {
-		return fmt.Errorf("refusing to connect to %s: loopback/private/internal addresses are blocked by default (SSRF guard); add its CIDR to AlertManagerAllowedCIDRs to permit an in-cluster Alertmanager", ip)
+		return &BlockedDestinationError{
+			detail: fmt.Sprintf("connection to %s blocked (loopback/private/internal). Add %s to AlertManagerAllowedCIDRs in System Console to permit an in-cluster Alertmanager", ip, suggestedAllowlistCIDR(ip)),
+		}
 	}
 	return nil
+}
+
+// BlockedDestinationError is returned when the SSRF guard refuses a destination.
+// Error is deliberately generic: the resolved address and the CIDR to allowlist
+// describe the internal network, and the text reaches ordinary channel members
+// through commands such as `alerts` and `silence list`. Detail carries the full
+// message for system admins and the plugin log.
+type BlockedDestinationError struct {
+	detail string
+}
+
+func (e *BlockedDestinationError) Error() string {
+	return "the Alertmanager address is blocked by the plugin's network guard (AlertManagerAllowedCIDRs). Ask a system admin to check it"
+}
+
+// Detail is the full, admin-only explanation, including the suggested CIDR.
+func (e *BlockedDestinationError) Detail() string {
+	return e.detail
 }
 
 // safeDialControl is the net.Dialer.Control hook installed on the Alertmanager

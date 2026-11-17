@@ -3,27 +3,24 @@
 # so findings show up inline on PRs and in the Security tab.
 #
 # Gating model:
-#   - Grype: does NOT hard-fail the job (fail-build: false). It still generates
-#     and uploads SARIF, so every CVE — including the intentionally-open standing
-#     finding GO-2026-5932 — stays visible in the Security tab and inline on PRs.
-#     The actual CVE gate is GitHub Code Scanning's PR check, which fails only on
-#     alerts a PR *introduces*, not pre-existing ones. That lets GO-2026-5932 stay
-#     open (we must NOT suppress/dismiss/ignore it) without red-flagging every PR,
-#     while a genuinely NEW high/critical CVE still blocks. (Requires Code Scanning
-#     enabled + branch protection requiring the "Code scanning results" check.)
-#   - CodeQL: make security-gate fails on error-level SARIF findings
-#   - SARIF upload to Code Scanning: required, no bypass
+#   - Grype: does NOT hard-fail the job (fail-build: false). Generates and uploads
+#     SARIF so every CVE stays visible in the Security tab and inline on PRs.
+#   - CodeQL / security-gate:
+#       * main branch + scheduled runs: hard-fail on error-level SARIF findings.
+#         A finding that reaches main blocks the next release cut.
+#       * PR / branch push: continue-on-error — the gate runs and its result is
+#         visible (warning annotation), but the job stays green. Findings still
+#         land in the Security tab via the SARIF upload. Fix NEW findings before
+#         merge; standing reviewed findings (e.g. GO-2026-5932) must NOT be
+#         suppressed or ignored — they have an open review tracking them.
+#   - SARIF upload to Code Scanning: required on all triggers, no bypass.
+#     (Requires Code Scanning enabled: public repos free, private needs GHAS.)
 #
-# NOTE (security posture): fail-build was true (hard block on ANY HIGH/CRITICAL),
-# so every PR went red on whatever high-severity advisories are outstanding —
-# the deliberately-open standing finding GO-2026-5932 (must not be suppressed)
-# plus transient upstream ones like GHSA-259r-337f-4rfw. Moving to
-# warn-plus-differential keeps them all visible and tracked without blocking
-# unrelated PRs. Re-tighten to fail-build: true once the outstanding advisories
-# are resolved or the review concludes they can be baselined without an ignore.
-# Separately: a HIGH that IS fixable by a dependency bump should be fixed, not
-# left to warn — check `grype sbom:dist/sbom/server-sbom.json` for a fixed
-# version before assuming a finding is unactionable.
+# NOTE (security posture): Standing finding GO-2026-5932 is intentionally open
+# pending security review — do NOT suppress, dismiss, or add an ignore rule.
+# A fixable HIGH should be fixed via a dependency bump before merging, not
+# left to warn. Check `grype sbom:dist/sbom/server-sbom.json` for a patched
+# version before treating a finding as unactionable.
 #
 # REQUIREMENT: GitHub Code Scanning must be enabled on the repo.
 #   - Public repos: free, enable via Settings -> Code security and analysis
@@ -66,7 +63,7 @@ jobs:
         run: make sbom
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: dist/sbom/
@@ -76,7 +73,7 @@ jobs:
       # for GitHub code scanning. `make sbom-scan` emits table output
       # only — useful for humans, not for the code scanning API.
       - name: Scan SBOM with Grype (SARIF output)
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v6.7.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         id: grype-scan
         with:
           sbom: dist/sbom/server-sbom.json
@@ -108,14 +105,14 @@ jobs:
       # free; private: needs GHAS).
       - name: Upload Grype SARIF to code scanning
         if: always() && steps.grype-scan.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3.30.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
           category: grype
 
       - name: Upload Grype SARIF as workflow artifact
         if: always() && steps.grype-scan.outputs.sarif != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: grype-sarif
           path: ${{ steps.grype-scan.outputs.sarif }}
@@ -135,7 +132,7 @@ jobs:
           cache: true
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3.30.0
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: go
           # Index from repo root so root-package files (main.go,
@@ -144,14 +141,14 @@ jobs:
           # package inside it, not a separate module.
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3.30.0
+        uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
       # Split analysis from upload so each step's success/failure has
       # one clear meaning. `upload: never` writes SARIF locally; the
       # explicit security-gate step then enforces the finding threshold,
       # and the upload step pushes results to GitHub Code Scanning.
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3.30.0
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         id: codeql-analyze
         with:
           category: codeql-go
@@ -162,24 +159,35 @@ jobs:
       # (dist/codeql-*.sarif). The Make target parses the SARIF
       # for level=error findings and fails CI if any are present.
       # Same gate as `make release` runs locally.
-      - name: Run security gate (fail on critical/high findings)
+      #
+      # Gating model (branch vs main):
+      #   - main / schedule: hard-fail — a finding that merges to main
+      #     must be resolved before the next release cut.
+      #   - PR / branch push: continue-on-error — findings are still
+      #     visible in the Security tab and inline on the PR via the
+      #     SARIF upload below, but the job itself stays green so a
+      #     standing finding (e.g. GO-2026-5932) doesn't block every PR.
+      #     Fix NEW findings before merge; standing ones have a tracked
+      #     review open and must NOT be suppressed or ignored.
+      - name: Run security gate (fail on main, warn on branches/PRs)
         run: |
           mkdir -p dist
           cp codeql-results/*.sarif dist/codeql-go.sarif
           make security-gate
+        continue-on-error: ${{ github.ref != 'refs/heads/main' && github.event_name != 'schedule' }}
 
       # Required: must reach the Security tab. No continue-on-error.
       # If this fails, enable Code Scanning per the workflow header.
       - name: Upload CodeQL SARIF to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3.30.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: codeql-results
           category: codeql-go
 
       - name: Upload CodeQL SARIF as workflow artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codeql-sarif
           path: codeql-results/

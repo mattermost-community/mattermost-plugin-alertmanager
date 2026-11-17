@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hako/durafmt"
@@ -19,7 +21,7 @@ import (
 // (C-005): backtick (code-span breakout), CR/LF (heading/list injection), and
 // parens + angle brackets (disguised [x](y) links, ![x](y) images, <url>
 // autolinks). This is the Go-side counterpart to mdSanitizeDirective (CL-06):
-// /alertmanager alerts and /alertmanager silences render AM-supplied alert
+// /alertmanager alerts and /alertmanager silence list render AM-supplied alert
 // summaries, silence comments, and createdBy values — controlled by anyone who
 // can post an alert or create a silence on the Alertmanager.
 func sanitizeInlineMarkdown(s string) string {
@@ -44,9 +46,9 @@ func derefStr(p *string) string {
 }
 
 // Channel-scoping is the load-bearing UX decision in this file. Every
-// query command (status, alerts, silences, expire_silence) filters the
+// query command (status, alerts, silences, silence expire) filters the
 // registered configs to those bound to the channel the slash command was
-// invoked from. Rationale: a user running /alertmanager status in
+// invoked from. Rationale: a user running /alertmanager alerts status in
 // #db-alerts probably wants the DB-team Alertmanager's status, not every
 // AM the org has ever wired up.
 //
@@ -98,7 +100,7 @@ func (p *Plugin) configsForCurrentChannel(args *model.CommandArgs) []alertConfig
 func emptyScopeMessage(verb string) string {
 	return fmt.Sprintf(
 		"No Alertmanager receivers are configured for this channel — `%s` has nothing to operate on.\n\n"+
-			"Create the canonical set of receivers here: `/alertmanager add <team> <channel> <am-url> [set]` (sysadmin).",
+			"Create the canonical set of receivers here: `/alertmanager config add <am-url> [set]` (sysadmin).",
 		verb,
 	)
 }
@@ -109,7 +111,7 @@ func emptyScopeMessage(verb string) string {
 // each URL in the input so output is deterministic across calls.
 //
 // Why this matters: in the common case where one channel hosts N
-// receivers all pointing at the same Alertmanager (e.g. all 30 canonical
+// receivers all pointing at the same Alertmanager (e.g. all 35 canonical
 // runbook receivers in #alerts), the older per-receiver loop hit AM N
 // times and printed N copies of the same "firing alerts" or "loaded
 // silences" block. Querying once per distinct AM URL collapses that to
@@ -125,24 +127,38 @@ func groupByAMURL(configs []alertConfig) []amGroup {
 		idx[ac.AlertManagerURL] = len(out)
 		out = append(out, amGroup{
 			URL:       ac.AlertManagerURL,
-			User:      ac.User,
-			Password:  ac.Password,
 			Receivers: []alertConfig{ac},
 		})
 	}
 	return out
 }
 
-// amGroup is one Alertmanager URL plus the receivers bound to it. User
-// and Password are taken from the first receiver in the group — basic
-// auth credentials are an AM-level setting so all receivers sharing a
-// URL share creds. If they don't, that's a config bug; first-wins is
-// the predictable behavior.
+// amGroup is one Alertmanager URL plus the receivers bound to it.
 type amGroup struct {
 	URL       string
-	User      string
-	Password  string
 	Receivers []alertConfig
+}
+
+// maxParallelAMCalls bounds how many Alertmanagers one command calls at once.
+const maxParallelAMCalls = 8
+
+// queryGroups calls every group concurrently and returns the results in group
+// order, so a channel whose Alertmanagers are all down waits one
+// RequestBudget instead of one per backend.
+func queryGroups[T any](groups []amGroup, call func(amGroup) (T, error)) ([]T, []error) {
+	vals := make([]T, len(groups))
+	errs := make([]error, len(groups))
+	sem := make(chan struct{}, maxParallelAMCalls)
+	var wg sync.WaitGroup
+	for i, g := range groups {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			vals[i], errs[i] = call(g)
+		})
+	}
+	wg.Wait()
+	return vals, errs
 }
 
 // receiverNames returns the receivers' Name fields formatted as inline
@@ -171,12 +187,15 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 		"**Alertmanager status — %d receiver(s) across %d backend(s):**\n\n",
 		len(scoped), len(groups),
 	))
-	for _, g := range groups {
-		status, err := alertmanager.Status(g.URL, g.User, g.Password)
+	statuses, errs := queryGroups(groups, func(g amGroup) (alertmanager.StatusResponse, error) {
+		return alertmanager.Status(context.Background(), g.URL)
+	})
+	for i, g := range groups {
+		status, err := statuses[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"- %s → :x: failed to reach: `%v`\n  Bound receivers: %s\n\n",
-				g.URL, err, g.receiverNames(),
+				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
 		}
@@ -190,12 +209,20 @@ func (p *Plugin) handleStatus(args *model.CommandArgs) (string, error) {
 }
 
 // handleAlerts lists currently-firing alerts grouped by AM URL. Queries
-// each distinct AM once — without the dedup, 20 receivers pointing at
-// the same AM would render 20 copies of the same alert list.
+// each distinct AM once — without the dedup, N receivers pointing at the
+// same AM would render N copies of the same alert list.
+//
+// Only alerts whose `runbook` label matches a receiver slug bound to this
+// channel are shown. Alerts with no runbook label stay hidden.
 func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 	scoped := p.configsForCurrentChannel(args)
 	if len(scoped) == 0 {
 		return emptyScopeMessage("alerts"), nil
+	}
+
+	channelSlugs := make(map[string]bool, len(scoped))
+	for _, ac := range scoped {
+		channelSlugs[receiverBaseSlug(ac.Name)] = true
 	}
 
 	groups := groupByAMURL(scoped)
@@ -204,36 +231,49 @@ func (p *Plugin) handleAlerts(args *model.CommandArgs) (string, error) {
 		"**Firing alerts — %d receiver(s) across %d backend(s):**\n\n",
 		len(scoped), len(groups),
 	))
+
 	totalCount := 0
-	for _, g := range groups {
-		alerts, err := alertmanager.ListAlerts(g.URL, g.User, g.Password)
+	alertLists, errs := queryGroups(groups, func(g amGroup) ([]*alert.Alert, error) {
+		return alertmanager.ListAlerts(context.Background(), g.URL)
+	})
+	for i, g := range groups {
+		alerts, err := alertLists[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
-				g.URL, err, g.receiverNames(),
+				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
 		}
-		if len(alerts) == 0 {
+
+		visible := make([]*alert.Alert, 0, len(alerts))
+		for _, a := range alerts {
+			if channelSlugs[string(a.Labels["runbook"])] {
+				visible = append(visible, a)
+			}
+		}
+
+		if len(visible) == 0 {
 			b.WriteString(fmt.Sprintf(
-				"**Alertmanager %s** — :tada: no active alerts\n  Bound receivers (%d): %s\n\n",
+				"**Alertmanager %s** — :tada: no active alerts for this channel\n  Bound receivers (%d): %s\n\n",
 				g.URL, len(g.Receivers), g.receiverNames(),
 			))
 			continue
 		}
-		totalCount += len(alerts)
+
+		totalCount += len(visible)
 		b.WriteString(fmt.Sprintf(
 			"**Alertmanager %s — %d alert(s)**\n  Bound receivers (%d): %s\n\n",
-			g.URL, len(alerts), len(g.Receivers), g.receiverNames(),
+			g.URL, len(visible), len(g.Receivers), g.receiverNames(),
 		))
-		for _, a := range alerts {
+		for _, a := range visible {
 			b.WriteString(formatAlertLine(a))
 		}
 		b.WriteString("\n")
 	}
 
 	if totalCount == 0 {
-		return b.String() + "_No active alerts across this channel's Alertmanagers._", nil
+		return b.String() + "_No active alerts for this channel's runbooks._", nil
 	}
 	return b.String(), nil
 }
@@ -275,12 +315,15 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 		len(scoped), len(groups),
 	))
 	totalActive := 0
-	for _, g := range groups {
-		silences, err := alertmanager.ListSilences(g.URL, g.User, g.Password)
+	silenceLists, errs := queryGroups(groups, func(g amGroup) ([]*models.GettableSilence, error) {
+		return alertmanager.ListSilences(context.Background(), g.URL)
+	})
+	for i, g := range groups {
+		silences, err := silenceLists[i], errs[i]
 		if err != nil {
 			b.WriteString(fmt.Sprintf(
 				"**Alertmanager %s** — :x: failed to query: `%v`\n  Bound receivers: %s\n\n",
-				g.URL, err, g.receiverNames(),
+				g.URL, p.amErrorText(args.UserId, err), g.receiverNames(),
 			))
 			continue
 		}
@@ -309,12 +352,15 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 			"**Alertmanager %s — %d active silence(s)**\n  Bound receivers (%d): %s\n\n",
 			g.URL, len(active), len(g.Receivers), g.receiverNames(),
 		))
-		// expire_silence still requires a receiver name (channel-scope
+		// silence expire still requires a receiver name (channel-scope
 		// check), so pick the first receiver in the group as the handle
 		// for any expire commands shown in this section.
 		expireHandle := g.Receivers[0].Name
 		for _, s := range active {
-			b.WriteString(formatSilenceLine(expireHandle, s))
+			if s == nil {
+				continue
+			}
+			b.WriteString(formatSilenceLine(expireHandle, s, p.silenceExpirable(derefStr(s.ID), args.ChannelId, g.URL)))
 		}
 		b.WriteString("\n")
 	}
@@ -326,13 +372,16 @@ func (p *Plugin) handleListSilences(args *model.CommandArgs) (string, error) {
 }
 
 // formatSilenceLine renders one silence as a few lines, including the
-// `/alertmanager expire_silence <name> <silence-id>` invocation users
+// `/alertmanager silence expire <name> <silence-id>` invocation users
 // would run to expire it.
 //
 // Every relevant field in models.GettableSilence is a pointer (swagger's
 // "required" convention). derefStr + time conversions guard against
 // malformed responses by treating nil as zero value.
-func formatSilenceLine(configName string, s *models.GettableSilence) string {
+//
+// The expire command is shown only when expirable is true: the silence was
+// created from this channel with `silence create`.
+func formatSilenceLine(configName string, s *models.GettableSilence, expirable bool) string {
 	if s == nil {
 		return ""
 	}
@@ -358,14 +407,18 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 	// an ID with backticks/newlines and break out of the code span. configName is
 	// plugin-owned (a validated receiver name), so it's safe as-is.
 	id := sanitizeInlineMarkdown(derefStr(s.ID))
+	expire := "Not created from this channel. End it in Alertmanager."
+	if expirable {
+		expire = fmt.Sprintf("`/alertmanager silence expire %s %s`", configName, id)
+	}
 	return fmt.Sprintf(
-		"- **ID:** `%s`\n  **By:** %s • **Created:** %s ago • **Ends in:** %s\n  **Matchers:** %s\n  **Comment:** %s\n  **Expire:** `/alertmanager expire_silence %s %s`\n\n",
+		"- **ID:** `%s`\n  **By:** %s • **Created:** %s ago • **Ends in:** %s\n  **Matchers:** %s\n  **Comment:** %s\n  **Expire:** %s\n\n",
 		id, sanitizeInlineMarkdown(derefStr(s.CreatedBy)),
 		durafmt.Parse(time.Since(startsAt)).LimitFirstN(2).String(),
 		endsIn,
 		strings.Join(matchers, " "),
 		sanitizeInlineMarkdown(derefStr(s.Comment)),
-		configName, id,
+		expire,
 	)
 }
 
@@ -378,10 +431,10 @@ func formatSilenceLine(configName string, s *models.GettableSilence) string {
 // associated with the receiver, or by using the unscoped form once we
 // add it (future v1.x).
 func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
-	// CL-07: expire_silence mutates external Alertmanager state (deletes a
+	// CL-07: silence expire mutates external Alertmanager state (deletes a
 	// silence, re-firing every alert it suppressed). It was the ONLY mutating
 	// subcommand with no authorization gate — a guest could paste the ready-made
-	// command surfaced by `/alertmanager silences`. Require team_admin of this
+	// command surfaced by `/alertmanager silence list`. Require team_admin of this
 	// channel's team, matching remove/rotate/config, and audit the mutation.
 	if err := p.requireChannelTeamAdmin(args.UserId, args.ChannelId); err != nil {
 		return err.Error(), nil
@@ -389,9 +442,9 @@ func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 
 	fields := strings.Fields(args.Command)
 	if len(fields) != 4 {
-		return "Usage: `/alertmanager expire_silence <name> <silence-id>`", nil
+		return "Usage: `/alertmanager silence expire <name> <silence-id>`", nil
 	}
-	name, silenceID := fields[2], fields[3]
+	name, silenceID := fields[2], strings.ToLower(fields[3])
 
 	scoped := p.configsForCurrentChannel(args)
 	var match *alertConfig
@@ -403,14 +456,29 @@ func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 	}
 	if match == nil {
 		return fmt.Sprintf(
-			"Receiver `%s` is not associated with this channel. Run this command from the channel where the receiver was registered, or use `/alertmanager configs` here to see what's available.",
+			"Receiver `%s` is not associated with this channel. Run this command from the channel where the receiver was registered, or use `/alertmanager config` here to see what's available.",
 			name,
 		), nil
 	}
 
-	if err := alertmanager.ExpireSilence(silenceID, match.AlertManagerURL, match.User, match.Password); err != nil {
+	if !alertmanager.ValidSilenceID(silenceID) {
+		return "Invalid silence ID: it must be a UUID. `/alertmanager silence list` shows the IDs.", nil
+	}
+	// A shared Alertmanager holds other teams' silences. Only expire the ones
+	// this channel created with `silence create`.
+	created, recErr := p.silenceCreatedFor(silenceID, args.ChannelId, match.AlertManagerURL)
+	if recErr != nil {
+		p.API.LogWarn("Could not read silence record", "silence_id", silenceID, "error", recErr.Error())
+		return "Could not check whether this channel created that silence. Try again.", nil
+	}
+	if !created {
+		p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "denied")
+		return fmt.Sprintf("Silence `%s` was not created from this channel with `/alertmanager silence create`, so it cannot be expired here. End it in Alertmanager directly.", silenceID), nil
+	}
+
+	if err := alertmanager.ExpireSilence(context.Background(), silenceID, match.AlertManagerURL); err != nil {
 		p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "failure")
-		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %v", silenceID, name, err), nil
+		return fmt.Sprintf("Failed to expire silence `%s` on `%s`: %s", silenceID, name, p.amErrorText(args.UserId, err)), nil
 	}
 	p.auditLog("silence.expire", args.UserId, name, args.ChannelId, "success")
 	return fmt.Sprintf(":mute: Silence `%s` expired on `%s`.", silenceID, name), nil

@@ -103,6 +103,9 @@ func TestAssembleRoutesYAMLCustom(t *testing.T) {
 		if !strings.Contains(out, "    receiver: "+runbookRecv) {
 			t.Fatalf("expected live runbook route, got:\n%s", out)
 		}
+		if !strings.Contains(out, "    group_by: ['alertname', 'namespace', 'pod']") {
+			t.Fatalf("expected per-pod group_by, got:\n%s", out)
+		}
 	})
 }
 

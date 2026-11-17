@@ -43,6 +43,11 @@ System Console → Plugins → Alertmanager:
   reach Mattermost. `https://<mm-host>` for normal setups;
   `http://host.docker.internal:8065` for Docker-on-Mac
   development.
+- **AlertManagerAllowedCIDRs**: the network your Alertmanager
+  is on, for example `172.16.0.0/12` for Docker or your
+  cluster's service CIDR. Private addresses are blocked by
+  default, so without this step 3 and 5 fail to reach
+  Alertmanager.
 - **MetricsToken**: optional, set if you want to scrape
   `/metrics` from this run.
 - **AlertManagerCABundle**: optional, only if AM uses a
@@ -56,10 +61,10 @@ In any team, create a channel `#smoke-test`. Then in that
 channel:
 
 ```
-/alertmanager add <team-slug> smoke-test http://alertmanager:9093 compute
+/alertmanager config add http://alertmanager:9093 compute
 ```
 
-**Pass:** ephemeral response shows "complete: 6 created, 0
+**Pass:** ephemeral response shows "complete: 9 created, 0
 skipped, 0 failed." and the bot DM's you with
 `alertmanager-receivers.yml` + `alertmanager-routes.yml`.
 **Fail:** any per-receiver errors. The most common cause is
@@ -94,7 +99,7 @@ file a bug with the assembled output attached.
 In `#smoke-test`:
 
 ```
-/alertmanager validate all
+/alertmanager config validate all
 ```
 
 **Pass:** every row shows `AM reach: ✓` and
@@ -109,7 +114,7 @@ Read-only check that an alert with given labels would route to the
 expected receiver, before firing anything:
 
 ```
-/alertmanager validate --simulate runbook=high-cpu-usage severity=warning
+/alertmanager config validate simulate runbook=high-cpu-usage severity=warning
 ```
 
 **Pass:** output names `high-cpu-usage--smoke-test` in the "Would
@@ -121,7 +126,7 @@ the matcher key isn't `runbook`. Re-check step 4.
 ### 6. Run an end-to-end synthetic alert
 
 ```
-/alertmanager validate high-cpu-usage--smoke-test --end-to-end
+/alertmanager config validate high-cpu-usage--smoke-test end-to-end
 ```
 
 Watch `#smoke-test`. Within ~30 seconds you should see a
@@ -161,18 +166,18 @@ group_wait (~30s default), the alert arrives in `#smoke-test`.
 **Pass:** real alert posts, distinct from the synthetic one.
 **Fail:** Prometheus rule didn't make it to AM (check
 Prometheus → Alerts page) or AM didn't route (check
-`/alertmanager status` and AM's UI).
+`/alertmanager alerts status` and AM's UI).
 
 ### 8. Tear down
 
 ```
-/alertmanager remove all --force
+/alertmanager config remove all force
 ```
 
 Remove the corresponding blocks from `alertmanager.yml` per
 [UNINSTALL.md](UNINSTALL.md).
 
-**Pass:** `/alertmanager list` returns empty for the channel.
+**Pass:** `/alertmanager config list` returns empty for the channel.
 
 ## Recording results
 

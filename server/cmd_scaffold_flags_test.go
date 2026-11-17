@@ -1,43 +1,9 @@
 package main
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
-
-// TestExtractBoolFlag pins the --private parser: the flag is stripped from the
-// remaining args wherever it appears (so it can't be mistaken for a positional
-// team/channel/name), presence is reported correctly, and the order of the other
-// args is preserved.
-func TestExtractBoolFlag(t *testing.T) {
-	cases := []struct {
-		name        string
-		args        []string
-		flag        string
-		wantPresent bool
-		wantRest    []string
-	}{
-		{"absent", []string{"team", "chan", "url"}, "--private", false, []string{"team", "chan", "url"}},
-		{"at end", []string{"team", "chan", "url", "--private"}, "--private", true, []string{"team", "chan", "url"}},
-		{"in middle", []string{"team", "--private", "chan", "url"}, "--private", true, []string{"team", "chan", "url"}},
-		{"at start", []string{"--private", "team", "chan"}, "--private", true, []string{"team", "chan"}},
-		{"duplicated: still present, both stripped", []string{"--private", "team", "--private", "chan"}, "--private", true, []string{"team", "chan"}},
-		{"empty args", nil, "--private", false, []string{}},
-		{"order preserved", []string{"c", "a", "b", "--private"}, "--private", true, []string{"c", "a", "b"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			present, rest := extractBoolFlag(tc.args, tc.flag)
-			if present != tc.wantPresent {
-				t.Errorf("present = %v, want %v", present, tc.wantPresent)
-			}
-			if !reflect.DeepEqual(rest, tc.wantRest) {
-				t.Errorf("rest = %#v, want %#v", rest, tc.wantRest)
-			}
-		})
-	}
-}
 
 // TestEnforceReceiverCap is the CL-25 quota guard: exactly hitting the cap is
 // allowed, one over is rejected, and the boundary is inclusive (`>` not `>=`).

@@ -6,7 +6,7 @@ import (
 )
 
 // TestRepairAlertConfigsKV covers the F-002/F-003 recovery path: diagnose-only
-// without --force, validate the snapshot before writing, and CAS on the corrupt
+// without force, validate the snapshot before writing, and CAS on the corrupt
 // bytes so a concurrent repair on another node can't be clobbered.
 func TestRepairAlertConfigsKV(t *testing.T) {
 	const valid = `[{"name":"high-cpu--t-c","team":"t","channel":"c","webhookID":"h1"}]`
@@ -27,12 +27,12 @@ func TestRepairAlertConfigsKV(t *testing.T) {
 		}
 	})
 
-	t.Run("corrupt KV without --force only diagnoses", func(t *testing.T) {
+	t.Run("corrupt KV without force only diagnoses", func(t *testing.T) {
 		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}}
 		p := &Plugin{}
 		p.API = api
 		msg := p.repairAlertConfigsKV("u1", "c1", false)
-		if !strings.Contains(msg, "UNREADABLE") || !strings.Contains(msg, "--force") {
+		if !strings.Contains(msg, "UNREADABLE") || !strings.Contains(msg, "repair force") {
 			t.Fatalf("got %q", msg)
 		}
 		if string(api.store[kvKeyAlertConfigs]) != corrupt {
@@ -40,7 +40,7 @@ func TestRepairAlertConfigsKV(t *testing.T) {
 		}
 	})
 
-	t.Run("--force rewrites from in-memory via CAS", func(t *testing.T) {
+	t.Run("force rewrites from in-memory via CAS", func(t *testing.T) {
 		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}}
 		p := &Plugin{}
 		p.API = api
@@ -53,7 +53,7 @@ func TestRepairAlertConfigsKV(t *testing.T) {
 		}
 	})
 
-	t.Run("--force aborts on CAS miss (F-002 concurrent change)", func(t *testing.T) {
+	t.Run("force aborts on CAS miss (F-002 concurrent change)", func(t *testing.T) {
 		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}, casFailuresRemaining: 1}
 		p := &Plugin{}
 		p.API = api
@@ -67,7 +67,7 @@ func TestRepairAlertConfigsKV(t *testing.T) {
 		}
 	})
 
-	t.Run("--force writes the SANITIZED snapshot, not the raw one (F-002)", func(t *testing.T) {
+	t.Run("force writes the SANITIZED snapshot, not the raw one (F-002)", func(t *testing.T) {
 		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}}
 		p := &Plugin{}
 		p.API = api
@@ -89,7 +89,7 @@ func TestRepairAlertConfigsKV(t *testing.T) {
 		}
 	})
 
-	t.Run("--force applies the sanitized list to local memory (no wait for reload)", func(t *testing.T) {
+	t.Run("force applies the sanitized list to local memory (no wait for reload)", func(t *testing.T) {
 		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}}
 		p := &Plugin{}
 		p.API = api
@@ -111,7 +111,7 @@ func TestRepairAlertConfigsKV(t *testing.T) {
 		}
 	})
 
-	t.Run("--force refuses an invalid in-memory snapshot (F-003)", func(t *testing.T) {
+	t.Run("force refuses an invalid in-memory snapshot (F-003)", func(t *testing.T) {
 		api := &fakeKVAPI{store: map[string][]byte{kvKeyAlertConfigs: []byte(corrupt)}}
 		p := &Plugin{}
 		p.API = api

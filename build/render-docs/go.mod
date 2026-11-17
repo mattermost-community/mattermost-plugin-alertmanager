@@ -1,5 +1,5 @@
 module github.com/mattermost/mattermost-plugin-alertmanager/build/render-docs
 
-go 1.26.1
+go 1.26.11
 
-require github.com/yuin/goldmark v1.8.5
+require github.com/yuin/goldmark v1.8.7

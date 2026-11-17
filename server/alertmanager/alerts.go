@@ -8,28 +8,27 @@
 package alertmanager
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 
 	"github.com/prometheus/alertmanager/alert"
 )
 
-// ListAlerts queries the Alertmanager /api/v2/alerts endpoint. user and
-// password are optional HTTP Basic Auth credentials; pass empty strings when
-// the Alertmanager API is not protected.
+// ListAlerts queries the Alertmanager /api/v2/alerts endpoint.
 //
 // Returns []*alert.Alert. Prior versions used types.Alert; that type
 // remains in v0.33 as a deprecated alias for alert.Alert — using the
 // canonical path here silences the SA1019 lint and stays current as
 // the alias eventually gets removed upstream.
-func ListAlerts(alertmanagerURL, user, password string) ([]*alert.Alert, error) {
-	resp, err := httpRetry(http.MethodGet, alertmanagerURL+"/api/v2/alerts", user, password)
+func ListAlerts(ctx context.Context, alertmanagerURL string) ([]*alert.Alert, error) {
+	body, _, err := httpRetry(ctx, http.MethodGet, alertmanagerURL+"/api/v2/alerts")
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	var alertResponse []*alert.Alert
-	if errDec := DecodeJSONLimited(resp.Body, &alertResponse); errDec != nil {
+	if errDec := DecodeJSONLimited(bytes.NewReader(body), &alertResponse); errDec != nil {
 		return nil, errDec
 	}
 	return alertResponse, nil

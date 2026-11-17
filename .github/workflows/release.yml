@@ -96,13 +96,13 @@ jobs:
       # reviewer findings.
       - name: Upload CodeQL SARIF to code scanning
         if: always() && hashFiles('dist/codeql-go.sarif') != ''
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3.30.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: dist/codeql-go.sarif
           category: codeql-go-release
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: ${{ steps.plugin_info.outputs.plugin_id }} v${{ steps.plugin_info.outputs.plugin_version }}
           files: |

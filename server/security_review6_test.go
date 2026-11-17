@@ -15,7 +15,7 @@ import (
 
 // TestWebhookTestClientBlocksSSRF is the finding-#1 regression: the webhook-test
 // POST used http.DefaultClient (proxy-honoring, redirect-following, no dial
-// guard) against a team-admin-controllable --webhook-host, so a team admin could
+// guard) against a team-admin-controllable webhook-host, so a team admin could
 // aim it at cloud metadata / internal services. The guarded webhookTestClient
 // must refuse those destinations at dial time.
 func TestWebhookTestClientBlocksSSRF(t *testing.T) {

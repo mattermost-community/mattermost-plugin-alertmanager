@@ -1,15 +1,20 @@
 # Persistent Volume Full
 
-!!! warning "Severity: Warning → Critical at 95%"
-    **Target response: 30 min warning, 5 min critical.** A PV is approaching capacity. Writes will fail when full, causing application errors.
+!!! danger "Severity: Critical"
+    **Target response: 5 minutes.** A PV is approaching capacity. Writes will fail when full, causing application errors.
 
 ## What this alert means
 
 ```promql
-kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes > 0.85
+max by (namespace, persistentvolumeclaim) (
+  kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100
+) > 90
 ```
 
-A PVC's underlying volume is more than 85% full. Time-to-full depends on growth rate (see [Disk Fill Rate High](disk-fill-rate-high.md) for an earlier-warning version).
+The sample rule joins this with `kube_pod_spec_volumes_persistentvolumeclaims_info`
+so each alert names a pod that mounts the claim.
+
+A PVC's underlying volume is more than 90% full. Time-to-full depends on growth rate (see [Disk Fill Rate High](disk-fill-rate-high.md) for an earlier-warning version).
 
 When the volume hits 100%, writes return ENOSPC. The application may crash, the database may go read-only, or the service may just throw 500s on every write request.
 
@@ -59,8 +64,9 @@ kubectl exec -n <namespace> <pod> -- du -hx --max-depth=2 $MOUNT_PATH | sort -hr
 
 | Severity | Pager? | Target response | Business impact |
 |---|---|---|---|
-| Warning (>85%) | No | 30 min | Capacity planning needed |
-| Critical (>95%) | Yes | 5 min | Imminent write failure |
+| Critical (>90%) | Yes | 5 min | Imminent write failure |
+
+For an earlier warning, see [Disk Fill Rate High](disk-fill-rate-high.md).
 
 ## Diagnostic steps
 

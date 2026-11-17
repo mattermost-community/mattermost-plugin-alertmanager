@@ -2,25 +2,18 @@ package main
 
 import (
 	"crypto/subtle"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
-	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
-// ServeHTTP backs the dynamic-list autocomplete endpoints used by the
-// /alertmanager scaffold and /alertmanager add slash commands. Mattermost
-// invokes these URLs as the user tabs through arguments; we return JSON
-// lists of suggestions.
+// ServeHTTP serves the Prometheus /metrics endpoint, the admin inventory page,
+// and the validate typeahead list.
 //
-// Auth: every request must carry the Mattermost-User-Id header (Mattermost
-// sets it for in-session calls). The endpoints are read-only and only
-// return data the calling user already has access to via the plugin API,
-// so we don't need a stronger guard than presence of the header.
+// Auth: /metrics uses a bearer token. Everything else must carry the
+// Mattermost-User-Id header (Mattermost sets it for in-session calls).
 func (p *Plugin) ServeHTTP(_ *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	// /metrics uses bearer-token auth (set via MetricsToken setting),
 	// not the Mattermost-User-Id header — Prometheus scrapes from
@@ -36,12 +29,10 @@ func (p *Plugin) ServeHTTP(_ *plugin.Context, w http.ResponseWriter, r *http.Req
 		return
 	}
 	switch r.URL.Path {
-	case "/autocomplete/teams":
-		p.handleAutocompleteTeams(w, r, userID)
-	case "/autocomplete/channels":
-		p.handleAutocompleteChannels(w, r, userID)
 	case "/admin/inventory":
 		p.handleAdminInventory(w, r, userID)
+	case validateTargetsPath:
+		p.handleAutocompleteValidateTargets(w, r, userID)
 	default:
 		http.NotFound(w, r)
 	}
@@ -118,160 +109,3 @@ func (p *Plugin) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminInventory is now implemented in admin_inventory.go.
-
-// handleAutocompleteTeams returns the teams the caller is allowed to TARGET as
-// AutocompleteListItem JSON. Item is the team URL slug (the value Mattermost
-// inserts into the command line); HelpText is the display name.
-//
-// Scope mirrors the server-side authorization in the add/add-custom handlers:
-// system admins see every team; everyone else sees only teams where they are a
-// team_admin. This keeps the typeahead from advertising teams the caller has no
-// authority over — you can't see the hover for team B unless you administer B
-// (or are a system admin). Autocomplete is still just a suggestion; the handler
-// re-checks authorization, so this is UX hygiene, not the security boundary.
-func (p *Plugin) handleAutocompleteTeams(w http.ResponseWriter, _ *http.Request, userID string) {
-	sysadmin := p.client != nil && p.client.User.HasPermissionTo(userID, model.PermissionManageSystem)
-
-	var teams []*model.Team
-	var appErr *model.AppError
-	if sysadmin {
-		teams, appErr = p.API.GetTeams()
-	} else {
-		teams, appErr = p.API.GetTeamsForUser(userID)
-	}
-	if appErr != nil {
-		respondAutocompleteError(w, fmt.Sprintf("failed to list teams: %v", appErr))
-		return
-	}
-
-	items := make([]model.AutocompleteListItem, 0, len(teams))
-	for _, t := range teams {
-		if !sysadmin {
-			member, mErr := p.API.GetTeamMember(t.Id, userID)
-			if mErr != nil || !slices.Contains(strings.Fields(member.Roles), "team_admin") {
-				continue
-			}
-		}
-		items = append(items, model.AutocompleteListItem{
-			Item:     t.Name,
-			HelpText: t.DisplayName,
-		})
-	}
-	respondAutocompleteItems(w, items)
-}
-
-// handleAutocompleteChannels returns public channels for the team the
-// user has already typed in an earlier argument. Mattermost includes the
-// partial command line in the `parsed` query param; we extract the team
-// slug from it and call GetPublicChannelsForTeam.
-//
-// Why public channels rather than channels-the-user-is-in:
-//   - Sysadmins scaffolding receivers may bind webhooks to channels they
-//     aren't currently members of.
-//   - Auto-creation of the destination channel happens in /alertmanager
-//     add and scaffold, so the user can still type a channel name that
-//     doesn't exist yet — autocomplete is a suggestion, not a gate.
-//
-// Private channels are intentionally not in the list: surfacing them via
-// an open autocomplete would leak channel names to users who can't
-// otherwise see them.
-func (p *Plugin) handleAutocompleteChannels(w http.ResponseWriter, r *http.Request, userID string) {
-	parsed := r.URL.Query().Get("parsed")
-	teamSlug := extractTeamSlugFromParsed(parsed)
-
-	// Empty team slug = user hasn't filled the team arg yet. Return a
-	// single placeholder item so the typeahead has something to render and
-	// the user gets a hint about ordering.
-	if teamSlug == "" {
-		respondAutocompleteItems(w, []model.AutocompleteListItem{
-			{
-				Item:     "_fill-team-first_",
-				HelpText: "Fill in the team argument first — channels are listed per team",
-			},
-		})
-		return
-	}
-
-	team, appErr := p.API.GetTeamByName(teamSlug)
-	if appErr != nil {
-		respondAutocompleteItems(w, []model.AutocompleteListItem{
-			{
-				Item:     "_team-not-found_",
-				HelpText: fmt.Sprintf("Team `%s` doesn't exist — fix the team arg and re-tab", teamSlug),
-			},
-		})
-		return
-	}
-
-	// Scope to teams the caller can target — same rule as handleAutocompleteTeams
-	// and the command handlers: system admins bypass, otherwise the caller must be
-	// a team_admin of this team. Without this, a non-admin could enumerate another
-	// team's public channel names by typing its slug (GetPublicChannelsForTeam is
-	// plugin-privileged and would otherwise ignore userID).
-	if p.client == nil || !p.client.User.HasPermissionTo(userID, model.PermissionManageSystem) {
-		member, mErr := p.API.GetTeamMember(team.Id, userID)
-		if mErr != nil || !slices.Contains(strings.Fields(member.Roles), "team_admin") {
-			respondAutocompleteItems(w, []model.AutocompleteListItem{
-				{
-					Item:     "_not-authorized_",
-					HelpText: fmt.Sprintf("You must be a team_admin of `%s` (or system_admin) to list its channels", teamSlug),
-				},
-			})
-			return
-		}
-	}
-
-	// Page 0 / 200 covers nearly every team. Teams with more than 200
-	// public channels can't reasonably use typeahead anyway, and the
-	// command still accepts free-text channel names.
-	channels, appErr := p.API.GetPublicChannelsForTeam(team.Id, 0, 200)
-	if appErr != nil {
-		respondAutocompleteError(w, fmt.Sprintf("failed to list channels for team %s: %v", teamSlug, appErr))
-		return
-	}
-
-	items := make([]model.AutocompleteListItem, 0, len(channels))
-	for _, c := range channels {
-		items = append(items, model.AutocompleteListItem{
-			Item:     c.Name,
-			HelpText: c.DisplayName,
-		})
-	}
-	respondAutocompleteItems(w, items)
-}
-
-// extractTeamSlugFromParsed reads the team slug out of the partial
-// command line Mattermost passes in the autocomplete callback.
-//
-//	/alertmanager add <team> <channel> <am-url> [set]
-//
-// Returns "" if no usable team slug is present yet.
-func extractTeamSlugFromParsed(parsed string) string {
-	fields := strings.Fields(parsed)
-	if len(fields) < 3 {
-		return ""
-	}
-	// fields[0] is the trigger (e.g. "/alertmanager"); fields[1] is the
-	// subcommand. `add` and `add-custom` are the two commands that take
-	// <team> <channel> in that order and wire the dynamic channel
-	// autocomplete to this handler. Both put the team at fields[2]. Omitting
-	// add-custom here left its channel dropdown permanently stuck on the
-	// "_fill-team-first_" placeholder (the team was never extracted, so the
-	// per-team channel list never loaded).
-	if fields[1] != "add" && fields[1] != "add-custom" {
-		return ""
-	}
-	return fields[2]
-}
-
-func respondAutocompleteItems(w http.ResponseWriter, items []model.AutocompleteListItem) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(items)
-}
-
-func respondAutocompleteError(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode([]model.AutocompleteListItem{
-		{Item: "_error_", HelpText: msg},
-	})
-}

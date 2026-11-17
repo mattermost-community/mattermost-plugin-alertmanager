@@ -1,6 +1,7 @@
 package alertmanager
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -95,8 +96,30 @@ func TestSetAllowedNetsParsesForDial(t *testing.T) {
 	if err := safeDialControl("tcp", "203.0.113.7:9093", nil); err != nil {
 		t.Errorf("in-range public IP should be permitted: %v", err)
 	}
-	if err := safeDialControl("tcp", "203.0.114.7:9093", nil); err == nil || !strings.Contains(err.Error(), "allowlist") {
-		t.Errorf("out-of-range IP should be rejected with an allowlist message, got %v", err)
+	err := safeDialControl("tcp", "203.0.114.7:9093", nil)
+	var blocked *BlockedDestinationError
+	if !errors.As(err, &blocked) || !strings.Contains(blocked.Detail(), "allowlist") {
+		t.Fatalf("out-of-range IP should be rejected with an allowlist message, got %v", err)
+	}
+}
+
+// TestBlockedDestinationErrorHidesTheNetwork pins the split between the text
+// every caller can see and the admin-only detail.
+func TestBlockedDestinationErrorHidesTheNetwork(t *testing.T) {
+	t.Cleanup(func() { SetAllowedNets(nil) })
+	SetAllowedNets([]*net.IPNet{mustCIDR("203.0.113.0/24")})
+	err := CheckDestinationIP(net.ParseIP("10.20.30.40"))
+	var blocked *BlockedDestinationError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("want a BlockedDestinationError, got %v", err)
+	}
+	for _, leak := range []string{"10.20.30.40", "10.20.0.0/16", "/16"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("Error() leaks %q: %s", leak, err.Error())
+		}
+	}
+	if !strings.Contains(blocked.Detail(), "10.20.0.0/16") {
+		t.Errorf("Detail() should carry the suggested CIDR: %s", blocked.Detail())
 	}
 }
 
@@ -151,6 +174,28 @@ func TestDenyAll(t *testing.T) {
 	SetAllowedNets(nil)
 	if HasUsableAllowlist() {
 		t.Fatal("nil allowlist must not report as usable")
+	}
+}
+
+func TestSuggestedAllowlistCIDR(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want string
+	}{
+		{"10.43.5.164", "10.43.0.0/16"},
+		{"192.168.1.9", "192.168.0.0/16"},
+		{"172.16.3.4", "172.16.0.0/16"},
+		{"8.8.8.8", "8.8.8.8/32"},
+		{"127.0.0.1", "127.0.0.1/32"},
+		{"100.64.1.2", "100.64.1.2/32"},
+		{"::1", "::1/128"},
+		{"2001:db8::1", "2001:db8::1/128"},
+	}
+	for _, tc := range cases {
+		got := suggestedAllowlistCIDR(net.ParseIP(tc.ip))
+		if got != tc.want {
+			t.Errorf("suggestedAllowlistCIDR(%s) = %s, want %s", tc.ip, got, tc.want)
+		}
 	}
 }
 

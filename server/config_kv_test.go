@@ -81,8 +81,6 @@ func TestUpdateConfigsAtomicRoundTrip(t *testing.T) {
 		Team:      "team",
 		Channel:   "chan",
 		WebhookID: "abc123",
-		User:      "svc",
-		Password:  "s3cret",
 	}}
 
 	p.configWriteMu.Lock()
@@ -96,7 +94,7 @@ func TestUpdateConfigsAtomicRoundTrip(t *testing.T) {
 	if len(before) != 0 {
 		t.Fatalf("expected empty before-list on a fresh store, got %d", len(before))
 	}
-	if len(after) != 1 || after[0].Password != "s3cret" {
+	if len(after) != 1 || after[0].WebhookID != "abc123" {
 		t.Fatalf("after-list wrong: %#v", after)
 	}
 
@@ -129,8 +127,8 @@ func TestUpdateConfigsAtomicRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadAlertConfigsFromKV: %v", err)
 	}
-	if len(loaded) != 1 || loaded[0].WebhookID != "abc123" || loaded[0].Password != "s3cret" || loaded[0].User != "svc" {
-		t.Fatalf("round-trip lost secret data: %#v", loaded)
+	if len(loaded) != 1 || loaded[0].WebhookID != "abc123" {
+		t.Fatalf("round-trip lost data: %#v", loaded)
 	}
 }
 
