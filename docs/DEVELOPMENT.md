@@ -135,7 +135,7 @@ The plugin mints an ephemeral PAT for the calling sysadmin to authenticate Clien
 
 ### Posts show as the calling admin, not `@alertmanagerbot`
 
-**Cause:** the System Console toggles for username/icon override are off. The plugin only switches them on when its `EnableIntegrationOverrides` setting is on, and with `config.json` mounted read-only (typical in some Helm charts) `SaveConfig` fails.
+**Cause:** the System Console toggles for username/icon override are off. The plugin only switches them on when its **Turn on Mattermost's webhook username and icon overrides** setting (`EnableIntegrationOverrides`) is on, and with `config.json` mounted read-only (typical in some Helm charts) `SaveConfig` fails.
 
 **Fix:** Manually set both to true at System Console → Integrations → Integration Management:
 

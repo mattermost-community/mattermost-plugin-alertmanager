@@ -140,7 +140,7 @@ func (p *Plugin) applyIntegrationOverridePolicy() {
 	}
 
 	if !raw.EnableIntegrationOverrides {
-		p.API.LogWarn("webhook posts will show as the creating sysadmin, not @alertmanagerbot: EnablePostUsernameOverride or EnablePostIconOverride is off. Turn them on in System Console > Integrations > Integration Management, or enable this plugin's 'EnableIntegrationOverrides' setting to let it do so.",
+		p.API.LogWarn("webhook posts will show as the creating sysadmin, not @alertmanagerbot: EnablePostUsernameOverride or EnablePostIconOverride is off. Turn them on in System Console > Integrations > Integration Management, or enable this plugin's 'Turn on Mattermost's webhook username and icon overrides' setting to let it do so.",
 			"username_override_on", usernameOn, "icon_override_on", iconOn)
 		return
 	}
@@ -181,7 +181,7 @@ func (p *Plugin) overrideSetupHint() string {
 		shown = append(shown, "profile picture")
 		settings = append(settings, "\"Enable integrations to override profile picture icons\"")
 	}
-	return fmt.Sprintf(":information_source: Posts will show your %s instead of @alertmanagerbot's until a sysadmin turns on %s (System Console > Integrations > Integration Management) or this plugin's `EnableIntegrationOverrides` setting.\n\n",
+	return fmt.Sprintf(":information_source: Posts will show your %s instead of @alertmanagerbot's until a sysadmin turns on %s (System Console > Integrations > Integration Management) or this plugin's **Turn on Mattermost's webhook username and icon overrides** setting.\n\n",
 		strings.Join(shown, " and "), strings.Join(settings, " and "))
 }
 

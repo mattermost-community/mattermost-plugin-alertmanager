@@ -51,7 +51,8 @@ actually rotates that frequently.
 
 ### `EnableIntegrationOverrides`
 
-Default off. Webhook posts show as `@alertmanagerbot` only when
+Shown in System Console as **Turn on Mattermost's webhook username and icon
+overrides**. Default off. Webhook posts show as `@alertmanagerbot` only when
 `ServiceSettings.EnablePostUsernameOverride` and
 `EnablePostIconOverride` are on (System Console → Integrations →
 Integration Management). Both are server-wide and affect every
