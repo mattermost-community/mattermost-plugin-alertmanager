@@ -61,7 +61,10 @@ integration, not just this plugin's webhooks.
 With this setting off, the plugin changes nothing. If either toggle is
 off, it logs a warning at activation, `config add` says so in its reply,
 and posts show as the sysadmin who created the receiver. Turn this setting on if you want the plugin to
-switch both on when it activates. It is a no-op when both are already on.
+switch both on. It takes effect when you save it, with no restart, and is a
+no-op when both are already on. While it is on, the plugin keeps both
+toggles on: if someone switches one off in the System Console, the plugin
+switches it back on. Turn this setting off first if you want them off.
 
 ### `AlertManagerCABundle`
 

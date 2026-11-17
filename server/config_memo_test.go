@@ -56,3 +56,65 @@ func TestOnConfigurationChangeMemoizesTeamLookup(t *testing.T) {
 		t.Fatalf("expected 4 receivers loaded, got %d", got)
 	}
 }
+
+type overridePolicyAPI struct {
+	fakeConfigAPI
+	pluginSetting bool
+	cfg           *model.Config
+	saves         int
+	warns         int
+}
+
+func (f *overridePolicyAPI) LoadPluginConfiguration(dst any) error {
+	if raw, ok := dst.(*rawConfiguration); ok {
+		raw.EnableIntegrationOverrides = f.pluginSetting
+	}
+	return nil
+}
+
+func (f *overridePolicyAPI) GetConfig() *model.Config { return f.cfg.Clone() }
+
+func (f *overridePolicyAPI) SaveConfig(cfg *model.Config) *model.AppError {
+	f.saves++
+	f.cfg = cfg
+	return nil
+}
+
+func (f *overridePolicyAPI) LogInfo(string, ...any) {}
+func (f *overridePolicyAPI) LogWarn(string, ...any) { f.warns++ }
+
+func TestOnConfigurationChangeAppliesTheOverrideSetting(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		pluginSetting bool
+		wantSaves     int
+	}{
+		{"setting on turns the overrides on without a restart", true, 1},
+		{"setting off changes nothing", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &model.Config{}
+			cfg.SetDefaults()
+			cfg.ServiceSettings.EnablePostUsernameOverride = model.NewPointer(false)
+			cfg.ServiceSettings.EnablePostIconOverride = model.NewPointer(false)
+			api := &overridePolicyAPI{fakeConfigAPI: fakeConfigAPI{blob: []byte("[]"), teamCalls: map[string]int{}}, pluginSetting: tc.pluginSetting, cfg: cfg}
+			p := &Plugin{}
+			p.API = api
+
+			for range 2 {
+				if err := p.OnConfigurationChange(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if api.saves != tc.wantSaves {
+				t.Errorf("SaveConfig called %d times, want %d", api.saves, tc.wantSaves)
+			}
+			if api.warns != 0 {
+				t.Errorf("a configuration change should not warn about the overrides, got %d warnings", api.warns)
+			}
+			if tc.pluginSetting && !integrationOverridesOn(api.cfg) {
+				t.Error("both overrides should be on")
+			}
+		})
+	}
+}

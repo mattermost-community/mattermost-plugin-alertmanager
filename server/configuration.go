@@ -693,6 +693,10 @@ func (p *Plugin) OnConfigurationChange() error {
 	p.setConfiguration(newConfiguration(entries, effectiveHost, raw.AssembledYAMLTTLHours, raw.AlertManagerCABundle, raw.MetricsToken, raw.WebhookRotationDays))
 	p.configWriteMu.Unlock()
 
+	if raw.EnableIntegrationOverrides && p.API != nil {
+		p.enableIntegrationOverrides()
+	}
+
 	// Best-effort team verification, OUTSIDE the lock (these are network calls we
 	// don't want to hold configWriteMu across) and log-only: a since-deleted team
 	// must not brick the load (F-005) — the affected receiver is just orphaned and
