@@ -196,18 +196,18 @@ func TestProbeWebhooksClassifiesEachHookOnce(t *testing.T) {
 	p := &Plugin{}
 	p.API = api
 
-	status, unchecked := p.probeWebhooks(c, []alertConfig{
+	status, cutOff, failed := p.probeWebhooks(c, []alertConfig{
 		{Name: "r1", WebhookID: "alive"},
 		{Name: "r2", WebhookID: "alive"},
 		{Name: "r3", WebhookID: "dead"},
 		{Name: "r4", WebhookID: "flaky"},
-	}, orphanProbeBudget, true)
+	}, orphanProbeBudget, backgroundProbe)
 
 	if want := map[string]bool{"alive": true, "dead": false}; !maps.Equal(status, want) {
 		t.Errorf("status = %v, want %v (a transient error leaves the hook out)", status, want)
 	}
-	if unchecked != 1 {
-		t.Errorf("unchecked = %d, want 1 for the hook that errored", unchecked)
+	if cutOff != 0 || failed != 1 {
+		t.Errorf("cutOff = %d, failed = %d; want 0 and 1 for the hook that errored", cutOff, failed)
 	}
 	if hits["alive"] != 1 {
 		t.Errorf("a shared hook is probed once, got %d calls", hits["alive"])
@@ -235,7 +235,7 @@ func TestProbeWebhooksResumesWhereTheBudgetRanOut(t *testing.T) {
 
 	checked := map[string]bool{}
 	for range 40 {
-		status, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, true)
+		status, _, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, backgroundProbe)
 		for id := range status {
 			checked[id] = true
 		}
@@ -248,12 +248,12 @@ func TestProbeWebhooksResumesWhereTheBudgetRanOut(t *testing.T) {
 
 func TestProbeCursorStartsOverWhenItsHookIsGone(t *testing.T) {
 	p := &Plugin{}
-	p.setProbeCursor("c")
-	if got, want := p.rotateToProbeCursor([]string{"a", "b", "c", "d"}), []string{"c", "d", "a", "b"}; !slices.Equal(got, want) {
+	p.setProbeCursor(backgroundProbe, "c")
+	if got, want := p.rotateToProbeCursor(backgroundProbe, []string{"a", "b", "c", "d"}), []string{"c", "d", "a", "b"}; !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
-	p.setProbeCursor("removed")
-	if got, want := p.rotateToProbeCursor([]string{"a", "b", "d"}), []string{"a", "b", "d"}; !slices.Equal(got, want) {
+	p.setProbeCursor(backgroundProbe, "removed")
+	if got, want := p.rotateToProbeCursor(backgroundProbe, []string{"a", "b", "d"}), []string{"a", "b", "d"}; !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
@@ -293,7 +293,7 @@ func TestProbeWebhooksRetriesChecksTheDeadlineCutOff(t *testing.T) {
 
 	checked := map[string]bool{}
 	for range 20 {
-		status, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, true)
+		status, _, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, backgroundProbe)
 		for id := range status {
 			checked[id] = true
 		}
@@ -310,8 +310,11 @@ func TestProbeWebhooksDoesNotWarnAboutChecksTheBudgetCutOff(t *testing.T) {
 	p := &Plugin{}
 	p.API = api
 
-	_, unchecked := p.probeWebhooks(c, eightHooks(), 100*time.Millisecond, true)
-	if unchecked == 0 {
+	_, cutOff, failed := p.probeWebhooks(c, eightHooks(), 100*time.Millisecond, backgroundProbe)
+	if failed != 0 {
+		t.Errorf("checks cut off by the budget are not lookup errors, got %d failed", failed)
+	}
+	if cutOff == 0 {
 		t.Fatal("the budget should have cut some checks off")
 	}
 	if n := api.warnCount(); n != 0 {
@@ -319,17 +322,40 @@ func TestProbeWebhooksDoesNotWarnAboutChecksTheBudgetCutOff(t *testing.T) {
 	}
 }
 
-func TestManualProbeLeavesTheBackgroundCursorAlone(t *testing.T) {
+func TestManualProbeResumesWithoutMovingTheBackgroundCursor(t *testing.T) {
 	c := model.NewAPIv4Client(deadlineServer(t).URL)
 	p := &Plugin{}
 	p.API = &reconcilerAPI{}
-	p.setProbeCursor("hook6")
+	p.setProbeCursor(backgroundProbe, "hook6")
+	configs := eightHooks()
 
-	if _, unchecked := p.probeWebhooks(c, eightHooks(), 100*time.Millisecond, false); unchecked == 0 {
-		t.Fatal("the budget should have cut some checks off")
+	checked := map[string]bool{}
+	for range 10 {
+		status, _, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, manualProbe)
+		for id := range status {
+			checked[id] = true
+		}
+		if got := p.orphanProbeNext; got != "hook6" {
+			t.Fatalf("a manual check moved the background cursor to %q", got)
+		}
+		if len(checked) == len(configs) {
+			break
+		}
 	}
-	if got := p.orphanProbeNext; got != "hook6" {
-		t.Errorf("a manual check moved the background cursor to %q", got)
+	if len(checked) != len(configs) {
+		t.Errorf("rerunning admin repair should reach every webhook, %d of %d never checked", len(configs)-len(checked), len(configs))
+	}
+}
+
+func TestUncheckedWebhooksNoteSaysWhyEachWasNotChecked(t *testing.T) {
+	note := uncheckedWebhooksNote(orphanCheck{cutOff: 3, failed: 1}, "admin repair")
+	for _, want := range []string{"3 webhook(s) were not reached before the time limit", "1 webhook(s) could not be checked because Mattermost returned an error", "`/alertmanager admin repair` again"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note lacks %q:\n%s", want, note)
+		}
+	}
+	if note := uncheckedWebhooksNote(orphanCheck{failed: 1}, "admin repair"); strings.Contains(note, "time limit") {
+		t.Errorf("an error-only check should not blame the time limit:\n%s", note)
 	}
 }
 
@@ -350,7 +376,7 @@ func TestRepairPreviewSaysWhenSomeWebhooksWereNotChecked(t *testing.T) {
 	if strings.Contains(out, "Every registered webhook still exists") {
 		t.Errorf("a webhook that was not checked must not be reported as existing:\n%s", out)
 	}
-	if !strings.Contains(out, "1 webhook(s) were not checked") {
+	if !strings.Contains(out, "1 webhook(s) could not be checked") {
 		t.Errorf("the reply should say how many webhooks were not checked:\n%s", out)
 	}
 }

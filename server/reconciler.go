@@ -352,31 +352,32 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 // it can no longer clobber a concurrent admin add/rotate — the old
 // small-window race is closed by the lock, not tolerated.
 func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
-	res, err := p.probeOrphans(actingUserID, true, true)
+	res, err := p.probeOrphans(actingUserID, true, backgroundProbe)
 	return res.names, err
 }
 
-// orphanCheck is the result of one orphan check. unchecked counts webhooks the
-// check could not confirm either way, because the budget ran out or the lookup
-// failed, so their receivers were neither reported nor pruned.
+// orphanCheck is the result of one orphan check. cutOff counts webhooks the
+// budget ran out before confirming and failed counts lookups that errored.
+// Their receivers were neither reported nor pruned.
 type orphanCheck struct {
-	names     []string
-	unchecked int
+	names  []string
+	cutOff int
+	failed int
 }
 
 // findOrphanedReceivers is the admin repair preview: it lists the receivers
 // whose webhook is gone without removing them.
 func (p *Plugin) findOrphanedReceivers(actingUserID string) (orphanCheck, error) {
-	return p.probeOrphans(actingUserID, false, false)
+	return p.probeOrphans(actingUserID, false, manualProbe)
 }
 
-// pruneOrphansNow is admin repair prune. Unlike the background check it leaves
-// the background cursor alone.
+// pruneOrphansNow is admin repair prune. Like the preview it uses the manual
+// cursor, so it leaves the background check's place alone.
 func (p *Plugin) pruneOrphansNow(actingUserID string) (orphanCheck, error) {
-	return p.probeOrphans(actingUserID, true, false)
+	return p.probeOrphans(actingUserID, true, manualProbe)
 }
 
-func (p *Plugin) probeOrphans(actingUserID string, prune, background bool) (orphanCheck, error) {
+func (p *Plugin) probeOrphans(actingUserID string, prune bool, cursor probeCursor) (orphanCheck, error) {
 	// The webhook probing below makes serial loopback Client4 calls; it runs
 	// WITHOUT configWriteMu so a slow probe can't stall lifecycle commands
 	// (CL-25). Correctness doesn't need the lock here: updateConfigsAtomic
@@ -398,7 +399,7 @@ func (p *Plugin) probeOrphans(actingUserID string, prune, background bool) (orph
 	// across N receivers, so per-receiver probing would multiply the API call
 	// rate. The result maps hookID to "exists" so the prune pass below can mark
 	// every receiver in a dead group as orphaned without re-querying.
-	hookStatus, unchecked := p.probeWebhooks(c, current, orphanProbeBudget, background)
+	hookStatus, cutOff, failed := p.probeWebhooks(c, current, orphanProbeBudget, cursor)
 
 	// Mark every receiver whose shared webhookID came back 404, recording the
 	// SPECIFIC dead webhook ID we probed for each name (not just the name). The
@@ -415,7 +416,7 @@ func (p *Plugin) probeOrphans(actingUserID string, prune, background bool) (orph
 	}
 
 	if len(orphanSet) == 0 {
-		return orphanCheck{unchecked: unchecked}, nil
+		return orphanCheck{cutOff: cutOff, failed: failed}, nil
 	}
 
 	if !prune {
@@ -424,7 +425,7 @@ func (p *Plugin) probeOrphans(actingUserID string, prune, background bool) (orph
 			found = append(found, name)
 		}
 		slices.Sort(found)
-		return orphanCheck{names: found, unchecked: unchecked}, nil
+		return orphanCheck{names: found, cutOff: cutOff, failed: failed}, nil
 	}
 
 	// Prune the orphaned names from the freshly-read KV list under compare-and-set
@@ -456,12 +457,12 @@ func (p *Plugin) probeOrphans(actingUserID string, prune, background bool) (orph
 	}
 
 	if len(pruned) == 0 {
-		return orphanCheck{unchecked: unchecked}, nil
+		return orphanCheck{cutOff: cutOff, failed: failed}, nil
 	}
 
 	p.API.LogInfo("reconciler: pruned orphan receivers (webhooks deleted out-of-band)",
 		"count", len(pruned), "names", strings.Join(pruned, ","))
-	return orphanCheck{names: pruned, unchecked: unchecked}, nil
+	return orphanCheck{names: pruned, cutOff: cutOff, failed: failed}, nil
 }
 
 // recordReconcileRun stamps the last-run timestamp, and the pruned count when
@@ -545,9 +546,9 @@ func (p *Plugin) findActiveSysadmin() (string, error) {
 // few concurrent loopback calls under one overall time budget. The result maps
 // hook ID to exists. A hook with a transient or permission error, or one the
 // budget ran out before reaching, is absent from the map so its receivers stay
-// alive until the next check. unchecked counts those absent hooks. Only the
-// background check moves the cursor, so a manual run cannot make it skip hooks.
-func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget time.Duration, background bool) (status map[string]bool, unchecked int) {
+// alive until the next check. cutOff and failed count those absent hooks by
+// cause. The check starts from, and moves, the given cursor.
+func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget time.Duration, cursor probeCursor) (status map[string]bool, cutOff, failed int) {
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
@@ -561,9 +562,7 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget t
 		owner[ac.WebhookID] = ac.Name
 		hookIDs = append(hookIDs, ac.WebhookID)
 	}
-	if background {
-		hookIDs = p.rotateToProbeCursor(hookIDs)
-	}
+	hookIDs = p.rotateToProbeCursor(cursor, hookIDs)
 
 	status = make(map[string]bool, len(hookIDs))
 	var (
@@ -606,10 +605,18 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget t
 	}
 	close(jobs)
 	wg.Wait()
-	if background {
-		p.setProbeCursor(firstUnfinished(hookIDs, finished))
+	p.setProbeCursor(cursor, firstUnfinished(hookIDs, finished))
+	for _, id := range hookIDs {
+		if _, known := status[id]; known {
+			continue
+		}
+		if finished[id] {
+			failed++
+		} else {
+			cutOff++
+		}
 	}
-	return status, len(hookIDs) - len(status)
+	return status, cutOff, failed
 }
 
 // firstUnfinished returns the first hook, in probe order, whose check did not
@@ -628,11 +635,28 @@ func firstUnfinished(hookIDs []string, finished map[string]bool) string {
 	return ""
 }
 
+// probeCursor picks which check's place a probe resumes from. The background
+// check and admin repair keep separate places so neither skips the other's hooks.
+type probeCursor int
+
+const (
+	backgroundProbe probeCursor = iota
+	manualProbe
+)
+
+// cursorField must be called with reconcilerStatusLock held.
+func (p *Plugin) cursorField(cursor probeCursor) *string {
+	if cursor == manualProbe {
+		return &p.manualProbeNext
+	}
+	return &p.orphanProbeNext
+}
+
 // rotateToProbeCursor reorders hookIDs to start at the hook the last check did
 // not reach. A cursor whose hook has since been removed starts from the top.
-func (p *Plugin) rotateToProbeCursor(hookIDs []string) []string {
+func (p *Plugin) rotateToProbeCursor(cursor probeCursor, hookIDs []string) []string {
 	p.reconcilerStatusLock.Lock()
-	next := p.orphanProbeNext
+	next := *p.cursorField(cursor)
 	p.reconcilerStatusLock.Unlock()
 	start := slices.Index(hookIDs, next)
 	if start <= 0 {
@@ -641,8 +665,8 @@ func (p *Plugin) rotateToProbeCursor(hookIDs []string) []string {
 	return append(slices.Clone(hookIDs[start:]), hookIDs[:start]...)
 }
 
-func (p *Plugin) setProbeCursor(next string) {
+func (p *Plugin) setProbeCursor(cursor probeCursor, next string) {
 	p.reconcilerStatusLock.Lock()
 	defer p.reconcilerStatusLock.Unlock()
-	p.orphanProbeNext = next
+	*p.cursorField(cursor) = next
 }
