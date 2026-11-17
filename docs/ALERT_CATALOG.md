@@ -101,7 +101,7 @@ rule is valid but never fires without it.
 
 ## Mattermost Application (`mattermost`)
 
-Rules for the Mattermost server itself. Requires `ServiceSettings.EnableMetrics: true` in Mattermost `config.json`. Metric names may vary by Mattermost version — verify from your `/metrics` endpoint before deploying.
+Rules for the Mattermost server itself. Requires `MetricsSettings.Enable: true` in Mattermost `config.json`. Metric names may vary by Mattermost version — verify from your `/metrics` endpoint before deploying.
 
 | Alert | slug | Severity | Fires when | Requires |
 |---|---|---|---|---|

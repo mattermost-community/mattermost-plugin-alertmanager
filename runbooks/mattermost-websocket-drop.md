@@ -89,9 +89,12 @@ connections silently after the timeout.
 
 ```bash
 # Install websocat if available, then test the WebSocket endpoint:
-websocat "ws://<mattermost-host>/api/v4/websocket" \
+websocat "wss://<mattermost-host>/api/v4/websocket" \
   -H "Authorization: Bearer <personal-access-token>"
 ```
+
+Use `ws://` only through a local `kubectl port-forward`, so the token
+never crosses the network in plain text.
 
 A successful upgrade returns `{"event":"hello",...}`. A failure returns
 an HTTP error or immediately closes the connection.
@@ -100,7 +103,7 @@ an HTTP error or immediately closes the connection.
 
 ```bash
 # Mattermost config: ServiceSettings.MaximumWebsocketMessagesPerSecond
-# and ServiceSettings.AllowedUntrustedInternalConnections
+# and ServiceSettings.WebsocketURL
 kubectl get cm -n <namespace> mattermost-config -o yaml \
   | grep -A2 "MaximumWebsocket\|WebsocketURL"
 ```

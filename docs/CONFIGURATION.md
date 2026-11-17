@@ -112,22 +112,17 @@ until the setting is fixed — it never falls back to allowing public destinatio
 
 ### `ServiceSettings.AllowedUntrustedInternalConnections`
 
-This is a Mattermost server setting, not a plugin setting. It is the
-other direction from `AlertManagerAllowedCIDRs`.
+The plugin does not need this Mattermost server setting. Leave it alone.
 
-`AlertManagerAllowedCIDRs` is the plugin calling Alertmanager
-(inventory, `validate`, `alerts`, `silence`).
-`AllowedUntrustedInternalConnections` is Alertmanager calling
-Mattermost: the `api_url` in the generated receiver is an incoming
-webhook, and Mattermost refuses that POST when the peer address is
-private unless the host is listed here.
+It only covers requests Mattermost itself sends out, such as outgoing
+webhooks and link previews. The plugin calls Alertmanager with its own
+HTTP client, so `AlertManagerAllowedCIDRs` is the only allowlist those
+calls go through. Alertmanager's webhook POST is an incoming request,
+and Mattermost does not filter incoming webhooks by source address.
+Adding hosts here only widens what Mattermost can reach.
 
-Set it to the host Alertmanager uses to reach Mattermost. For an
-in-cluster Service that is usually the Service DNS name, for example
-`mattermost.mattermost.svc.cluster.local`. A public `SiteURL` that
-Alertmanager reaches through ingress does not need this entry. The
-websocket-drop runbook mentions the same setting because Mattermost's
-own outbound calls hit the same check.
+If alerts never arrive, check the path from Alertmanager to `WebhookHost`
+instead: DNS, NetworkPolicy, service mesh policy and ingress.
 
 ### `MetricsToken`
 

@@ -38,8 +38,20 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 		return p.handleRotateOverdue(args)
 	}
 
-	summary, _, err := p.handleRotateSingle(args, target)
+	summary, _, _, err := p.handleRotateSingle(args, target)
 	return summary, err
+}
+
+// rotateDMFailedNote replaces the "YAML DM'd to you" line when the DM did not
+// go out. The rotation already committed, so the operator needs another way to
+// get the new URLs.
+const rotateDMFailedNote = ":warning: **The updated YAML could not be DM'd to you.** The new webhook is live, and Alertmanager still has the old URL. Run `/alertmanager format export` in this channel to get the updated config, then reload Alertmanager."
+
+func oldURLsDeactivatedYAMLComment(allOldDeleted bool) string {
+	if allOldDeleted {
+		return "# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n"
+	}
+	return "# At least one old webhook could not be deleted and may still be live. See the command reply.\n\n"
 }
 
 // handleRotateSingle rotates the underlying Mattermost webhook for one
@@ -55,8 +67,10 @@ func (p *Plugin) handleRotate(args *model.CommandArgs) (string, error) {
 // The returned rotated bool is the authoritative success signal — true only when
 // a webhook was actually rotated. handleRotateOverdue keys its accounting off it
 // rather than string-matching the summary, so a copy-edit to the messages can't
-// silently miscount a failure as a success.
-func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summary string, rotated bool, err error) {
+// silently miscount a failure as a success. oldLive is non-empty when the rotation
+// committed but the old webhook could not be deleted, so bulk rotation can
+// report it without parsing the summary.
+func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summary string, rotated bool, oldLive string, err error) {
 	// Atomic read-modify-write. handleRotateOverdue calls this in a loop but
 	// does not hold configWriteMu itself, so locking per-call is deadlock-free
 	// and each rotation is an independent atomic update.
@@ -70,7 +84,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 	scoped := p.configsForCurrentChannel(args)
 	resolved := resolveReceiverName(scoped, name, args.ChannelId, p)
 	if !receiverNameInScope(scoped, resolved) {
-		return fmt.Sprintf("Receiver %q not found.", name), false, nil
+		return fmt.Sprintf("Receiver %q not found.", name), false, "", nil
 	}
 	// Read the target's current shape from the in-memory snapshot for the webhook
 	// side effects and display; the durable update below re-reads from KV and keys
@@ -84,14 +98,14 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 		}
 	}
 	if !found {
-		return fmt.Sprintf("Receiver %q not found.", name), false, nil
+		return fmt.Sprintf("Receiver %q not found.", name), false, "", nil
 	}
 	oldHookID := target.WebhookID
 
 	// target.Team/Channel are already canonical, so only the channel ID is needed.
 	channelID, err := p.resolveChannelID(target.Team, target.Channel)
 	if err != nil {
-		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), false, nil
+		return fmt.Sprintf("Failed to resolve destination channel for rotation: %v", err), false, "", nil
 	}
 
 	// Webhook display name for the replacement follows the same rule as
@@ -108,7 +122,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 	}
 	newHookID, err := p.createIncomingWebhook(args.UserId, channelID, newDisplayName)
 	if err != nil {
-		return fmt.Sprintf("Failed to create replacement webhook: %v", err), false, nil
+		return fmt.Sprintf("Failed to create replacement webhook: %v", err), false, "", nil
 	}
 
 	// Durable update: repoint every receiver sharing the old webhook ID to the new
@@ -137,7 +151,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 			p.API.LogWarn("rotate rollback: could not delete the new webhook (orphan may remain)", "webhook", redactHookID(newHookID), "err", delErr.Error())
 			warn = webhookRollbackWarning(newDisplayName)
 		}
-		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v%s", err, warn), false, nil
+		return fmt.Sprintf("Failed to persist rotated config (new webhook rolled back): %v%s", err, warn), false, "", nil
 	}
 
 	// The affected set is every receiver now carrying the new webhook ID.
@@ -152,7 +166,7 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 		// between our snapshot and the durable write, so the webhook we just minted
 		// serves nothing — clean it up rather than leave an orphan.
 		_ = p.deleteIncomingWebhook(args.UserId, newHookID)
-		return fmt.Sprintf("Receiver `%s` was modified concurrently; nothing was rotated. Re-run if still needed.", resolved), false, nil
+		return fmt.Sprintf("Receiver `%s` was modified concurrently; nothing was rotated. Re-run if still needed.", resolved), false, "", nil
 	}
 
 	// The repoint committed — now retire the old webhook. Doing it here (not before
@@ -169,14 +183,18 @@ func (p *Plugin) handleRotateSingle(args *model.CommandArgs, name string) (summa
 	p.auditLog("webhook.rotation.executed", args.UserId, target.Name, args.ChannelId,
 		fmt.Sprintf("affected=%d group=%q", len(affected), target.GroupName))
 
+	if !oldDeleted {
+		oldLive = oldWebhookStatusLine(false, newDisplayName, oldHookID)
+	}
+
 	// Single-receiver case (legacy or true individual): inline YAML,
 	// matches v1.0.2 behavior.
 	if len(affected) == 1 {
-		return p.renderRotateResponse(affected[0], oldDeleted, oldHookID), true, nil
+		return p.renderRotateResponse(affected[0], oldDeleted, oldHookID), true, oldLive, nil
 	}
 
 	// Group case: list affected receivers, DM the merged YAML bundle.
-	return p.renderRotateGroupResponse(args.UserId, affected, target.GroupName, oldDeleted, oldHookID), true, nil
+	return p.renderRotateGroupResponse(args.UserId, affected, target.GroupName, oldDeleted, oldHookID), true, oldLive, nil
 }
 
 // renderRotateGroupResponse builds the in-channel summary AND fires the
@@ -189,13 +207,14 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 	y.WriteString(fmt.Sprintf("# Alertmanager receivers re-rotated by /alertmanager config rotate (group %q)\n", groupName))
 	y.WriteString(fmt.Sprintf("# %d receiver(s) share the rotated webhook.\n", len(affected)))
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
-	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
+	y.WriteString(oldURLsDeactivatedYAMLComment(oldDeleted))
 	for _, ac := range affected {
 		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
 		y.WriteString("\n")
 	}
 	routesYAML := assembleRoutesYAML(affected)
-	if dmErr := p.dmYAMLBundle(userID, y.String(), routesYAML, len(affected), primary.AlertManagerURL, nil); dmErr != nil {
+	dmErr := p.dmYAMLBundle(userID, y.String(), routesYAML, len(affected), primary.AlertManagerURL, nil)
+	if dmErr != nil {
 		p.API.LogWarn("rotation: couldn't DM YAML after group rotate", "err", dmErr.Error())
 	}
 
@@ -209,6 +228,10 @@ func (p *Plugin) renderRotateGroupResponse(userID string, affected []alertConfig
 	b.WriteString("**Affected:**\n")
 	for _, ac := range affected {
 		b.WriteString("- `" + ac.Name + "`\n")
+	}
+	if dmErr != nil {
+		b.WriteString("\n" + rotateDMFailedNote)
+		return b.String()
 	}
 	b.WriteString(fmt.Sprintf("\nMerged YAML DM'd to you from `@%s`. Paste it into your `alertmanager.yml`, then reload AM (`curl -X POST %s/-/reload`).", webhookUsername, primary.AlertManagerURL))
 	return b.String()
@@ -319,13 +342,17 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 
 	rotated := make([]alertConfig, 0, len(overdueNames))
 	failed := make([]string, 0)
+	var stillLive []string
 	for _, name := range reps {
-		summary, ok, err := p.handleRotateSingle(args, name)
+		summary, ok, oldLive, err := p.handleRotateSingle(args, name)
 		if err != nil || !ok {
 			// The whole group shares one webhook, so its rotation failed as a unit —
 			// name every overdue member so the operator sees the full still-overdue set.
 			failed = append(failed, strings.Join(overdueByWebhook[webhookByName[name]], ", ")+" — "+summary)
 			continue
+		}
+		if oldLive != "" {
+			stillLive = append(stillLive, strings.Join(overdueByWebhook[webhookByName[name]], ", ")+" — "+oldLive)
 		}
 		// Rotating the representative rotated its whole group. Collect every entry
 		// now sharing the representative's NEW webhook so the merged DM/summary
@@ -351,14 +378,17 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 	y.WriteString("# Alertmanager receivers re-rotated by /alertmanager config rotate all overdue\n")
 	y.WriteString(fmt.Sprintf("# %d receiver(s) past the %d-day rotation threshold.\n", len(rotated), cfg.WebhookRotationDays))
 	y.WriteString("# Paste under `receivers:` in your alertmanager.yml, then reload AM.\n")
-	y.WriteString("# Old URLs deactivated immediately — alert delivery resumes after the AM reload.\n\n")
+	y.WriteString(oldURLsDeactivatedYAMLComment(len(stillLive) == 0))
 	for _, ac := range rotated {
 		y.WriteString(renderReceiverYAMLForKind(ac.Name, p.webhookURLForReceiver(ac), ac.Channel, p.runbookDefaultURL(receiverBaseSlug(ac.Name)), p.siteURL()+webhookIconURL, ac.Custom))
 		y.WriteString("\n")
 	}
-	routesYAML := assembleRoutesYAML(rotated)
-	if dmErr := p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(rotated), "", nil); dmErr != nil {
-		p.API.LogWarn("rotation: couldn't DM YAML after bulk overdue rotate", "err", dmErr.Error())
+	var dmErr error
+	if len(rotated) > 0 {
+		routesYAML := assembleRoutesYAML(rotated)
+		if dmErr = p.dmYAMLBundle(args.UserId, y.String(), routesYAML, len(rotated), "", nil); dmErr != nil {
+			p.API.LogWarn("rotation: couldn't DM YAML after bulk overdue rotate", "err", dmErr.Error())
+		}
 	}
 
 	var b strings.Builder
@@ -369,7 +399,21 @@ func (p *Plugin) handleRotateOverdue(args *model.CommandArgs) (string, error) {
 			b.WriteString("- `" + ac.Name + "`\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("Updated YAML DM'd to you from `@%s`. Paste it into your `alertmanager.yml`, then reload AM (`curl -X POST http://<am>/-/reload`). Old URLs deactivate immediately.\n", webhookUsername))
+		deactivated := " Old URLs deactivate immediately."
+		if len(stillLive) > 0 {
+			deactivated = ""
+		}
+		if dmErr != nil {
+			b.WriteString(rotateDMFailedNote + "\n")
+		} else {
+			b.WriteString(fmt.Sprintf("Updated YAML DM'd to you from `@%s`. Paste it into your `alertmanager.yml`, then reload AM (`curl -X POST http://<am>/-/reload`).%s\n", webhookUsername, deactivated))
+		}
+	}
+	if len(stillLive) > 0 {
+		b.WriteString("\n**Old webhook still live:**\n")
+		for _, s := range stillLive {
+			b.WriteString("- " + s + "\n")
+		}
 	}
 	if len(failed) > 0 {
 		b.WriteString("\n**Failed:**\n")

@@ -11,11 +11,11 @@ The number of failed Mattermost login attempts has spiked above the
 threshold in a short window. The alert fires on:
 
 ```promql
-increase(mattermost_login_10sec_users_with_failed_logins[10m]) > 10
+sum(increase(mattermost_login_logins_fail_total[10m])) > 10
 ```
 
-This counts distinct users with failed logins in rolling 10-second
-windows, summed over 10 minutes. A handful of failed logins is normal
+This counts failed login attempts across all Mattermost pods over the
+last 10 minutes. A handful of failed logins is normal
 (users forget passwords). A sharp spike is not.
 
 ## Quick diagnostics
@@ -49,7 +49,7 @@ kubectl logs -n ingress-nginx deploy/ingress-nginx-controller --since=15m \
 # READ: a flat baseline with a sudden spike = attack or user lockout
 #   event (e.g., a sync that changed all passwords). A gradual climb
 #   = misconfigured SSO or a slow credential sweep.
-rate(mattermost_login_10sec_users_with_failed_logins[5m])
+sum(rate(mattermost_login_logins_fail_total[5m]))
 ```
 
 ## Diagnostic steps
@@ -83,30 +83,21 @@ mmctl user list --page 0 --per-page 200 \
 
 ### 3. Block or rate-limit the source
 
-If you've confirmed an attack, the fastest mitigation is at the ingress
-layer, not Mattermost itself:
+If you've confirmed an attack, block the source at the WAF, firewall or
+ingress controller. Do not use a Kubernetes NetworkPolicy for this.
+NetworkPolicies only add allowed traffic, so an `ipBlock` with `except`
+cannot override another policy that already admits the attacker, and an
+allow-everything-but policy opens the pod to traffic it never accepted
+before. Behind an ingress the pod also sees the controller's address,
+not the client's.
 
 ```bash
-# Nginx ingress: add a rate limit annotation to the Mattermost ingress
-# or block the source IP at the WAF/firewall.
-# Example: block a specific CIDR at the cluster network policy level.
-kubectl apply -f - <<'EOF'
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: block-attacker
-  namespace: <namespace>
-spec:
-  podSelector:
-    matchLabels:
-      app: mattermost
-  ingress:
-  - from:
-    - ipBlock:
-        cidr: 0.0.0.0/0
-        except:
-        - <attacker-cidr>
-EOF
+# Nginx ingress: deny the source and cap requests per client IP.
+# limit-rpm applies to every path on this ingress, so keep it well above
+# normal per-user traffic.
+kubectl annotate ingress -n <namespace> <mattermost-ingress> --overwrite \
+  nginx.ingress.kubernetes.io/denylist-source-range="<attacker-cidr>" \
+  nginx.ingress.kubernetes.io/limit-rpm="60"
 ```
 
 ### 4. Enable or tighten MFA
@@ -151,7 +142,7 @@ mmctl user convert --mfa-required <username>
 
 ## Required Prometheus labels
 
-The `mattermost_login_10sec_users_with_failed_logins` metric is a gauge
+The `mattermost_login_logins_fail_total` metric is a counter
 exported by Mattermost when metrics are enabled. No additional labels
 are needed for this alert.
 

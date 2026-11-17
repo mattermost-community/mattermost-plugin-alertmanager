@@ -43,6 +43,11 @@ System Console → Plugins → Alertmanager:
   reach Mattermost. `https://<mm-host>` for normal setups;
   `http://host.docker.internal:8065` for Docker-on-Mac
   development.
+- **AlertManagerAllowedCIDRs**: the network your Alertmanager
+  is on, for example `172.16.0.0/12` for Docker or your
+  cluster's service CIDR. Private addresses are blocked by
+  default, so without this step 3 and 5 fail to reach
+  Alertmanager.
 - **MetricsToken**: optional, set if you want to scrape
   `/metrics` from this run.
 - **AlertManagerCABundle**: optional, only if AM uses a
