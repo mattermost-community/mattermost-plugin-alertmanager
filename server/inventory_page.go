@@ -198,13 +198,17 @@ func inventoryTeamRollup(configs []alertConfig) []teamRow {
 
 // reconcilerBanner summarises the last reconcile run for the health banner.
 func (p *Plugin) reconcilerBanner() (status string, healthy bool) {
-	lastRun, lastPruned := p.reconcileStatus()
-	if lastRun.IsZero() {
+	st := p.reconcileStatus()
+	if st.lastRun.IsZero() {
 		return "scheduled, first cycle pending — appears within ~5 minutes of plugin activation", false
 	}
-	age := time.Since(lastRun)
+	age := time.Since(st.lastRun)
 	// Healthy if within 2x the configured interval (= 10 min by default).
-	return fmt.Sprintf("%s ago (pruned %d on last run)", humanDuration(age), lastPruned), age < 10*time.Minute
+	healthy = age < 2*reconcilerInterval
+	if st.lastProbe.IsZero() {
+		return fmt.Sprintf("%s ago (no orphan check yet)", humanDuration(age)), healthy
+	}
+	return fmt.Sprintf("%s ago (last orphan check %s ago, pruned %d)", humanDuration(age), humanDuration(time.Since(st.lastProbe)), st.pruned), healthy
 }
 
 // amOnlyReceivers finds receivers that exist in AM's loaded config but have no

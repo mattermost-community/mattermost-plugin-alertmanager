@@ -352,16 +352,31 @@ func (p *Plugin) sendRotationReminderDM(dmChannelID, channel string, entries []r
 // it can no longer clobber a concurrent admin add/rotate — the old
 // small-window race is closed by the lock, not tolerated.
 func (p *Plugin) reconcileOrphans(actingUserID string) ([]string, error) {
-	return p.probeOrphans(actingUserID, true)
+	res, err := p.probeOrphans(actingUserID, true, true)
+	return res.names, err
 }
 
-// findOrphanedReceivers is reconcileOrphans without the write. It lists the
-// receivers whose webhook is gone so an admin can preview what a prune removes.
-func (p *Plugin) findOrphanedReceivers(actingUserID string) ([]string, error) {
-	return p.probeOrphans(actingUserID, false)
+// orphanCheck is the result of one orphan check. unchecked counts webhooks the
+// check could not confirm either way, because the budget ran out or the lookup
+// failed, so their receivers were neither reported nor pruned.
+type orphanCheck struct {
+	names     []string
+	unchecked int
 }
 
-func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error) {
+// findOrphanedReceivers is the admin repair preview: it lists the receivers
+// whose webhook is gone without removing them.
+func (p *Plugin) findOrphanedReceivers(actingUserID string) (orphanCheck, error) {
+	return p.probeOrphans(actingUserID, false, false)
+}
+
+// pruneOrphansNow is admin repair prune. Unlike the background check it leaves
+// the background cursor alone.
+func (p *Plugin) pruneOrphansNow(actingUserID string) (orphanCheck, error) {
+	return p.probeOrphans(actingUserID, true, false)
+}
+
+func (p *Plugin) probeOrphans(actingUserID string, prune, background bool) (orphanCheck, error) {
 	// The webhook probing below makes serial loopback Client4 calls; it runs
 	// WITHOUT configWriteMu so a slow probe can't stall lifecycle commands
 	// (CL-25). Correctness doesn't need the lock here: updateConfigsAtomic
@@ -370,12 +385,12 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 	// only around the durable write.
 	current := p.getConfiguration().AlertConfigs
 	if len(current) == 0 {
-		return nil, nil
+		return orphanCheck{}, nil
 	}
 
 	c, cleanup, err := p.ephemeralClient4(actingUserID)
 	if err != nil {
-		return nil, fmt.Errorf("mint reconciler PAT: %w", err)
+		return orphanCheck{}, fmt.Errorf("mint reconciler PAT: %w", err)
 	}
 	defer cleanup()
 
@@ -383,7 +398,7 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 	// across N receivers, so per-receiver probing would multiply the API call
 	// rate. The result maps hookID to "exists" so the prune pass below can mark
 	// every receiver in a dead group as orphaned without re-querying.
-	hookStatus := p.probeWebhooks(c, current, orphanProbeBudget)
+	hookStatus, unchecked := p.probeWebhooks(c, current, orphanProbeBudget, background)
 
 	// Mark every receiver whose shared webhookID came back 404, recording the
 	// SPECIFIC dead webhook ID we probed for each name (not just the name). The
@@ -400,7 +415,7 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 	}
 
 	if len(orphanSet) == 0 {
-		return nil, nil
+		return orphanCheck{unchecked: unchecked}, nil
 	}
 
 	if !prune {
@@ -409,7 +424,7 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 			found = append(found, name)
 		}
 		slices.Sort(found)
-		return found, nil
+		return orphanCheck{names: found, unchecked: unchecked}, nil
 	}
 
 	// Prune the orphaned names from the freshly-read KV list under compare-and-set
@@ -437,16 +452,16 @@ func (p *Plugin) probeOrphans(actingUserID string, prune bool) ([]string, error)
 	if err != nil {
 		p.API.LogWarn("reconciler: failed to persist after pruning orphans",
 			"orphanCount", len(orphanSet), "err", err.Error())
-		return nil, fmt.Errorf("persist filtered config: %w", err)
+		return orphanCheck{}, fmt.Errorf("persist filtered config: %w", err)
 	}
 
 	if len(pruned) == 0 {
-		return nil, nil
+		return orphanCheck{unchecked: unchecked}, nil
 	}
 
 	p.API.LogInfo("reconciler: pruned orphan receivers (webhooks deleted out-of-band)",
 		"count", len(pruned), "names", strings.Join(pruned, ","))
-	return pruned, nil
+	return orphanCheck{names: pruned, unchecked: unchecked}, nil
 }
 
 // recordReconcileRun stamps the last-run timestamp, and the pruned count when
@@ -462,12 +477,18 @@ func (p *Plugin) recordReconcileRun(pruned int, probed bool) {
 	}
 }
 
-// reconcileStatus returns the last reconcile timestamp + pruned count
-// for the admin inventory health banner.
-func (p *Plugin) reconcileStatus() (lastRun time.Time, pruned int) {
+// reconcileState is what the admin health banners show. The pruned count comes
+// from the last orphan check, which runs less often than the tick.
+type reconcileState struct {
+	lastRun   time.Time
+	lastProbe time.Time
+	pruned    int
+}
+
+func (p *Plugin) reconcileStatus() reconcileState {
 	p.reconcilerStatusLock.Lock()
 	defer p.reconcilerStatusLock.Unlock()
-	return p.reconcilerLastRun, p.reconcilerLastPruned
+	return reconcileState{lastRun: p.reconcilerLastRun, lastProbe: p.reconcilerLastProbe, pruned: p.reconcilerLastPruned}
 }
 
 // activeSysadminID returns the admin the reconciler acts as. The last one found
@@ -524,8 +545,9 @@ func (p *Plugin) findActiveSysadmin() (string, error) {
 // few concurrent loopback calls under one overall time budget. The result maps
 // hook ID to exists. A hook with a transient or permission error, or one the
 // budget ran out before reaching, is absent from the map so its receivers stay
-// alive until the next check.
-func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget time.Duration) map[string]bool {
+// alive until the next check. unchecked counts those absent hooks. Only the
+// background check moves the cursor, so a manual run cannot make it skip hooks.
+func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget time.Duration, background bool) (status map[string]bool, unchecked int) {
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
@@ -539,11 +561,13 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget t
 		owner[ac.WebhookID] = ac.Name
 		hookIDs = append(hookIDs, ac.WebhookID)
 	}
-	hookIDs = p.rotateToProbeCursor(hookIDs)
+	if background {
+		hookIDs = p.rotateToProbeCursor(hookIDs)
+	}
 
+	status = make(map[string]bool, len(hookIDs))
 	var (
 		mu       sync.Mutex
-		status   = make(map[string]bool, len(hookIDs))
 		finished = make(map[string]bool, len(hookIDs))
 		wg       sync.WaitGroup
 		jobs     = make(chan string)
@@ -566,6 +590,7 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget t
 					mu.Lock()
 					status[id] = false
 					mu.Unlock()
+				case ctx.Err() != nil:
 				default:
 					p.API.LogWarn("reconciler: error checking webhook (will retry next cycle)",
 						"receiver", owner[id], "webhook", redactHookID(id), "err", scrubHookID(err.Error(), id))
@@ -581,8 +606,10 @@ func (p *Plugin) probeWebhooks(c *model.Client4, configs []alertConfig, budget t
 	}
 	close(jobs)
 	wg.Wait()
-	p.setProbeCursor(firstUnfinished(hookIDs, finished))
-	return status
+	if background {
+		p.setProbeCursor(firstUnfinished(hookIDs, finished))
+	}
+	return status, len(hookIDs) - len(status)
 }
 
 // firstUnfinished returns the first hook, in probe order, whose check did not

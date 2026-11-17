@@ -54,14 +54,21 @@ func (p *Plugin) handleAbout(args *model.CommandArgs) string {
 	// Reconciler health and configured-settings presence are org-wide operator
 	// signals — system admins only.
 	if isAdmin {
-		lastRun, pruned := p.reconcileStatus()
+		st := p.reconcileStatus()
 		b.WriteString("**Reconciler** (background orphan-prune janitor)\n")
-		if lastRun.IsZero() {
+		switch {
+		case st.lastRun.IsZero():
 			b.WriteString("- Last run: _never since plugin start — will fire within 5 minutes_\n\n")
-		} else {
+		case st.lastProbe.IsZero():
 			b.WriteString(fmt.Sprintf(
-				"- Last run: %s ago, pruned %d receiver(s)\n\n",
-				durafmt.Parse(time.Since(lastRun)).LimitFirstN(2).String(), pruned,
+				"- Last run: %s ago\n- Last orphan check: _not yet, runs every 30 minutes_\n\n",
+				durafmt.Parse(time.Since(st.lastRun)).LimitFirstN(2).String(),
+			))
+		default:
+			b.WriteString(fmt.Sprintf(
+				"- Last run: %s ago\n- Last orphan check: %s ago, pruned %d receiver(s)\n\n",
+				durafmt.Parse(time.Since(st.lastRun)).LimitFirstN(2).String(),
+				durafmt.Parse(time.Since(st.lastProbe)).LimitFirstN(2).String(), st.pruned,
 			))
 		}
 

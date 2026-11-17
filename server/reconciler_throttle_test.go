@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,16 +14,18 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 type reconcilerAPI struct {
 	plugin.API
-	users     []*model.User
-	byID      map[string]*model.User
-	listCalls int
-	getCalls  int
+	users      []*model.User
+	byID       map[string]*model.User
+	listCalls  int
+	getCalls   int
+	listenAddr string
+
+	mu    sync.Mutex
+	warns []string
 }
 
 func (a *reconcilerAPI) GetUsers(*model.UserGetOptions) ([]*model.User, *model.AppError) {
@@ -36,28 +41,86 @@ func (a *reconcilerAPI) GetUser(id string) (*model.User, *model.AppError) {
 	return nil, model.NewAppError("GetUser", "not_found", nil, "", http.StatusNotFound)
 }
 
-func (a *reconcilerAPI) LogWarn(string, ...any) {}
+func (a *reconcilerAPI) LogWarn(msg string, _ ...any) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.warns = append(a.warns, msg)
+}
+
+func (a *reconcilerAPI) warnCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.warns)
+}
+
+func (a *reconcilerAPI) GetConfig() *model.Config {
+	cfg := &model.Config{}
+	cfg.ServiceSettings.ListenAddress = model.NewPointer(a.listenAddr)
+	return cfg
+}
+
+func (a *reconcilerAPI) CreateUserAccessToken(t *model.UserAccessToken) (*model.UserAccessToken, *model.AppError) {
+	return &model.UserAccessToken{Id: "tok", Token: "secret", UserId: t.UserId}, nil
+}
+
+func (a *reconcilerAPI) RevokeUserAccessToken(string) *model.AppError { return nil }
 
 func testAdmin(id string) *model.User {
 	return &model.User{Id: id, Roles: model.SystemUserRoleId + " " + model.SystemAdminRoleId}
 }
 
+// webhookServer answers GetIncomingWebhook: "alive" exists, "dead" is a 404 and
+// anything else is a 500.
+func webhookServer(t *testing.T, hits map[string]int, mu *sync.Mutex) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if hits != nil {
+			mu.Lock()
+			hits[id]++
+			mu.Unlock()
+		}
+		switch id {
+		case "alive":
+			_, _ = w.Write([]byte(`{"id":"alive"}`))
+		case "dead":
+			http.Error(w, `{"id":"x","message":"gone","status_code":404}`, http.StatusNotFound)
+		default:
+			http.Error(w, `{"id":"x","message":"boom","status_code":500}`, http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestOrphanProbeIsThrottled(t *testing.T) {
 	p := &Plugin{}
 	now := time.Now()
-	assert.True(t, p.orphanProbeDue(now), "first tick checks")
+	if !p.orphanProbeDue(now) {
+		t.Fatal("the first tick should check")
+	}
 
 	p.markOrphanProbe(now)
-	assert.False(t, p.orphanProbeDue(now.Add(reconcilerInterval)))
-	assert.True(t, p.orphanProbeDue(now.Add(reconcilerOrphanProbeInterval)))
+	if p.orphanProbeDue(now.Add(reconcilerInterval)) {
+		t.Error("the next tick should not check again")
+	}
+	if !p.orphanProbeDue(now.Add(reconcilerOrphanProbeInterval)) {
+		t.Error("a check is due once the probe interval has passed")
+	}
 }
 
 func TestYAMLSweepIsThrottled(t *testing.T) {
 	p := &Plugin{}
 	now := time.Now()
-	assert.True(t, p.claimYAMLSweep(now))
-	assert.False(t, p.claimYAMLSweep(now.Add(time.Minute)), "claiming restarts the interval")
-	assert.True(t, p.claimYAMLSweep(now.Add(yamlSweepInterval)))
+	if !p.claimYAMLSweep(now) {
+		t.Fatal("the first sweep should be claimed")
+	}
+	if p.claimYAMLSweep(now.Add(time.Minute)) {
+		t.Error("claiming restarts the interval")
+	}
+	if !p.claimYAMLSweep(now.Add(yamlSweepInterval)) {
+		t.Error("a sweep is due once the interval has passed")
+	}
 }
 
 func TestRecordReconcileRunKeepsPrunedCountBetweenProbes(t *testing.T) {
@@ -65,8 +128,24 @@ func TestRecordReconcileRunKeepsPrunedCountBetweenProbes(t *testing.T) {
 	p.recordReconcileRun(3, true)
 	p.recordReconcileRun(0, false)
 
-	_, pruned := p.reconcileStatus()
-	assert.Equal(t, 3, pruned)
+	if got := p.reconcileStatus().pruned; got != 3 {
+		t.Fatalf("pruned = %d, want 3", got)
+	}
+}
+
+func TestReconcilerBannerDatesThePrunedCountByItsOrphanCheck(t *testing.T) {
+	p := &Plugin{}
+	p.markOrphanProbe(time.Now().Add(-25 * time.Minute))
+	p.recordReconcileRun(3, true)
+	p.recordReconcileRun(0, false)
+
+	status, healthy := p.reconcilerBanner()
+	if !healthy {
+		t.Errorf("a tick that just ran is healthy: %q", status)
+	}
+	if !strings.Contains(status, "last orphan check 25m ago, pruned 3") {
+		t.Errorf("the pruned count should carry the orphan check's own time: %q", status)
+	}
 }
 
 func TestActiveSysadminIDReusesTheLastAdmin(t *testing.T) {
@@ -76,10 +155,16 @@ func TestActiveSysadminIDReusesTheLastAdmin(t *testing.T) {
 
 	for range 3 {
 		id, err := p.activeSysadminID()
-		require.NoError(t, err)
-		assert.Equal(t, "a1", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id != "a1" {
+			t.Fatalf("id = %q, want a1", id)
+		}
 	}
-	assert.Equal(t, 1, a.listCalls, "one user search, then cached lookups")
+	if a.listCalls != 1 {
+		t.Errorf("want one user search, then cached lookups; got %d searches", a.listCalls)
+	}
 }
 
 func TestActiveSysadminIDFindsANewAdminWhenTheCachedOneIsGone(t *testing.T) {
@@ -93,42 +178,43 @@ func TestActiveSysadminIDFindsANewAdminWhenTheCachedOneIsGone(t *testing.T) {
 	p.API = a
 
 	id, err := p.activeSysadminID()
-	require.NoError(t, err)
-	assert.Equal(t, "a2", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "a2" {
+		t.Fatalf("id = %q, want a2", id)
+	}
 }
 
 func TestProbeWebhooksClassifiesEachHookOnce(t *testing.T) {
 	var mu sync.Mutex
 	hits := map[string]int{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-		mu.Lock()
-		hits[id]++
-		mu.Unlock()
-		switch id {
-		case "alive":
-			_, _ = w.Write([]byte(`{"id":"alive"}`))
-		case "dead":
-			http.Error(w, `{"id":"x","message":"gone","status_code":404}`, http.StatusNotFound)
-		default:
-			http.Error(w, `{"id":"x","message":"boom","status_code":500}`, http.StatusInternalServerError)
-		}
-	}))
-	defer srv.Close()
+	srv := webhookServer(t, hits, &mu)
 
 	c := model.NewAPIv4Client(srv.URL)
+	api := &reconcilerAPI{}
 	p := &Plugin{}
-	p.API = &reconcilerAPI{}
+	p.API = api
 
-	status := p.probeWebhooks(c, []alertConfig{
+	status, unchecked := p.probeWebhooks(c, []alertConfig{
 		{Name: "r1", WebhookID: "alive"},
 		{Name: "r2", WebhookID: "alive"},
 		{Name: "r3", WebhookID: "dead"},
 		{Name: "r4", WebhookID: "flaky"},
-	}, orphanProbeBudget)
+	}, orphanProbeBudget, true)
 
-	assert.Equal(t, map[string]bool{"alive": true, "dead": false}, status, "a transient error leaves the hook out")
-	assert.Equal(t, 1, hits["alive"], "a shared hook is probed once")
+	if want := map[string]bool{"alive": true, "dead": false}; !maps.Equal(status, want) {
+		t.Errorf("status = %v, want %v (a transient error leaves the hook out)", status, want)
+	}
+	if unchecked != 1 {
+		t.Errorf("unchecked = %d, want 1 for the hook that errored", unchecked)
+	}
+	if hits["alive"] != 1 {
+		t.Errorf("a shared hook is probed once, got %d calls", hits["alive"])
+	}
+	if api.warnCount() != 1 {
+		t.Errorf("the errored hook should log one warning, got %v", api.warns)
+	}
 }
 
 func TestProbeWebhooksResumesWhereTheBudgetRanOut(t *testing.T) {
@@ -149,7 +235,8 @@ func TestProbeWebhooksResumesWhereTheBudgetRanOut(t *testing.T) {
 
 	checked := map[string]bool{}
 	for range 40 {
-		for id := range p.probeWebhooks(c, configs, 100*time.Millisecond) {
+		status, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, true)
+		for id := range status {
 			checked[id] = true
 		}
 		if len(checked) == len(configs) {
@@ -162,12 +249,19 @@ func TestProbeWebhooksResumesWhereTheBudgetRanOut(t *testing.T) {
 func TestProbeCursorStartsOverWhenItsHookIsGone(t *testing.T) {
 	p := &Plugin{}
 	p.setProbeCursor("c")
-	assert.Equal(t, []string{"c", "d", "a", "b"}, p.rotateToProbeCursor([]string{"a", "b", "c", "d"}))
+	if got, want := p.rotateToProbeCursor([]string{"a", "b", "c", "d"}), []string{"c", "d", "a", "b"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
 	p.setProbeCursor("removed")
-	assert.Equal(t, []string{"a", "b", "d"}, p.rotateToProbeCursor([]string{"a", "b", "d"}))
+	if got, want := p.rotateToProbeCursor([]string{"a", "b", "d"}), []string{"a", "b", "d"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
 }
 
-func TestProbeWebhooksRetriesChecksTheDeadlineCutOff(t *testing.T) {
+// deadlineServer answers each lookup after 60ms, or drops it when the caller
+// gives up first.
+func deadlineServer(t *testing.T) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-time.After(60 * time.Millisecond):
@@ -177,21 +271,30 @@ func TestProbeWebhooksRetriesChecksTheDeadlineCutOff(t *testing.T) {
 		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		_, _ = w.Write([]byte(`{"id":"` + id + `"}`))
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv
+}
 
-	c := model.NewAPIv4Client(srv.URL)
-	p := &Plugin{}
-	p.API = &reconcilerAPI{}
-	// Eight hooks on four workers: every hook is handed out, but the second
-	// four are still in flight when the budget ends.
+// eightHooks is twice the worker count, so with deadlineServer and a 100ms
+// budget the second four are still in flight when the budget ends.
+func eightHooks() []alertConfig {
 	var configs []alertConfig
 	for i := range 8 {
 		configs = append(configs, alertConfig{Name: fmt.Sprintf("r%d", i), WebhookID: fmt.Sprintf("hook%d", i)})
 	}
+	return configs
+}
+
+func TestProbeWebhooksRetriesChecksTheDeadlineCutOff(t *testing.T) {
+	c := model.NewAPIv4Client(deadlineServer(t).URL)
+	p := &Plugin{}
+	p.API = &reconcilerAPI{}
+	configs := eightHooks()
 
 	checked := map[string]bool{}
 	for range 20 {
-		for id := range p.probeWebhooks(c, configs, 100*time.Millisecond) {
+		status, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, true)
+		for id := range status {
 			checked[id] = true
 		}
 		if len(checked) == len(configs) {
@@ -201,10 +304,71 @@ func TestProbeWebhooksRetriesChecksTheDeadlineCutOff(t *testing.T) {
 	t.Fatalf("%d of %d hooks were never checked: %v", len(configs)-len(checked), len(configs), checked)
 }
 
+func TestProbeWebhooksDoesNotWarnAboutChecksTheBudgetCutOff(t *testing.T) {
+	c := model.NewAPIv4Client(deadlineServer(t).URL)
+	api := &reconcilerAPI{}
+	p := &Plugin{}
+	p.API = api
+
+	_, unchecked := p.probeWebhooks(c, eightHooks(), 100*time.Millisecond, true)
+	if unchecked == 0 {
+		t.Fatal("the budget should have cut some checks off")
+	}
+	if n := api.warnCount(); n != 0 {
+		t.Errorf("a check cut off by the budget is not a webhook error, got %d warnings: %v", n, api.warns)
+	}
+}
+
+func TestManualProbeLeavesTheBackgroundCursorAlone(t *testing.T) {
+	c := model.NewAPIv4Client(deadlineServer(t).URL)
+	p := &Plugin{}
+	p.API = &reconcilerAPI{}
+	p.setProbeCursor("hook6")
+
+	if _, unchecked := p.probeWebhooks(c, eightHooks(), 100*time.Millisecond, false); unchecked == 0 {
+		t.Fatal("the budget should have cut some checks off")
+	}
+	if got := p.orphanProbeNext; got != "hook6" {
+		t.Errorf("a manual check moved the background cursor to %q", got)
+	}
+}
+
+func TestRepairPreviewSaysWhenSomeWebhooksWereNotChecked(t *testing.T) {
+	srv := webhookServer(t, nil, nil)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{}
+	p.API = &reconcilerAPI{listenAddr: ":" + u.Port()}
+	p.setConfiguration(newConfiguration([]alertConfig{
+		{Name: "ok", WebhookID: "alive"},
+		{Name: "unknown", WebhookID: "flaky"},
+	}, "", 0, "", "", 0))
+
+	out := p.orphanSection("admin", false)
+	if strings.Contains(out, "Every registered webhook still exists") {
+		t.Errorf("a webhook that was not checked must not be reported as existing:\n%s", out)
+	}
+	if !strings.Contains(out, "1 webhook(s) were not checked") {
+		t.Errorf("the reply should say how many webhooks were not checked:\n%s", out)
+	}
+}
+
 func TestFirstUnfinishedPassesOverAHookThatHangsEveryTime(t *testing.T) {
 	ids := []string{"a", "b", "c", "d"}
-	assert.Equal(t, "", firstUnfinished(ids, map[string]bool{"a": true, "b": true, "c": true, "d": true}))
-	assert.Equal(t, "c", firstUnfinished(ids, map[string]bool{"a": true, "b": true}))
-	assert.Equal(t, "c", firstUnfinished(ids, map[string]bool{"b": true}), "a hung start hook does not pin the cursor")
-	assert.Equal(t, "a", firstUnfinished(ids, map[string]bool{"b": true, "c": true, "d": true}), "the start hook is retried once it is the only one left")
+	for _, tc := range []struct {
+		name     string
+		finished map[string]bool
+		want     string
+	}{
+		{"all finished", map[string]bool{"a": true, "b": true, "c": true, "d": true}, ""},
+		{"stopped at c", map[string]bool{"a": true, "b": true}, "c"},
+		{"a hung start hook does not pin the cursor", map[string]bool{"b": true}, "c"},
+		{"the start hook is retried once it is the only one left", map[string]bool{"b": true, "c": true, "d": true}, "a"},
+	} {
+		if got := firstUnfinished(ids, tc.finished); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
 }
