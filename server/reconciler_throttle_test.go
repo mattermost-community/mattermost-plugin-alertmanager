@@ -331,7 +331,7 @@ func TestManualProbeResumesWithoutMovingTheBackgroundCursor(t *testing.T) {
 
 	checked := map[string]bool{}
 	for range 10 {
-		status, _, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, manualProbe)
+		status, _, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, repairPreviewProbe)
 		for id := range status {
 			checked[id] = true
 		}
@@ -344,6 +344,24 @@ func TestManualProbeResumesWithoutMovingTheBackgroundCursor(t *testing.T) {
 	}
 	if len(checked) != len(configs) {
 		t.Errorf("rerunning admin repair should reach every webhook, %d of %d never checked", len(configs)-len(checked), len(configs))
+	}
+}
+
+func TestRepairPruneChecksWhatTheCutShortPreviewReported(t *testing.T) {
+	c := model.NewAPIv4Client(deadlineServer(t).URL)
+	p := &Plugin{}
+	p.API = &reconcilerAPI{}
+	configs := eightHooks()
+
+	preview, cutOff, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, repairPreviewProbe)
+	if cutOff == 0 {
+		t.Fatal("the budget should have cut the preview short")
+	}
+	prune, _, _ := p.probeWebhooks(c, configs, 100*time.Millisecond, repairPruneProbe)
+	for id := range preview {
+		if _, ok := prune[id]; !ok {
+			t.Errorf("the preview checked %s, but the prune it suggests skipped it (preview %v, prune %v)", id, slices.Sorted(maps.Keys(preview)), slices.Sorted(maps.Keys(prune)))
+		}
 	}
 }
 

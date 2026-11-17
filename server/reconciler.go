@@ -368,13 +368,14 @@ type orphanCheck struct {
 // findOrphanedReceivers is the admin repair preview: it lists the receivers
 // whose webhook is gone without removing them.
 func (p *Plugin) findOrphanedReceivers(actingUserID string) (orphanCheck, error) {
-	return p.probeOrphans(actingUserID, false, manualProbe)
+	return p.probeOrphans(actingUserID, false, repairPreviewProbe)
 }
 
-// pruneOrphansNow is admin repair prune. Like the preview it uses the manual
-// cursor, so it leaves the background check's place alone.
+// pruneOrphansNow is admin repair prune. It keeps its own place, apart from
+// the preview's, so a preview that moved on cannot make the prune it suggests
+// skip the webhooks the preview reported.
 func (p *Plugin) pruneOrphansNow(actingUserID string) (orphanCheck, error) {
-	return p.probeOrphans(actingUserID, true, manualProbe)
+	return p.probeOrphans(actingUserID, true, repairPruneProbe)
 }
 
 func (p *Plugin) probeOrphans(actingUserID string, prune bool, cursor probeCursor) (orphanCheck, error) {
@@ -636,20 +637,26 @@ func firstUnfinished(hookIDs []string, finished map[string]bool) string {
 }
 
 // probeCursor picks which check's place a probe resumes from. The background
-// check and admin repair keep separate places so neither skips the other's hooks.
+// check, admin repair and admin repair prune keep separate places so none
+// skips another's hooks.
 type probeCursor int
 
 const (
 	backgroundProbe probeCursor = iota
-	manualProbe
+	repairPreviewProbe
+	repairPruneProbe
 )
 
 // cursorField must be called with reconcilerStatusLock held.
 func (p *Plugin) cursorField(cursor probeCursor) *string {
-	if cursor == manualProbe {
-		return &p.manualProbeNext
+	switch cursor {
+	case repairPreviewProbe:
+		return &p.repairPreviewNext
+	case repairPruneProbe:
+		return &p.repairPruneNext
+	default:
+		return &p.orphanProbeNext
 	}
-	return &p.orphanProbeNext
 }
 
 // rotateToProbeCursor reorders hookIDs to start at the hook the last check did
