@@ -42,8 +42,12 @@ behavior.
 - `kubectl` access to the namespace.
 - The plugin installed and active (`make dist` → upload via
   System Console).
-- At least one receiver configured via `/alertmanager config add` so
-  there's something for the reconciler to walk.
+- At least two test receivers configured via `/alertmanager config add`
+  so there's something for the reconciler to walk. Use a test install
+  with a few dozen receivers at most. Each orphan check has a 2-minute
+  budget and resumes where the last one stopped, so on a large install
+  a healthy leader can take more than one check to reach the receiver
+  you deleted, and the deadlines below would fail a healthy cluster.
 
 ## Procedure
 
