@@ -435,8 +435,8 @@ func formatSilenceLine(configName string, s *models.GettableSilence, expirable b
 // add it (future v1.x).
 func (p *Plugin) handleExpireSilence(args *model.CommandArgs) (string, error) {
 	// Expire mutates external Alertmanager state (it re-fires every alert the
-	// silence suppressed). The registry limits it to team admins of this
-	// channel's team; the mutation is audited below.
+	// silence suppressed). The registry limits it to system admins, since a
+	// silence is global to its Alertmanager; the mutation is audited below.
 	fields := strings.Fields(args.Command)
 	if len(fields) != 4 {
 		return "Usage: `/alertmanager silence expire <name> <silence-id>`", nil

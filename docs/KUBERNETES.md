@@ -363,7 +363,7 @@ Limits to know about:
 - `MattermostHighErrorRate` overlaps the operator's HTTP error alert. Both fire until a portable replacement lands.
 - `MattermostDBReplicaLag` is off by default. Add `mm-db-replicas=true` only if Mattermost reports replica lag. It does so once `SqlSettings.ReplicaLagSettings` has a lag query for each replica (set it in `config.json`, the System Console or with `mmctl config set`; there is no environment variable for it). Without that, or on a writer-only database such as a single RDS or Azure Postgres instance, the metric has no series and the alert can never fire. Having `MM_SQLSETTINGS_DATASOURCEREPLICAS` is not enough.
 - `mm-postgres-pod=true` adds `MattermostPostgresPodNotReady` (critical) and `MattermostPostgresPodCrashLooping` (warning) for a Postgres that runs as pods in the Mattermost namespace. It matches pods named `*postgres*` there, so the primary and each replica are covered and the `pod` label says which. These two alerts are plugin-only; the Mattermost Operator has no counterpart. Replication lag from a Postgres exporter is not included, because the exporter's series carry no label that ties them to one Mattermost.
-- `silence` and `validate` for `mattermost` cover the runbook alerts only. Silence the operator alerts in Alertmanager directly.
+- A system admin's `silence create <TTL> mattermost` (or `all`) also silences the operator alerts by name, on the Alertmanagers of this channel's operator receivers. `validate` for `mattermost` covers the runbook alerts only.
 
 Once your operator creates its own `<name>-rules` PrometheusRule, remove the `mattermost.*` groups from the plugin's file. The AlertmanagerConfig stays as it is, since it matches alert names only.
 

@@ -92,8 +92,8 @@ change `slack_configs`.
   be one this channel's receivers carry: an alert from the shipped rules
   for the channel's runbook receivers, or one of the operator alerts when
   the channel has the Mattermost operator receiver. The silence goes only
-  to the Alertmanagers of the receivers that carry it. A team admin can
-  set the TTL from `30m` through `72h`.
+  to the Alertmanagers of the receivers that carry it. The TTL can be
+  `30m` through `72h`.
 * A **group** (`compute`, `database`, `mattermost`, and the other
   scaffold sets) matches the `runbook` labels of that group's
   receivers in this channel. Same TTL range as one alert. `compute`

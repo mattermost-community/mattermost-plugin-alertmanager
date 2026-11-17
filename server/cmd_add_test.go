@@ -201,3 +201,27 @@ func TestAddAutocompleteHasNoTeamOrChannel(t *testing.T) {
 		}
 	}
 }
+
+type failingDMAPI struct{ *ruleDMAPI }
+
+func (f failingDMAPI) GetDirectChannel(string, string) (*model.Channel, *model.AppError) {
+	return nil, &model.AppError{Message: "dm unavailable"}
+}
+
+func TestAddInlineFallbackIncludesTheRoutes(t *testing.T) {
+	p := &Plugin{}
+	p.API = failingDMAPI{&ruleDMAPI{uploads: map[string]string{}}}
+	p.setConfiguration(newConfiguration(nil, "", 0, "", "", 0))
+
+	entries := scopedCompute()
+	results := []scaffoldResult{{Slug: entries[0].Name, Status: "created"}}
+	req := addRequest{amURL: "http://am:9093", groupName: "compute", runbookSlugs: []string{scaffoldSets["compute"][0]}, format: formatStandard, namespace: "monitoring"}
+	got := p.deliverAddBundle(&model.CommandArgs{UserId: "u1"}, req, addDestination{channelID: "c1", team: "ops", channel: "alerts"}, results, entries)
+
+	if !strings.Contains(got, "Couldn't DM") {
+		t.Fatalf("expected the inline fallback:\n%s", got)
+	}
+	if !strings.Contains(got, "route:` → `routes:`") || !strings.Contains(got, "receiver: "+entries[0].Name) {
+		t.Fatalf("inline fallback must carry the routes too:\n%s", got)
+	}
+}

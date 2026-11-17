@@ -352,6 +352,7 @@ type rulesFile struct {
 	format string // formatStandard or formatCRD
 	apply  string // markdown telling the user how to apply it
 	tail   string // overrides the default overlap warning in section()
+	note   string // appended after the warning
 }
 
 // section is the part of the combined DM message that describes the rules file.
@@ -364,10 +365,14 @@ func (r *rulesFile) section() string {
 	if r.tail != "" {
 		warning = "Apply it once. " + r.tail + " Adjust the `release` label to your Helm release name."
 	}
-	return fmt.Sprintf(
+	s := fmt.Sprintf(
 		"\n\n**Prometheus rules** for %s (%d rule(s), %s) are in `%s`.\n\n%s\n\n%s",
 		r.scope, r.count, rulesKind(r.format), r.name, r.apply, warning,
 	)
+	if r.note != "" {
+		s += "\n\n" + r.note
+	}
+	return s
 }
 
 // rulesFileForAdd builds the rules for the runbooks one add just created. The
@@ -385,9 +390,11 @@ func (p *Plugin) rulesFileForAdd(rc rulesContext, groupName string, slugs []stri
 }
 
 // rulesFileForChannel builds the rules for every runbook the channel's receivers
-// cover, so an export leaves nothing unfired. The object is named per channel so
-// exporting two channels does not make one overwrite the other. Custom receivers
-// have no sample rules, so a channel with only those returns nil and a reason.
+// cover. The object is named per channel so exporting two channels does not make
+// one overwrite the other. Custom receivers have no sample rules, so a channel
+// with only those returns nil and a reason. The pack receiver's rules need the
+// Mattermost namespace, which the plugin does not store, so they are left out
+// and the file says so.
 func (p *Plugin) rulesFileForChannel(rc rulesContext, scoped []alertConfig) (*rulesFile, string) {
 	var slugs []string
 	hasPack := false
@@ -400,8 +407,9 @@ func (p *Plugin) rulesFileForChannel(rc rulesContext, scoped []alertConfig) (*ru
 		case kindCustom:
 		}
 	}
+	packRulesHint := "Run `/alertmanager format rules " + mattermostGroup + " mm-namespace=<ns>` for its rules."
 	if len(slugs) == 0 && hasPack {
-		return nil, ":information_source: No rules file: the plugin does not keep the Mattermost namespace or name for the Mattermost operator alerts receiver. Run `/alertmanager format rules " + mattermostGroup + " mm-namespace=<ns>` for its rules."
+		return nil, ":information_source: No rules file: the plugin does not keep the Mattermost namespace or name for the Mattermost operator alerts receiver. " + packRulesHint
 	}
 	if len(slugs) == 0 {
 		return nil, ":information_source: No rules file: this channel has only custom receivers, and the sample rules are written for the shipped runbooks. Write the Prometheus rule for your own alert and give it the labels your route matches."
@@ -411,6 +419,9 @@ func (p *Plugin) rulesFileForChannel(rc rulesContext, scoped []alertConfig) (*ru
 	if err != nil {
 		p.API.LogWarn("export: couldn't build the rules file", "err", err.Error())
 		return nil, fmt.Sprintf(":warning: Couldn't build the rules file for this channel (%v). Run `/alertmanager format rules` for the full set.", err)
+	}
+	if hasPack {
+		rules.note = ":information_source: This file leaves out the Mattermost operator alerts, because the plugin does not keep the Mattermost namespace. " + packRulesHint
 	}
 	return rules, ""
 }

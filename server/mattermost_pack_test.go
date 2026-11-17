@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -480,6 +479,22 @@ func TestRulesFileForChannelPointsPackUsersToFormatRules(t *testing.T) {
 	}
 }
 
+func TestRulesFileForChannelSaysWhenThePackRulesAreLeftOut(t *testing.T) {
+	p := &Plugin{}
+	p.API = &ruleDMAPI{uploads: map[string]string{}}
+	runbook := alertConfig{Name: scaffoldSets["compute"][0] + "--ops-alerts", Team: "ops", Channel: "alerts"}
+	pack := alertConfig{Name: "mattermost-server--ops-alerts", Team: "ops", Channel: "alerts", Custom: true, Pack: packReceiverSlug}
+
+	rules, _ := p.rulesFileForChannel(testRulesContext(formatCRD), []alertConfig{runbook, pack})
+	if rules == nil || !strings.Contains(rules.section(), "format rules "+mattermostGroup) {
+		t.Fatalf("a channel with runbooks and the pack should be told the operator alerts are missing: %+v", rules)
+	}
+	alone, _ := p.rulesFileForChannel(testRulesContext(formatCRD), []alertConfig{runbook})
+	if strings.Contains(alone.section(), "format rules "+mattermostGroup) {
+		t.Fatalf("a channel without the pack should not get the note:\n%s", alone.section())
+	}
+}
+
 // CI runs promtool against the rendered rules. Set RENDER_PACK_RULES_DIR to
 // write them out; the test is a no-op otherwise.
 func TestWritePackRulesForPromtool(t *testing.T) {
@@ -564,6 +579,9 @@ func TestPackCRDObjectsDoNotCollideWithRunbookGroup(t *testing.T) {
 		}
 		return out
 	}
+	if len(names(packOnly)) == 0 || len(names(alone)) == 0 {
+		t.Fatal("no objects rendered")
+	}
 	for _, name := range names(packOnly) {
 		if !strings.HasSuffix(name, "-"+packReceiverSlug) {
 			t.Errorf("pack object %q must carry the pack suffix", name)
@@ -579,9 +597,6 @@ func TestPackCRDObjectsDoNotCollideWithRunbookGroup(t *testing.T) {
 	}
 	if got, want := len(names(both)), len(names(alone))+len(names(packOnly)); got != want {
 		t.Fatalf("combined export has %d objects, want %d", got, want)
-	}
-	if fmt.Sprint(names(packOnly)) == "" {
-		t.Fatal("no objects rendered")
 	}
 }
 

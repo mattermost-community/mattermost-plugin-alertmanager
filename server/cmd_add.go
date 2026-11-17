@@ -70,20 +70,23 @@ func (p *Plugin) handleAdd(args *model.CommandArgs) (string, error) {
 		return msg, nil
 	}
 
-	// Atomic read-modify-write: acquire configWriteMu here, immediately
-	// before the first getConfiguration read, and hold it through the save
-	// so a concurrent add/remove/reconcile can't clobber the merged
-	// result (lost update). Deliberately NOT held during arg parsing or the
-	// channel resolve above — those don't touch config state, so keeping the
-	// lock off them minimizes contention.
+	results, newEntries, reply := p.createAndPersistAdd(args, req, dest)
+	if reply != "" {
+		return reply, nil
+	}
+	return p.renderAddSummary(args, req, dest, results, newEntries), nil
+}
+
+// createAndPersistAdd is the atomic read-modify-write half of add. It holds
+// configWriteMu from the first getConfiguration read through the save, so a
+// concurrent add/remove/reconcile can't clobber the merged result. Rendering and
+// DM delivery run after it returns, so a slow DM doesn't block other writers.
+func (p *Plugin) createAndPersistAdd(args *model.CommandArgs, req addRequest, dest addDestination) ([]scaffoldResult, []alertConfig, string) {
 	p.configWriteMu.Lock()
 	defer p.configWriteMu.Unlock()
 
 	results, newEntries, hookID := p.createAddReceivers(args, req, dest)
-	if reply := p.persistAddEntries(args, req, dest, newEntries, hookID); reply != "" {
-		return reply, nil
-	}
-	return p.renderAddSummary(args, req, dest, results, newEntries), nil
+	return results, newEntries, p.persistAddEntries(args, req, dest, newEntries, hookID)
 }
 
 // addRequest is the validated form of a `config add` command line.
@@ -420,6 +423,11 @@ func (p *Plugin) deliverAddBundle(args *model.CommandArgs, req addRequest, dest 
 			b.WriteString("). Inline copy below — paste under `receivers:` in your `alertmanager.yml`:\n\n```yaml\n")
 			b.WriteString(yamlFile)
 			b.WriteString("```\n")
+			if strings.TrimSpace(routesFile) != "" {
+				b.WriteString("\nThen paste these under `route:` → `routes:`. Without them Alertmanager never sends alerts to the receivers above:\n\n```yaml\n")
+				b.WriteString(routesFile)
+				b.WriteString("```\n")
+			}
 		} else {
 			delivered = true
 			b.WriteString(":page_facing_up: **Sent `alertmanager-receivers.yml` to your DM with `@")
