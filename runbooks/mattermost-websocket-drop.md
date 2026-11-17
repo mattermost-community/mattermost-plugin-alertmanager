@@ -12,12 +12,14 @@ The number of active Mattermost WebSocket connections dropped by more than
 50% in a 10-minute window. The alert fires on:
 
 ```promql
-mattermost_http_websockets_total
-  < (mattermost_http_websockets_total offset 10m) * 0.5
+sum by (namespace, job) (mattermost_http_websockets_total)
+  < sum by (namespace, job) (mattermost_http_websockets_total offset 10m) * 0.5
 ```
 
 This detects relative drops, which makes it scale-agnostic: whether you
 have 100 or 10,000 active connections, a 50% drop is always an anomaly.
+Totals are summed across pods, so a pod that is replaced and comes back
+with few connections still counts as a drop.
 
 A drop this large typically means:
 - A Mattermost pod restarted (all its connections dropped)

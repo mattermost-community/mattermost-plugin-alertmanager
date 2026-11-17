@@ -45,6 +45,70 @@ tests:
               summary: "PVC ns/data (pod job-0) > 90% full"
               description: "Volume close to capacity. Expand the PVC or clean up data before writes start failing."
 
+  # A ReadWriteMany claim mounted on two nodes is reported by both kubelets.
+  - name: PersistentVolumeFull fires once per pod when two kubelets report the claim
+    interval: 30s
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{namespace="ns", persistentvolumeclaim="data", instance="node-a", node="node-a"}'
+        values: "95+0x30"
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="ns", persistentvolumeclaim="data", instance="node-a", node="node-a"}'
+        values: "100+0x30"
+      - series: 'kubelet_volume_stats_used_bytes{namespace="ns", persistentvolumeclaim="data", instance="node-b", node="node-b"}'
+        values: "95+0x30"
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="ns", persistentvolumeclaim="data", instance="node-b", node="node-b"}'
+        values: "100+0x30"
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="ns", persistentvolumeclaim="data", pod="app-0"}'
+        values: "1+0x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PersistentVolumeFull
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: storage
+              runbook: persistent-volume-full
+              namespace: ns
+              persistentvolumeclaim: data
+              pod: app-0
+            exp_annotations:
+              summary: "PVC ns/data (pod app-0) > 90% full"
+              description: "Volume close to capacity. Expand the PVC or clean up data before writes start failing."
+
+  # The pod is replaced and comes back with a tenth of the connections. The new
+  # pod's series has no value 10 minutes ago, so a per-pod comparison never fires.
+  - name: MattermostWebSocketDrop fires when a replaced pod comes back with fewer connections
+    interval: 1m
+    input_series:
+      - series: 'mattermost_http_websockets_total{namespace="mm", job="mattermost", pod="mm-old"}'
+        values: "100x14 _x16"
+      - series: 'mattermost_http_websockets_total{namespace="mm", job="mattermost", pod="mm-new"}'
+        values: "_x14 10x16"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: MattermostWebSocketDrop
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: mattermost
+              runbook: mattermost-websocket-drop
+              namespace: mm
+              job: mattermost
+            exp_annotations:
+              summary: "Mattermost WebSocket connections dropped > 50%"
+              description: "Active WebSocket connections are less than half their level from 10 minutes ago. Users are losing real-time updates."
+
+  - name: MattermostWebSocketDrop stays quiet when a replaced pod keeps its connections
+    interval: 1m
+    input_series:
+      - series: 'mattermost_http_websockets_total{namespace="mm", job="mattermost", pod="mm-old"}'
+        values: "100x14 _x16"
+      - series: 'mattermost_http_websockets_total{namespace="mm", job="mattermost", pod="mm-new"}'
+        values: "_x14 95x16"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: MattermostWebSocketDrop
+        exp_alerts: []
+
   - name: PersistentVolumeFull stays quiet below the threshold
     interval: 30s
     input_series:

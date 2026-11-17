@@ -448,10 +448,12 @@ groups:
       # series per pod that mounts the claim. The PVC is the "one" side, so
       # the join is group_right. The max by () drops the kube-state-metrics
       # scrape labels so a claim shared by several pods does not collide.
+      # The left side is also reduced to one series per claim, because a claim
+      # mounted on two nodes is reported by both kubelets.
       - alert: PersistentVolumeFull
         expr: |
           (
-            (
+            max by (namespace, persistentvolumeclaim) (
               kubelet_volume_stats_used_bytes
                 / kubelet_volume_stats_capacity_bytes * 100
             ) > 90
@@ -740,11 +742,13 @@ groups:
       # MattermostWebSocketDrop — active WebSocket connections dropped > 50%
       # vs 10 minutes ago. A self-calibrating check: catches drops at any
       # scale. Typical cause: pod restart, LB timeout misconfiguration, or
-      # a network disruption affecting long-lived connections.
+      # a network disruption affecting long-lived connections. Totals are
+      # summed per namespace and scrape job, because a replacement pod's
+      # series has no value 10 minutes ago to compare with.
       - alert: MattermostWebSocketDrop
         expr: |
-          mattermost_http_websockets_total
-            < (mattermost_http_websockets_total offset 10m) * 0.5
+          sum by (namespace, job) (mattermost_http_websockets_total)
+            < sum by (namespace, job) (mattermost_http_websockets_total offset 10m) * 0.5
         for: 5m
         labels:
           severity: warning
