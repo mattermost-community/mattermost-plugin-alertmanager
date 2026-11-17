@@ -121,8 +121,9 @@ calls go through. Alertmanager's webhook POST is an incoming request,
 and Mattermost does not filter incoming webhooks by source address.
 Adding hosts here only widens what Mattermost can reach.
 
-If alerts never arrive, check the path from Alertmanager to `WebhookHost`
-instead: DNS, NetworkPolicy, service mesh policy and ingress.
+If alerts never arrive, check that incoming webhooks are turned on
+(`ServiceSettings.EnableIncomingWebhooks`), then the path from Alertmanager to
+`WebhookHost`: DNS, NetworkPolicy, service mesh policy and ingress.
 
 ### `MetricsToken`
 

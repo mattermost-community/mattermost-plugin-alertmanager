@@ -92,13 +92,18 @@ before. Behind an ingress the pod also sees the controller's address,
 not the client's.
 
 ```bash
-# Nginx ingress: deny the source and cap requests per client IP.
-# limit-rpm applies to every path on this ingress, so keep it well above
-# normal per-user traffic.
+# Nginx ingress: add the source to this ingress's denylist.
+# The annotation replaces the existing list and any global denylist from the
+# controller ConfigMap, so carry those ranges over instead of overwriting them.
+current=$(kubectl get ingress -n <namespace> <mattermost-ingress> \
+  -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/denylist-source-range}')
 kubectl annotate ingress -n <namespace> <mattermost-ingress> --overwrite \
-  nginx.ingress.kubernetes.io/denylist-source-range="<attacker-cidr>" \
-  nginx.ingress.kubernetes.io/limit-rpm="60"
+  nginx.ingress.kubernetes.io/denylist-source-range="${current:+${current},}<attacker-cidr>"
 ```
+
+Rate-limit `/api/v4/users/login` at the WAF, or with a separate Ingress for
+that path only. A rate limit annotation on the main Mattermost ingress applies
+to every request, and users behind one NAT address share it.
 
 ### 4. Enable or tighten MFA
 

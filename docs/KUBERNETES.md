@@ -463,8 +463,10 @@ After deploying:
    **unreachable until its CIDR is allowlisted** — inventory probes and
    `validate` will report connection failures otherwise. See
    [CONFIGURATION.md → `AlertManagerAllowedCIDRs`](CONFIGURATION.md).
-   Alertmanager's POST back into Mattermost needs no Mattermost setting.
-   It only needs a network path to `WebhookHost`.
+   Alertmanager's POST back into Mattermost needs incoming webhooks turned on
+   (`ServiceSettings.EnableIncomingWebhooks`, System Console → Integrations →
+   Integration Management) and a network path to `WebhookHost`. No allowlist
+   setting is involved.
 2. **Run `/alertmanager config add http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093`** from a Mattermost channel. Replace `kube-prometheus-stack` with your Helm release name and `monitoring` with the namespace. Confirm the Service with `kubectl get svc -A | grep alertmanager`. The headless `alertmanager-operated` Service is not the one to put in this command. The rendered `api_url:` should then use your cluster-internal MM service URL. The same DM carries a PrometheusRule file for the group you created. Apply that file too, or Prometheus has routes and no rules.
 3. **Reload Alertmanager** after pasting the YAML — `kubectl exec -it alertmanager-0 -- /bin/sh -c "killall -HUP alertmanager"` or via the Operator's reconciliation.
 4. **Fire a synthetic alert** (e.g., `up == 0` for a scrape target you deliberately broke). Verify:

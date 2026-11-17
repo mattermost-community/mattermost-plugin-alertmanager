@@ -77,6 +77,10 @@ Legend for "Extra tooling":
 
 ## Mattermost Application
 
+Mattermost serves `/metrics` only with performance monitoring turned on
+(`MetricsSettings.Enable: true`), which needs a Mattermost Enterprise license.
+Without it these series do not exist and the alerts never fire.
+
 | Slug | Primary metric | Source | Notes |
 |---|---|---|---|
 | `mattermost-api-high-latency` | `mattermost_api_time_bucket` | Mattermost `/metrics` | ⚠ **Requires `MetricsSettings.Enable: true`** |
