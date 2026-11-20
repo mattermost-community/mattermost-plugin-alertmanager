@@ -2,6 +2,7 @@ package main
 
 import (
 	"io/fs"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -62,11 +63,103 @@ func TestPackRunbooksAreNotReceivers(t *testing.T) {
 	}
 }
 
+var backtickedName = regexp.MustCompile("`([a-z_]+)`")
+
+// packAlertLabels is the label set a pack page promises its alert carries,
+// read from its "## Required Prometheus labels" section.
+func packAlertLabels(t *testing.T, slug string) map[string]bool {
+	t.Helper()
+	data, err := root.RunbooksFS.ReadFile("runbooks/" + packRunbookDir + "/" + slug + ".md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(data), "## Required Prometheus labels")
+	if !ok {
+		t.Fatalf("%s.md has no ## Required Prometheus labels section", slug)
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	labels := map[string]bool{}
+	for _, m := range backtickedName.FindAllStringSubmatch(section, -1) {
+		if labelPlaceholderAllowlist[m[1]] {
+			labels[m[1]] = true
+		}
+	}
+	return labels
+}
+
+func packRuleExprs(t *testing.T) map[string]string {
+	t.Helper()
+	exprs := map[string]string{}
+	for _, file := range []string{mattermostOperatorRulesFile, mattermostPostgresRulesFile} {
+		raw, err := root.SamplesFS.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Groups []struct {
+				Rules []struct{ Alert, Expr string }
+			}
+		}
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		for _, g := range doc.Groups {
+			for _, r := range g.Rules {
+				exprs[r.Alert] = r.Expr
+			}
+		}
+	}
+	return exprs
+}
+
+var byClause = regexp.MustCompile(`\bby\s*\(([^)]*)\)`)
+
+// TestPackCommandsUseOnlyAlertLabels: an inline command may only use labels
+// the alert carries, or Alertmanager renders the placeholder as "". A page's
+// label list must also survive every `by (...)` aggregation in its rule.
+func TestPackCommandsUseOnlyAlertLabels(t *testing.T) {
+	exprs := packRuleExprs(t)
+	for alert, slug := range packRunbookSlugs {
+		labels := packAlertLabels(t, slug)
+		if len(labels) == 0 {
+			t.Errorf("%s.md lists no allowlisted labels", slug)
+		}
+		for _, m := range byClause.FindAllStringSubmatch(exprs[alert], -1) {
+			kept := map[string]bool{}
+			for l := range strings.SplitSeq(m[1], ",") {
+				kept[strings.TrimSpace(l)] = true
+			}
+			for l := range labels {
+				if !kept[l] {
+					t.Errorf("%s.md lists %s, but %s aggregates it away: by (%s)", slug, l, alert, m[1])
+				}
+			}
+		}
+		for _, blk := range loadPackQuickDiagnostics(slug) {
+			for line := range strings.SplitSeq(blk.Code, "\n") {
+				if trim := strings.TrimLeft(line, " \t"); strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--") {
+					continue
+				}
+				for _, m := range labelPlaceholderRegex.FindAllStringSubmatch(line, -1) {
+					if labelPlaceholderAllowlist[m[1]] && !labels[m[1]] {
+						t.Errorf("%s.md inline command uses <%s>, which %s does not carry: %q", slug, m[1], alert, strings.TrimSpace(line))
+					}
+				}
+			}
+		}
+	}
+}
+
 func executePackText(t *testing.T, receiverYAML string, alert sanAlert) string {
+	t.Helper()
+	return executePackTemplate(t, extractTextTemplate(t, receiverYAML), alert)
+}
+
+func executePackTemplate(t *testing.T, text string, alert sanAlert) string {
 	t.Helper()
 	// Alertmanager parses notification templates with missingkey=zero, so an
 	// absent annotation reads as "".
-	tmpl, err := template.New("text").Option("missingkey=zero").Funcs(amLikeFuncMap).Parse(extractTextTemplate(t, receiverYAML))
+	tmpl, err := template.New("text").Option("missingkey=zero").Funcs(amLikeFuncMap).Parse(text)
 	if err != nil {
 		t.Fatalf("pack text template does not parse: %v", err)
 	}
@@ -85,14 +178,18 @@ func TestPackReceiverLinksEachAlert(t *testing.T) {
 		t.Fatalf("pack receiver is not valid Alertmanager config: %v\n%s", err, cfg)
 	}
 
+	values := map[string]string{
+		"namespace": "mm-prod",
+		"pod":       "mm-6f9c-x",
+		"installation_mattermost_com_installation": "mm",
+	}
 	for alert, slug := range packRunbookSlugs {
 		t.Run(alert, func(t *testing.T) {
-			out := executePackText(t, block, sanAlert{Labels: sanKV{
-				"alertname": alert,
-				"namespace": "mm-prod",
-				"pod":       "mm-6f9c-x",
-				"installation_mattermost_com_installation": "mm",
-			}})
+			labels := sanKV{"alertname": alert}
+			for l := range packAlertLabels(t, slug) {
+				labels[l] = values[l]
+			}
+			out := executePackText(t, block, sanAlert{Labels: labels})
 			want := "**Runbook:** [runbook](https://mm.example/plugins/com.mattermost.alertmanager/public/runbooks/mattermost-operator/" + slug + ".html)"
 			if !strings.Contains(out, want) {
 				t.Errorf("missing %q in:\n%s", want, out)
@@ -139,17 +236,40 @@ func TestPackCRDReceiverLinksEachAlert(t *testing.T) {
 		iconURL:           "https://mm.example/icon.png",
 		kind:              kindPack,
 	})
-	var doc []map[string]any
+	var doc []struct {
+		SlackConfigs []struct{ Text string } `yaml:"slackConfigs"`
+	}
 	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("pack CRD receiver is not valid YAML: %v\n%s", err, out)
 	}
-	for _, slug := range packRunbookSlugs {
-		if !strings.Contains(out, "/runbooks/mattermost-operator/"+slug+".html") {
-			t.Errorf("CRD receiver has no link to %s", slug)
+	if len(doc) != 1 || len(doc[0].SlackConfigs) != 1 {
+		t.Fatalf("expected one receiver with one slackConfig:\n%s", out)
+	}
+	text := doc[0].SlackConfigs[0].Text
+	for alert, slug := range packRunbookSlugs {
+		got := executePackTemplate(t, text, sanAlert{Labels: sanKV{"alertname": alert}})
+		if !strings.Contains(got, "/runbooks/mattermost-operator/"+slug+".html)") {
+			t.Errorf("CRD receiver has no link to %s for %s:\n%s", slug, alert, got)
+		}
+		if strings.Count(got, "**Quick diagnostics:**") != 1 {
+			t.Errorf("CRD receiver wants one diagnostics block for %s:\n%s", alert, got)
 		}
 	}
-	if strings.Count(out, "**Quick diagnostics:**") != len(packRunbookSlugs) {
-		t.Errorf("want one diagnostics branch per alert, got %d", strings.Count(out, "**Quick diagnostics:**"))
+}
+
+func TestPackReceiverIgnoresUnsafeRunbookURL(t *testing.T) {
+	block := renderReceiverYAMLForKind(packReceiverSlug, "https://mm.example/hooks/x", "alerts", testPackRunbookDefaultURL, "https://mm.example/icon.png", kindPack)
+	for _, bad := range []string{"javascript:alert(1)", "https://ok](https://evil)", "/admin_console", "https://ok.example/x\nINJECT"} {
+		out := executePackText(t, block, sanAlert{
+			Labels:      sanKV{"alertname": "MattermostServerDown"},
+			Annotations: sanKV{"runbook_url": bad},
+		})
+		if !strings.Contains(out, "[runbook](https://mm.example/plugins/com.mattermost.alertmanager/public/runbooks/mattermost-operator/mattermost-server-down.html)") {
+			t.Errorf("runbook_url %q should fall back to the pack page:\n%s", bad, out)
+		}
+		if strings.Count(out, "](") != 1 || strings.Contains(out, "evil") || strings.Contains(out, "javascript") {
+			t.Errorf("runbook_url %q leaked into the post:\n%s", bad, out)
+		}
 	}
 }
 

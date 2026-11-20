@@ -26,10 +26,10 @@ Working set is the number the OOM killer uses. The threshold is
 
 ```bash
 # WHERE: shell with kubectl access to the Mattermost namespace.
-# WHAT: memory per pod in this installation, plus OOM kills so far.
-# READ: compare the alerting pod with the rest. The second command prints
-#   OOMKilled for any container that already hit the limit.
-kubectl top pod -n <namespace> -l installation.mattermost.com/installation=<installation_mattermost_com_installation> --containers
+# WHAT: memory per pod in the namespace, plus OOM kills so far.
+# READ: compare the alerting pod with the other Mattermost pods. The second
+#   command prints OOMKilled if the container already hit the limit.
+kubectl top pod -n <namespace> --containers
 kubectl get pod -n <namespace> <pod> -o jsonpath='{.status.containerStatuses[?(@.name=="mattermost")].lastState.terminated.reason}{"\n"}'
 ```
 

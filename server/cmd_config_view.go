@@ -125,7 +125,7 @@ func (p *Plugin) handleConfig(args *model.CommandArgs) (string, error) {
 		b.WriteString(fmt.Sprintf("- **Runbooks:** [one per alert](%s)\n", packRunbookPageURL(runbookURL, packRunbookLanding)))
 	case kindCustom:
 		b.WriteString("- **Runbook:** only when the alert sets a `runbook_url` annotation\n")
-	case kindRunbook:
+	default:
 		b.WriteString(fmt.Sprintf("- **Runbook (default):** [%s](%s)\n", receiverBaseSlug(match.Name), runbookURL))
 	}
 	b.WriteString("\n**slack_configs YAML** (paste under `receivers:` in alertmanager.yml):\n\n```yaml\n")

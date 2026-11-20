@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	root "github.com/mattermost/mattermost-plugin-alertmanager"
 )
 
 // packRunbookDir is where the pack's per-alert runbooks live, both in the
@@ -80,11 +78,7 @@ func packRunbookSection(runbookDefaultURL string) string {
 // loadPackQuickDiagnostics reads the first Quick diagnostics block of one pack
 // runbook. A missing page or section returns nil.
 func loadPackQuickDiagnostics(slug string) []quickDiagnostic {
-	data, err := root.RunbooksFS.ReadFile("runbooks/" + packRunbookDir + "/" + slug + ".md")
-	if err != nil {
-		return nil
-	}
-	blocks := extractQuickDiagnostics(data)
+	blocks := loadQuickDiagnosticsForSlug(packRunbookDir + "/" + slug)
 	if len(blocks) > packQuickDiagnosticLimit {
 		blocks = blocks[:packQuickDiagnosticLimit]
 	}
@@ -95,23 +89,15 @@ func loadPackQuickDiagnostics(slug string) []quickDiagnostic {
 // one branch per alertname, each holding that runbook's first command. indent
 // is the continuation indent of the YAML literal block it is inlined into.
 func packQuickDiagnostics(indent string) string {
-	var b strings.Builder
-	first := true
+	var branches []string
 	for _, name := range sortedPackAlertnames() {
 		diag := formatQuickDiagnosticsForAlert(loadPackQuickDiagnostics(packRunbookSlugs[name]))
-		if diag == "" {
-			continue
+		if diag != "" {
+			branches = append(branches, fmt.Sprintf("eq .Labels.alertname %q -}}\n%s\n", name, diag))
 		}
-		keyword := "else if"
-		if first {
-			keyword = "if"
-			first = false
-		}
-		fmt.Fprintf(&b, "{{- %s eq .Labels.alertname %q -}}\n%s\n", keyword, name, diag)
 	}
-	if first {
+	if len(branches) == 0 {
 		return ""
 	}
-	b.WriteString("{{- end }}")
-	return indentForYAMLBlock(b.String(), indent)
+	return indentForYAMLBlock("{{- if "+strings.Join(branches, "{{- else if ")+"{{- end }}", indent)
 }

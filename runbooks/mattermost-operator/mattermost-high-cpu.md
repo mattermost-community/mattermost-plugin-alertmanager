@@ -26,11 +26,11 @@ alert; [CPU Limit Missing](mattermost-cpu-limit-missing.md) covers it.
 
 ```bash
 # WHERE: shell with kubectl access to the Mattermost namespace.
-# WHAT: live CPU use of every pod in this installation.
-# READ: one pod far above the rest = something on that pod (a long job,
-#   a hot channel, a plugin). Every pod high = the install needs more
-#   CPU or more replicas.
-kubectl top pod -n <namespace> -l installation.mattermost.com/installation=<installation_mattermost_com_installation> --containers
+# WHAT: live CPU use of every pod in the namespace.
+# READ: compare the alerting pod with the other Mattermost pods. One pod
+#   far above the rest = something on that pod (a long job, a hot channel,
+#   a plugin). Every pod high = the install needs more CPU or replicas.
+kubectl top pod -n <namespace> --containers
 ```
 
 ```promql

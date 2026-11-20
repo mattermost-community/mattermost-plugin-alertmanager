@@ -89,7 +89,11 @@ var knownLiteralPlaceholders = map[string]bool{
 // literal text "<podname>" in the alert post instead of the value. This is the
 // only check that catches that silent typo.
 func TestRunbookPlaceholdersAllowlisted(t *testing.T) {
-	for _, slug := range runbookSlugsFromFS(t) {
+	slugs := runbookSlugsFromFS(t)
+	for _, slug := range packRunbookSlugs {
+		slugs = append(slugs, packRunbookDir+"/"+slug)
+	}
+	for _, slug := range slugs {
 		blocks := loadQuickDiagnosticsForSlug(slug)
 		for _, blk := range blocks {
 			for line := range strings.SplitSeq(blk.Code, "\n") {
