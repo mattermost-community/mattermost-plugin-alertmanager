@@ -29,6 +29,8 @@ var labelPlaceholderAllowlist = map[string]bool{
 	"node":       true,
 	"pod":        true,
 	"service":    true,
+	// The Mattermost CR name, copied from the pod label by the ServiceMonitor.
+	"installation_mattermost_com_installation": true,
 }
 
 // labelPlaceholderRegex matches `<name>` where name is a lowercase

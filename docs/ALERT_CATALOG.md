@@ -113,20 +113,28 @@ Rules for the Mattermost server itself. Requires `MetricsSettings.Enable: true` 
 
 ### Mattermost operator alerts (`mattermost` with `mm-namespace=<ns>`)
 
-Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come from the Mattermost Operator's own PrometheusRule. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
+Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come from the Mattermost Operator's own PrometheusRule. Two more, with `mm-postgres-pod=true`, are plugin-only. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
 
-| Alert | Severity | Fires when | Needs |
-|---|---|---|---|
-| MattermostServerDown | critical | No Mattermost pod is up | Mattermost metrics |
-| MattermostDBReplicaLag | warning | Replica lag over threshold | Read replica |
-| MattermostDBWriterPoolEmpty | critical | Writer connection pool exhausted | Mattermost metrics |
-| MattermostHighHTTPErrorRate | warning | Elevated HTTP error ratio | Mattermost metrics |
-| MattermostLoginFailureSpike | warning | Elevated failed-login ratio | Mattermost metrics |
-| MattermostSearchDown | warning | Search backend unhealthy | Mattermost metrics |
-| MattermostClusterUnhealthy | warning | Cluster nodes disagree | Mattermost metrics |
-| MattermostLogsDropped | warning | Log records dropped | Mattermost metrics |
-| MattermostPodCrashLooping | critical | Pod restarting repeatedly | kube-state-metrics |
-| MattermostHighCPU, MattermostHighMemory, MattermostCPULimitMissing, MattermostMemoryLimitMissing | warning | Resource pressure, missing limits | kube-state-metrics |
+Each alert has its own runbook. The `mattermost-server` receiver links the post to it and shows its first diagnostic command, unless the alert sets its own `runbook_url`.
+
+| Alert | Severity | Fires when | Needs | Runbook |
+|---|---|---|---|---|
+| MattermostServerDown | critical | One pod's metrics endpoint unscrapable for 5m | Mattermost metrics | [Server Down](../runbooks/mattermost-operator/mattermost-server-down.md) |
+| MattermostPodCrashLooping | critical | More than 3 restarts in 5m | kube-state-metrics | [Pod Crash Looping](../runbooks/mattermost-operator/mattermost-pod-crash-looping.md) |
+| MattermostHighCPU | warning | CPU above 85% of limit for 10m | kube-state-metrics | [High CPU](../runbooks/mattermost-operator/mattermost-high-cpu.md) |
+| MattermostCPULimitMissing | warning | Container runs without a CPU limit | kube-state-metrics | [CPU Limit Missing](../runbooks/mattermost-operator/mattermost-cpu-limit-missing.md) |
+| MattermostHighMemory | warning | Working set above 90% of limit for 10m | kube-state-metrics | [High Memory](../runbooks/mattermost-operator/mattermost-high-memory.md) |
+| MattermostMemoryLimitMissing | warning | Container runs without a memory limit | kube-state-metrics | [Memory Limit Missing](../runbooks/mattermost-operator/mattermost-memory-limit-missing.md) |
+| MattermostDBWriterPoolEmpty | critical | Process up, no writer connections for 10m | Mattermost metrics | [DB Writer Pool Empty](../runbooks/mattermost-operator/mattermost-db-writer-pool-empty.md) |
+| MattermostDBReplicaLag | warning | Replica lag over threshold (opt-in) | `ReplicaLagSettings` | [DB Replica Lag](../runbooks/mattermost-operator/mattermost-db-replica-lag.md) |
+| MattermostHighHTTPErrorRate | warning | Error responses above 5%, 4xx included | Mattermost metrics | [High HTTP Error Rate](../runbooks/mattermost-operator/mattermost-high-http-error-rate.md) |
+| MattermostLoginFailureSpike | warning | Most logins failing, at least 20 in 15m | Mattermost metrics | [Login Failure Spike](../runbooks/mattermost-operator/mattermost-login-failure-spike.md) |
+| MattermostWebSocketDrop | warning | Connections below half of 10m ago | Mattermost metrics | [WebSocket Drop](../runbooks/mattermost-operator/mattermost-websocket-drop.md) |
+| MattermostSearchDown | warning | Elasticsearch enabled and unhealthy | Mattermost metrics | [Search Down](../runbooks/mattermost-operator/mattermost-search-down.md) |
+| MattermostClusterUnhealthy | warning | Gossip health score above 0 for 10m | Mattermost metrics | [Cluster Unhealthy](../runbooks/mattermost-operator/mattermost-cluster-unhealthy.md) |
+| MattermostLogsDropped | warning | Log records dropped or blocked for 5m | Mattermost metrics | [Logs Dropped](../runbooks/mattermost-operator/mattermost-logs-dropped.md) |
+| MattermostPostgresPodNotReady | critical | A `*postgres*` pod not Ready for 5m (plugin-only) | kube-state-metrics | [Postgres Pod Not Ready](../runbooks/mattermost-operator/mattermost-postgres-pod-not-ready.md) |
+| MattermostPostgresPodCrashLooping | warning | More than 3 restarts in 15m (plugin-only) | kube-state-metrics | [Postgres Pod Crash Looping](../runbooks/mattermost-operator/mattermost-postgres-pod-crash-looping.md) |
 
 Thresholds live in the operator's rules and are filled in by the plugin. Read `samples/mattermost-operator-rules.yaml` for the exact expressions.
 

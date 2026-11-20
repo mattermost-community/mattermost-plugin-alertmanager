@@ -239,12 +239,34 @@ const runbookSectionCustom = `{{- if ` + runbookURLGate + ` -}}
 
 // runbookSection resolves {{RUNBOOK_SECTION}} for a receiver. Custom receivers
 // get the annotation-only variant (no plugin fallback link); standard receivers
-// get the fallback with runbookDefaultURL baked in.
+// get the fallback with runbookDefaultURL baked in; pack receivers link each
+// alert to its own page.
 func runbookSection(runbookDefaultURL string, kind receiverKind) string {
-	if !kind.hasRunbook() {
+	switch {
+	case kind == kindPack:
+		return packRunbookSection(runbookDefaultURL)
+	case !kind.hasRunbook():
 		return runbookSectionCustom
+	default:
+		return strings.Replace(runbookSectionStandard, "{{RUNBOOK_DEFAULT}}", runbookDefaultURL, 1)
 	}
-	return strings.Replace(runbookSectionStandard, "{{RUNBOOK_DEFAULT}}", runbookDefaultURL, 1)
+}
+
+// quickDiagnosticsFor is the {{QUICK_DIAGNOSTICS}} text for a receiver, already
+// indented for the YAML block. Custom receivers get none.
+func quickDiagnosticsFor(slug string, kind receiverKind, indent string) string {
+	switch {
+	case kind == kindPack:
+		return packQuickDiagnostics(indent)
+	case !kind.hasRunbook():
+		return ""
+	default:
+		diag := formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(slug))
+		if diag == "" {
+			return ""
+		}
+		return indentForYAMLBlock(diag, indent)
+	}
 }
 
 // renderReceiverYAML renders a standard (runbook-backed) receiver.
@@ -269,13 +291,7 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 	// authoritative "no runbook content" contract, so it must hold even if a
 	// future catalog adds a runbook slug matching a persisted custom name (or an
 	// entry is written straight to the KV store, bypassing name-collision validation).
-	diagText := ""
-	if kind.hasRunbook() {
-		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(receiverBaseSlug(name)))
-		if diagText != "" {
-			diagText = indentForYAMLBlock(diagText, yamlBlockIndent)
-		}
-	}
+	diagText := quickDiagnosticsFor(receiverBaseSlug(name), kind, yamlBlockIndent)
 
 	r := strings.NewReplacer(
 		"{{RUNBOOK_SECTION}}", runbookSection(runbookDefaultURL, kind),
