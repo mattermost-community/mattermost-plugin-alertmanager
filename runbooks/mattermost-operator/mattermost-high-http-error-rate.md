@@ -85,7 +85,7 @@ the stack points at that plugin.
 | Mostly 404 from one client | Client polling a deleted resource | Fix the client |
 | 5xx with `pq:` errors | Database | See [DB Writer Pool Empty](mattermost-db-writer-pool-empty.md) |
 | 5xx on file endpoints | File store credentials or network | Check `FileSettings` and the bucket |
-| 5xx after an upgrade | Regression | Roll back `spec.version` and contact support |
+| 5xx after an upgrade | Regression | Contact support. Don't just lower `spec.version`: once the new version migrated the schema, a downgrade needs the database backup taken before the upgrade |
 
 If 4xx noise keeps paging, raise `httpErrorPercent` on the CR.
 

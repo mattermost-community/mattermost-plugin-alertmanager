@@ -97,10 +97,7 @@ func TestRunbookPlaceholdersAllowlisted(t *testing.T) {
 		blocks := loadQuickDiagnosticsForSlug(slug)
 		for _, blk := range blocks {
 			for line := range strings.SplitSeq(blk.Code, "\n") {
-				// Mirror substituteLabelPlaceholders: comment lines are
-				// skipped (they reference labels in prose, not commands).
-				trim := strings.TrimLeft(line, " \t")
-				if strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--") {
+				if isCommentLine(line) {
 					continue
 				}
 				for _, m := range labelPlaceholderRegex.FindAllStringSubmatch(line, -1) {

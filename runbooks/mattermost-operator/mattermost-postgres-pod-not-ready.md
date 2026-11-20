@@ -72,7 +72,7 @@ volume is bound to a zone with no free node.
 |---|---|---|
 | `No space left on device` | Volume full | Expand the PVC; clear old WAL only with the database team |
 | `redo in progress` | Crash recovery after restart | Wait; large WAL takes minutes |
-| `FailedAttachVolume` | Volume stuck on the old node | Delete the old VolumeAttachment, or wait for the cloud detach |
+| `FailedAttachVolume` | Volume stuck on the old node | Wait for the cloud detach. Delete the old VolumeAttachment only after confirming the old node is powered off and the old pod is gone; otherwise escalate, since two writers on one volume corrupt the database |
 | `Unschedulable` | No node with room or in the volume's zone | Add capacity in that zone |
 | Replica not Ready, primary fine | Replica cannot stream from the primary | Check replication credentials and the primary's `pg_hba.conf` |
 

@@ -77,7 +77,7 @@ upgrade: a failed database migration or a plugin that no longer loads.
 |---|---|---|
 | `OOMKilled` | Memory limit too low | Raise `spec.scheduling.resources.limits.memory` on the Mattermost CR |
 | `pq:` or `dial tcp` errors at startup | Database unreachable or wrong credentials | Check the database secret and network path; see [DB Writer Pool Empty](mattermost-db-writer-pool-empty.md) |
-| Migration error after upgrade | Failed schema migration | Roll back `spec.version`, then contact support with the log |
+| Migration error after upgrade | Failed schema migration | Contact support with the log before changing `spec.version`. A partly migrated schema may not run on the old version; rolling back can mean restoring the pre-upgrade database backup |
 | `Liveness probe failed` in events | Server hung under load | Check CPU and database latency before raising probe timeouts |
 | Plugin panic in logs | A plugin crashes the server | Disable the plugin (`PluginSettings.PluginStates`) and restart |
 

@@ -28,7 +28,8 @@ the Prometheus rule's `labels` / `annotations`:
 | any other labels | label | Listed under **Details:** and used to auto-fill `<label>` placeholders in the inline diagnostics |
 
 Diagnostic auto-fill labels: `alertname`, `app`, `cluster`, `container`,
-`deployment`, `instance`, `job`, `namespace`, `node`, `pod`, `service`.
+`deployment`, `instance`, `job`, `namespace`, `node`, `pod`, `service`, and
+`installation_mattermost_com_installation` (the Mattermost CR name).
 
 ## Compute (`compute`)
 

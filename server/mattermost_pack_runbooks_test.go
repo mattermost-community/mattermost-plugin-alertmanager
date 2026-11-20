@@ -112,19 +112,70 @@ func packRuleExprs(t *testing.T) map[string]string {
 	return exprs
 }
 
-var byClause = regexp.MustCompile(`\bby\s*\(([^)]*)\)`)
+const installationLabel = "installation_mattermost_com_installation"
+
+var (
+	byClause = regexp.MustCompile(`\bby\s*\(([^)]*)\)`)
+	// Aggregations the label check cannot reason about: grouping with
+	// without (...), or no grouping at all, which drops every label.
+	unsupportedAggregation = regexp.MustCompile(`\bwithout\s*\(|\b(sum|min|max|avg|count|group|stddev|stdvar|topk|bottomk|quantile)\s*\(`)
+	selectorMetric         = regexp.MustCompile(`\b([a-zA-Z_:][a-zA-Z0-9_:]*)\{`)
+)
+
+// packCommandLabels is the set of allowlisted labels the inline command uses.
+func packCommandLabels(slug string) map[string]bool {
+	used := map[string]bool{}
+	for _, blk := range loadPackQuickDiagnostics(slug) {
+		for line := range strings.SplitSeq(blk.Code, "\n") {
+			if isCommentLine(line) {
+				continue
+			}
+			for _, m := range labelPlaceholderRegex.FindAllStringSubmatch(line, -1) {
+				if labelPlaceholderAllowlist[m[1]] {
+					used[m[1]] = true
+				}
+			}
+		}
+	}
+	return used
+}
+
+// onlyClusterMetrics reports an expression built purely from kube-state-metrics
+// and cAdvisor series, which never carry the installation label: only the
+// Mattermost ServiceMonitor copies it from the pod.
+func onlyClusterMetrics(expr string) bool {
+	metrics := selectorMetric.FindAllStringSubmatch(expr, -1)
+	for _, m := range metrics {
+		if !strings.HasPrefix(m[1], "kube_") && !strings.HasPrefix(m[1], "container_") {
+			return false
+		}
+	}
+	return len(metrics) > 0
+}
 
 // TestPackCommandsUseOnlyAlertLabels: an inline command may only use labels
-// the alert carries, or Alertmanager renders the placeholder as "". A page's
-// label list must also survive every `by (...)` aggregation in its rule.
+// the alert carries, or Alertmanager renders the placeholder as "". The page's
+// label list is checked against the rule, so it cannot claim a label the
+// rule's series lack or aggregate away.
 func TestPackCommandsUseOnlyAlertLabels(t *testing.T) {
 	exprs := packRuleExprs(t)
 	for alert, slug := range packRunbookSlugs {
+		expr, ok := exprs[alert]
+		if !ok || strings.TrimSpace(expr) == "" {
+			t.Errorf("%s has no rule in %s or %s", alert, mattermostOperatorRulesFile, mattermostPostgresRulesFile)
+			continue
+		}
 		labels := packAlertLabels(t, slug)
 		if len(labels) == 0 {
 			t.Errorf("%s.md lists no allowlisted labels", slug)
 		}
-		for _, m := range byClause.FindAllStringSubmatch(exprs[alert], -1) {
+		if m := unsupportedAggregation.FindString(expr); m != "" {
+			t.Errorf("%s uses %q; extend this test before relying on its labels", alert, m)
+		}
+		if labels[installationLabel] && onlyClusterMetrics(expr) {
+			t.Errorf("%s.md lists %s, but %s only reads kube-state-metrics/cAdvisor series", slug, installationLabel, alert)
+		}
+		for _, m := range byClause.FindAllStringSubmatch(expr, -1) {
 			kept := map[string]bool{}
 			for l := range strings.SplitSeq(m[1], ",") {
 				kept[strings.TrimSpace(l)] = true
@@ -135,16 +186,54 @@ func TestPackCommandsUseOnlyAlertLabels(t *testing.T) {
 				}
 			}
 		}
-		for _, blk := range loadPackQuickDiagnostics(slug) {
-			for line := range strings.SplitSeq(blk.Code, "\n") {
-				if trim := strings.TrimLeft(line, " \t"); strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--") {
-					continue
-				}
-				for _, m := range labelPlaceholderRegex.FindAllStringSubmatch(line, -1) {
-					if labelPlaceholderAllowlist[m[1]] && !labels[m[1]] {
-						t.Errorf("%s.md inline command uses <%s>, which %s does not carry: %q", slug, m[1], alert, strings.TrimSpace(line))
-					}
-				}
+		for l := range packCommandLabels(slug) {
+			if !labels[l] {
+				t.Errorf("%s.md inline command uses <%s>, which %s does not carry", slug, l, alert)
+			}
+		}
+	}
+}
+
+var packLabelValues = map[string]string{
+	"namespace":       "ns-prod",
+	"pod":             "pod-6f9c-x",
+	installationLabel: "chat-main",
+}
+
+// packAlertSample is the alert as Alertmanager would deliver it: only the
+// labels the page says the rule keeps.
+func packAlertSample(t *testing.T, alert, slug string) sanAlert {
+	t.Helper()
+	labels := sanKV{"alertname": alert}
+	for l := range packAlertLabels(t, slug) {
+		v, ok := packLabelValues[l]
+		if !ok {
+			t.Fatalf("no test value for label %q listed in %s.md", l, slug)
+		}
+		labels[l] = v
+	}
+	return sanAlert{Labels: labels}
+}
+
+// assertPackCommandFilled checks the inline command itself, not the whole
+// post, since the Details section prints label values too.
+func assertPackCommandFilled(t *testing.T, out, slug string) {
+	t.Helper()
+	_, cmd, _ := strings.Cut(out, "**Quick diagnostics:**")
+	_, cmd, _ = strings.Cut(cmd, "```")
+	cmd, _, _ = strings.Cut(cmd, "```")
+	for l := range packCommandLabels(slug) {
+		if !strings.Contains(cmd, packLabelValues[l]) {
+			t.Errorf("%s: <%s> was not filled in:\n%s", slug, l, cmd)
+		}
+	}
+	for line := range strings.SplitSeq(cmd, "\n") {
+		if isCommentLine(line) {
+			continue
+		}
+		for _, m := range labelPlaceholderRegex.FindAllStringSubmatch(line, -1) {
+			if labelPlaceholderAllowlist[m[1]] {
+				t.Errorf("%s: raw placeholder <%s> left in %q", slug, m[1], line)
 			}
 		}
 	}
@@ -178,18 +267,9 @@ func TestPackReceiverLinksEachAlert(t *testing.T) {
 		t.Fatalf("pack receiver is not valid Alertmanager config: %v\n%s", err, cfg)
 	}
 
-	values := map[string]string{
-		"namespace": "mm-prod",
-		"pod":       "mm-6f9c-x",
-		"installation_mattermost_com_installation": "mm",
-	}
 	for alert, slug := range packRunbookSlugs {
 		t.Run(alert, func(t *testing.T) {
-			labels := sanKV{"alertname": alert}
-			for l := range packAlertLabels(t, slug) {
-				labels[l] = values[l]
-			}
-			out := executePackText(t, block, sanAlert{Labels: labels})
+			out := executePackText(t, block, packAlertSample(t, alert, slug))
 			want := "**Runbook:** [runbook](https://mm.example/plugins/com.mattermost.alertmanager/public/runbooks/mattermost-operator/" + slug + ".html)"
 			if !strings.Contains(out, want) {
 				t.Errorf("missing %q in:\n%s", want, out)
@@ -200,9 +280,7 @@ func TestPackReceiverLinksEachAlert(t *testing.T) {
 			if !strings.Contains(out, "**Quick diagnostics:**\n\n1.\n```") || strings.Contains(out, "\n2.\n") {
 				t.Errorf("want exactly one inline command:\n%s", out)
 			}
-			if !strings.Contains(out, "mm-prod") {
-				t.Errorf("label placeholders were not filled in:\n%s", out)
-			}
+			assertPackCommandFilled(t, out, slug)
 		})
 	}
 }
@@ -247,7 +325,8 @@ func TestPackCRDReceiverLinksEachAlert(t *testing.T) {
 	}
 	text := doc[0].SlackConfigs[0].Text
 	for alert, slug := range packRunbookSlugs {
-		got := executePackTemplate(t, text, sanAlert{Labels: sanKV{"alertname": alert}})
+		got := executePackTemplate(t, text, packAlertSample(t, alert, slug))
+		assertPackCommandFilled(t, got, slug)
 		if !strings.Contains(got, "/runbooks/mattermost-operator/"+slug+".html)") {
 			t.Errorf("CRD receiver has no link to %s for %s:\n%s", slug, alert, got)
 		}
@@ -267,7 +346,9 @@ func TestPackReceiverIgnoresUnsafeRunbookURL(t *testing.T) {
 		if !strings.Contains(out, "[runbook](https://mm.example/plugins/com.mattermost.alertmanager/public/runbooks/mattermost-operator/mattermost-server-down.html)") {
 			t.Errorf("runbook_url %q should fall back to the pack page:\n%s", bad, out)
 		}
-		if strings.Count(out, "](") != 1 || strings.Contains(out, "evil") || strings.Contains(out, "javascript") {
+		leaked := strings.Contains(out, "evil") || strings.Contains(out, "javascript") ||
+			strings.Contains(out, "INJECT") || strings.Contains(out, "admin_console")
+		if strings.Count(out, "](") != 1 || leaked {
 			t.Errorf("runbook_url %q leaked into the post:\n%s", bad, out)
 		}
 	}
