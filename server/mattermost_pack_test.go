@@ -415,16 +415,13 @@ func TestPackAlertmanagerConfig(t *testing.T) {
 }
 
 // A pack alert has no runbook label, and the pack receiver must still render the
-// shared severity colors and the description body.
+// shared severity colors and the description body, plus per-alert diagnostics.
 func TestPackReceiverRendersSharedBody(t *testing.T) {
 	out := renderCRDReceiver(packCRDSpecs()[1])
-	for _, want := range []string{`eq .CommonLabels.severity "critical"`, "danger", "good", "sendResolved: true", "**Description:**"} {
+	for _, want := range []string{`eq .CommonLabels.severity "critical"`, "danger", "good", "sendResolved: true", "**Description:**", "Quick diagnostics"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("pack receiver missing %q", want)
 		}
-	}
-	if strings.Contains(out, "Quick diagnostics") {
-		t.Error("a pack receiver has no runbook diagnostics")
 	}
 }
 

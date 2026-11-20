@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Features
+
+* Runbooks for the 16 Mattermost pack alerts (the operator's 14 plus the two Postgres pod alerts), under `runbooks/mattermost-operator/`. The `mattermost-server` receiver now links each post to its alert's runbook and shows the runbook's first diagnostic command. An alert's own `runbook_url` annotation still wins. Existing `mattermost-server` receivers keep the old template until you run `format export` and apply the receiver again.
+* Quick diagnostics can use the `<installation_mattermost_com_installation>` placeholder.
+
+### Documentation
+
+* The alert catalog lists all 16 pack alerts with their runbooks. `MattermostServerDown` fires when one pod's metrics endpoint is unscrapable, not when every pod is down. `MattermostHighHTTPErrorRate` counts 4xx responses too.
+
 ## [1.5.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.4.17...v1.5.0) (2026-11-03)
 
 > **⚠️ BREAKING — command syntax.** Every `--flag` is gone. Switches are now bare words

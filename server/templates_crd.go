@@ -141,13 +141,7 @@ func renderCRDReceiver(spec crdReceiverSpec) string {
 	body = indentBlock(body, crdBodyIndent)
 	// Custom receivers carry no runbook content (Custom is authoritative), so skip
 	// the diagnostics lookup — see the matching guard in renderReceiverYAMLForKind.
-	diagText := ""
-	if spec.kind.hasRunbook() {
-		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(spec.slug))
-		if diagText != "" {
-			diagText = indentForYAMLBlock(diagText, crdQuickDiagIndent)
-		}
-	}
+	diagText := quickDiagnosticsFor(spec.slug, spec.kind, crdQuickDiagIndent)
 	body = strings.NewReplacer(
 		"{{QUICK_DIAGNOSTICS}}", diagText,
 	).Replace(body)

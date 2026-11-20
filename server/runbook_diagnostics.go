@@ -29,6 +29,8 @@ var labelPlaceholderAllowlist = map[string]bool{
 	"node":       true,
 	"pod":        true,
 	"service":    true,
+	// The Mattermost CR name, copied from the pod label by the ServiceMonitor.
+	"installation_mattermost_com_installation": true,
 }
 
 // labelPlaceholderRegex matches `<name>` where name is a lowercase
@@ -64,8 +66,7 @@ var labelPlaceholderRegex = regexp.MustCompile(`<([a-z][a-z_]*)>`)
 func substituteLabelPlaceholders(code string) string {
 	lines := strings.Split(code, "\n")
 	for i, line := range lines {
-		trim := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--") {
+		if isCommentLine(line) {
 			continue
 		}
 		lines[i] = labelPlaceholderRegex.ReplaceAllStringFunc(line, func(match string) string {
@@ -84,6 +85,13 @@ func substituteLabelPlaceholders(code string) string {
 		})
 	}
 	return strings.Join(lines, "\n")
+}
+
+// isCommentLine reports a shell/PromQL (#) or SQL (--) comment line, which
+// keeps its placeholders as literal text.
+func isCommentLine(line string) bool {
+	trim := strings.TrimLeft(line, " \t")
+	return strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--")
 }
 
 // quickDiagnosticLimit caps how many fenced code blocks the plugin

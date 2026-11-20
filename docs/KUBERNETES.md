@@ -343,6 +343,7 @@ From the channel that should receive them:
 - The DM carries two Secret and AlertmanagerConfig pairs and one PrometheusRule named `mattermost-alertmanager-rules-mattermost`. It holds the group's runbook rules and the operator's 13 alerts with the thresholds filled in. Apply all of it, with the `release` label set to your Helm release.
 - The operator alerts get their own Secret and AlertmanagerConfig ending in `-mattermost-server`. Adding `mm-namespace` never renames the objects of the runbook group in the same channel.
 - The extra AlertmanagerConfig has one route on the pack's alert names (`alertname=~"^(MattermostServerDown|...)$"`). Severity picks the color: `critical` red, `warning` yellow, resolved green.
+- Each post links to the runbook for its alert under `/plugins/<id>/public/runbooks/mattermost-operator/` and shows that runbook's first diagnostic command, with the namespace, pod and installation filled in. An alert that sets its own `runbook_url` links there instead. Receivers created before this change have no links: run `format export` and apply the receiver again.
 - `format rules mattermost crd mm-namespace=<ns>` sends the rules alone. `format export` leaves the operator rules out, because the plugin does not keep the namespace or name.
 - Kubernetes only. Five of the 13 alerts (crash loop, CPU and memory pressure, missing limits) need kube-state-metrics. The other eight use `mattermost_*` metrics and `up`.
 - `config remove mattermost force` removes the operator receiver along with the group.
