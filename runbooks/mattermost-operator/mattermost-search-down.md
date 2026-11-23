@@ -9,7 +9,7 @@
 ## What this alert means
 
 ```promql
-mattermost_search_engine_status{namespace="<namespace>", installation_mattermost_com_installation="<installation>"} == 0
+mattermost_search_engine_status{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"} == 0
 ```
 
 The gauge is 1 when the search engine is healthy or not configured, and 0

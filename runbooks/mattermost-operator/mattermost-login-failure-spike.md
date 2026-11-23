@@ -21,7 +21,7 @@ and
 sum by (namespace, installation_mattermost_com_installation) (increase(mattermost_login_logins_fail_total{...}[15m])) > 20
 ```
 
-`{...}` is `namespace="<namespace>", installation_mattermost_com_installation="<installation>"`.
+`{...}` is `namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"`.
 `mattermost_login_logins_total` counts successes only, so the denominator
 adds the two. The ratio and the floor are `loginFailurePercent` and
 `loginMinFailures` under `prometheusRule.thresholds` on the Mattermost CR.
@@ -57,7 +57,7 @@ Successes falling means outage.
 ### 2. Outage: check the identity provider
 
 ```bash
-kubectl logs -n <namespace> -l installation.mattermost.com/installation=<installation> -c mattermost --since=15m \
+kubectl logs -n <namespace> -l installation.mattermost.com/installation=<installation_mattermost_com_installation> -c mattermost --since=15m \
   | grep -iE 'ldap|saml|oauth|openid' | grep -E '"level":"(error|warn)"' | tail -20
 ```
 

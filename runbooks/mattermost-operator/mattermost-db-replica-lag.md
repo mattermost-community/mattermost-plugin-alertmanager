@@ -10,7 +10,7 @@
 
 ```promql
 max by (namespace, installation_mattermost_com_installation) (
-  mattermost_db_replica_lag_time{namespace="<namespace>", installation_mattermost_com_installation="<installation>"}
+  mattermost_db_replica_lag_time{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}
 ) > 5
 ```
 
@@ -75,7 +75,7 @@ console. For in-cluster Postgres, check the replica pod's CPU and disk.
 | Every replica lags during a job | Bulk import, export, or data retention | Wait; schedule bulk jobs off-hours |
 | One replica lags, IOPS maxed | Replica undersized | Scale the replica's instance or storage |
 | Replay paused, long query | Query conflicts with replay | Set `max_standby_streaming_delay`, or end the query |
-| Alert fires with no replica traffic | Wrong lag query in `ReplicaLagSettings` | Fix the query, compare with step 2 |
+| Alert fires with no replica traffic | Wrong lag query in `ReplicaLagSettings` | Fix the query, compare with the second quick diagnostic |
 
 If lag stays high, Mattermost can be pointed at the primary for reads by
 removing the replica from `SqlSettings.DataSourceReplicas` until it

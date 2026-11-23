@@ -12,9 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Runbooks for the 16 Mattermost pack alerts (the operator's 14 plus the two Postgres pod alerts), under `runbooks/mattermost-operator/`. The `mattermost-server` receiver now links each post to its alert's runbook and shows the runbook's first diagnostic command. An alert's own `runbook_url` annotation still wins. Existing `mattermost-server` receivers keep the old template until you run `format export` and apply the receiver again.
 * Quick diagnostics can use the `<installation_mattermost_com_installation>` placeholder.
 
+### Bug Fixes
+
+* `MattermostHighHTTPErrorRate` counts 5xx responses only, matching the Mattermost Operator. Before, every application error counted, so expired sessions (401) and stale clients (404) paged. The request-rate floor (`httpMinRequestsPerSecond`) now counts API requests only, without WebSocket upgrades. Rules applied from an earlier version keep paging on 4xx until you run `format rules mattermost mm-namespace=<ns>` and apply them again.
+* With `mm-namespace`, the group's `MattermostHighErrorRate` is left out. It now watches the same 5xx signal as `MattermostHighHTTPErrorRate`, so keeping both paged twice for one outage.
+
 ### Documentation
 
-* The alert catalog lists all 16 pack alerts with their runbooks. `MattermostServerDown` fires when one pod's metrics endpoint is unscrapable, not when every pod is down. `MattermostHighHTTPErrorRate` counts 5xx responses only, so expired sessions and 404s no longer page.
+* The alert catalog lists all 16 pack alerts with their runbooks. `MattermostServerDown` fires when one pod's metrics endpoint is unscrapable, not when every pod is down.
 
 ## [1.5.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.4.17...v1.5.0) (2026-11-03)
 

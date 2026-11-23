@@ -8,9 +8,9 @@
 ## What this alert means
 
 ```promql
-mattermost_db_master_connections_total{namespace="<namespace>", installation_mattermost_com_installation="<installation>"} == 0
+mattermost_db_master_connections_total{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"} == 0
 and on (namespace, pod)
-up{namespace="<namespace>", installation_mattermost_com_installation="<installation>"} == 1
+up{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"} == 1
 ```
 
 `mattermost_db_master_connections_total` is the number of open connections

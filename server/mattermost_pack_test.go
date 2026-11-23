@@ -237,10 +237,10 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 		t.Fatalf("without mm-namespace want only the group's runbook rules, got %v", baseAlerts)
 	}
 
-	// The pack replaces these two built-in rules; keeping both would alert twice.
+	// The pack replaces these built-in rules; keeping both would alert twice.
 	var keptAlerts []string
 	for _, a := range baseAlerts {
-		if a != "MattermostWebSocketDrop" && a != "MattermostHighLoginFailures" {
+		if a != "MattermostWebSocketDrop" && a != "MattermostHighLoginFailures" && a != "MattermostHighErrorRate" {
 			keptAlerts = append(keptAlerts, a)
 		}
 	}
@@ -785,7 +785,7 @@ func TestFilterKeepsEachCommentWithItsAlert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "MattermostHighLoginFailures") || strings.Contains(out, "MattermostWebSocketDrop") {
+	if strings.Contains(out, "MattermostHighLoginFailures") || strings.Contains(out, "MattermostWebSocketDrop") || strings.Contains(out, "MattermostHighErrorRate") {
 		t.Fatalf("dropped rules left comments behind:\n%s", out)
 	}
 	idx := strings.Index(out, "# MattermostDBSlowQuery")

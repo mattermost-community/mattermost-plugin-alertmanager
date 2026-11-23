@@ -10,11 +10,11 @@
 
 ```promql
 sum by (namespace, installation_mattermost_com_installation) (
-  mattermost_http_websockets_total{namespace="<namespace>", installation_mattermost_com_installation="<installation>"}
+  mattermost_http_websockets_total{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}
 )
 <
 0.5 * sum by (namespace, installation_mattermost_com_installation) (
-  mattermost_http_websockets_total{namespace="<namespace>", installation_mattermost_com_installation="<installation>"} offset 10m
+  mattermost_http_websockets_total{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"} offset 10m
 )
 ```
 
@@ -49,7 +49,7 @@ sum by (pod) (mattermost_http_websockets_total{namespace="<namespace>"})
 ### 1. Rollout?
 
 ```bash
-kubectl rollout status deploy -n <namespace> <installation> --timeout=5s
+kubectl rollout status deploy -n <namespace> <installation_mattermost_com_installation> --timeout=5s
 ```
 
 A rollout in progress explains the drop. Silence the alert during planned

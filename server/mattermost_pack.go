@@ -298,12 +298,13 @@ func percentFraction(percent int) string {
 	return strconv.FormatFloat(float64(percent)/100, 'f', -1, 64)
 }
 
-// supersededByPack lists the group's runbook slugs the pack replaces. Both
-// monitor the same signal as a pack alert, but unscoped and across every install.
+// supersededByPack lists the group's runbook slugs the pack replaces. Each
+// monitors the same signal as a pack alert, but unscoped and across every install.
 // With a target they are dropped, so each signal alerts once.
 var supersededByPack = map[string]bool{
 	"mattermost-websocket-drop":      true, // MattermostWebSocketDrop
 	"mattermost-high-login-failures": true, // MattermostLoginFailureSpike
+	"mattermost-high-error-rate":     true, // MattermostHighHTTPErrorRate
 }
 
 // slugsWithoutPack returns slugs minus the ones the pack covers.
@@ -350,8 +351,7 @@ func (p *Plugin) mattermostRulesFile(rc rulesContext, t *mattermostTarget) (*rul
 	spec.tail = fmt.Sprintf(
 		"Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. "+
 			"The `mattermost.*` groups are the rules the Mattermost Operator generates: once your operator creates its own PrometheusRule, remove them from this file. "+
-			"The group's WebSocket drop and login failure rules are left out, because the operator alerts cover them. "+
-			"MattermostHighErrorRate overlaps the operator's HTTP error alert. "+
+			"The group's WebSocket drop, login failure and 5xx error rate rules are left out, because the operator alerts cover them. "+
 			"If the Mattermost Operator ships these rules itself, remove the `mattermost.*` groups and do not add them again.",
 		prometheusRuleObject,
 	)

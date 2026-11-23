@@ -10,11 +10,11 @@
 
 ```promql
 count by (namespace, pod) (
-  rate(container_cpu_usage_seconds_total{namespace="<namespace>", pod=~"<installation>-.*", container="mattermost"}[5m])
+  rate(container_cpu_usage_seconds_total{namespace="<namespace>", pod=~"<installation_mattermost_com_installation>-.*", container="mattermost"}[5m])
 )
 unless
 count by (namespace, pod) (
-  kube_pod_container_resource_limits{namespace="<namespace>", pod=~"<installation>-.*", container="mattermost", resource="cpu"} > 0
+  kube_pod_container_resource_limits{namespace="<namespace>", pod=~"<installation_mattermost_com_installation>-.*", container="mattermost", resource="cpu"} > 0
 )
 ```
 
@@ -35,7 +35,7 @@ kubectl get pod -n <namespace> <pod> -o jsonpath='{.spec.containers[?(@.name=="m
 ### 1. Find where the resources come from
 
 ```bash
-kubectl get mm -n <namespace> <installation> -o jsonpath='{.spec.scheduling.resources}{"\n"}'
+kubectl get mm -n <namespace> <installation_mattermost_com_installation> -o jsonpath='{.spec.scheduling.resources}{"\n"}'
 kubectl get limitrange -n <namespace>
 ```
 

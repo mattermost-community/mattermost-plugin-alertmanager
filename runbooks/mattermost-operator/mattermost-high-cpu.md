@@ -10,11 +10,11 @@
 
 ```promql
 sum by (namespace, pod) (
-  rate(container_cpu_usage_seconds_total{namespace="<namespace>", pod=~"<installation>-.*", container="mattermost"}[5m])
+  rate(container_cpu_usage_seconds_total{namespace="<namespace>", pod=~"<installation_mattermost_com_installation>-.*", container="mattermost"}[5m])
 )
 /
 sum by (namespace, pod) (
-  kube_pod_container_resource_limits{namespace="<namespace>", pod=~"<installation>-.*", container="mattermost", resource="cpu"} > 0
+  kube_pod_container_resource_limits{namespace="<namespace>", pod=~"<installation_mattermost_com_installation>-.*", container="mattermost", resource="cpu"} > 0
 ) > 0.85
 ```
 
@@ -67,7 +67,7 @@ time. See [CPU Throttling High](../cpu-throttling-high.md).
 ### 3. Did load change?
 
 ```promql
-sum(rate(mattermost_http_requests_total{namespace="<namespace>"}[5m]))
+sum(rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m]))
 ```
 
 A step up in requests with no change in users points at an integration or

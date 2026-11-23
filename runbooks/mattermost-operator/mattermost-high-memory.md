@@ -10,11 +10,11 @@
 
 ```promql
 sum by (namespace, pod) (
-  container_memory_working_set_bytes{namespace="<namespace>", pod=~"<installation>-.*", container="mattermost"}
+  container_memory_working_set_bytes{namespace="<namespace>", pod=~"<installation_mattermost_com_installation>-.*", container="mattermost"}
 )
 /
 sum by (namespace, pod) (
-  kube_pod_container_resource_limits{namespace="<namespace>", pod=~"<installation>-.*", container="mattermost", resource="memory"} > 0
+  kube_pod_container_resource_limits{namespace="<namespace>", pod=~"<installation_mattermost_com_installation>-.*", container="mattermost", resource="memory"} > 0
 ) > 0.9
 ```
 

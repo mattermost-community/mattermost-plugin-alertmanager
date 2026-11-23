@@ -10,12 +10,12 @@
 
 ```promql
 (
-  sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation>", status_code=~"5.."}[5m]))
+  sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>", status_code=~"5.."}[5m]))
   /
-  sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation>"}[5m]))
+  sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m]))
 ) > 0.05
 and
-sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation>"}[5m])) > 1
+sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m])) > 1
 ```
 
 The thresholds are `prometheusRule.thresholds.httpErrorPercent` and
@@ -24,7 +24,10 @@ The thresholds are `prometheusRule.thresholds.httpErrorPercent` and
 Only 5xx counts. Expired sessions (401), permission denials (403) and
 clients polling deleted resources (404) do not fire this alert, so a page
 means the server failed a request it should have served. WebSocket
-upgrades are not in the denominator. This is the per-installation form of
+upgrades are not in the denominator. Mattermost records the metric itself,
+so errors an ingress or load balancer returns without reaching a pod are
+not counted here; see [Ingress High 5xx](../ingress-high-5xx.md) for those.
+This is the per-installation form of
 [Mattermost High Error Rate](../mattermost-high-error-rate.md), with a
 request-rate floor so a quiet installation cannot page on one failure.
 
@@ -33,9 +36,10 @@ request-rate floor so a quiet installation cannot page on one failure.
 ```promql
 # WHERE: Prometheus or Grafana Explore.
 # WHAT: 5xx per second by status code for this installation.
-# READ: 500 = an application error; read the logs. 502 or 504 = a
-#   proxy in front of Mattermost timed out or lost the pod. 503 = the
-#   server is shedding load or a dependency is down.
+# READ: 500 = an application error; read the logs. 502 or 504 =
+#   Mattermost could not reach something it calls (a plugin, an OAuth
+#   or SAML provider, a remote integration). 503 = the server is
+#   shedding load or a dependency is down.
 sum by (status_code) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>", status_code=~"5.."}[5m]))
 ```
 
@@ -73,11 +77,13 @@ the stack points at that plugin.
 
 ```promql
 sum by (pod) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>", status_code=~"5.."}[5m]))
+/
+sum by (pod) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m]))
 ```
 
-One pod carrying most of the 5xx while the others are clean is a pod
-problem, not a cluster-wide one. Check its restarts and its node before
-touching shared dependencies.
+This is each pod's 5xx share, so a busy pod is not blamed for its traffic.
+One pod far above the others is a pod problem, not a cluster-wide one.
+Check its restarts and its node before touching shared dependencies.
 
 ## Common causes & fixes
 
@@ -85,8 +91,8 @@ touching shared dependencies.
 |---|---|---|
 | 5xx with `pq:` errors | Database | See [DB Writer Pool Empty](mattermost-db-writer-pool-empty.md) |
 | 5xx on file endpoints | File store credentials or network | Check `FileSettings` and the bucket |
-| 5xx from one pod only | Pod on a bad node or stuck after an OOM | Check `kubectl describe pod`; delete the pod so the ReplicaSet replaces it |
-| 502/504 spike during a rollout | Ingress routing to terminating pods | Wait for the rollout; if it persists, check readiness probes and ingress timeouts |
+| 5xx from one pod only | Pod on a bad node or stuck after an OOM | Save `kubectl logs` and `kubectl describe pod` output first. If the other pods are Ready, delete the pod and the Deployment replaces it. With one replica, that is a full outage until the new pod is Ready |
+| 502/504 on login or plugin endpoints | An OAuth/SAML provider, plugin or remote integration is unreachable | Check egress and the provider's status; the handler in the second quick diagnostic names the feature |
 | 5xx after an upgrade | Regression | Contact support. Don't just lower `spec.version`: once the new version migrated the schema, a downgrade needs the database backup taken before the upgrade |
 
 ## Escalation
@@ -103,3 +109,4 @@ touching shared dependencies.
 - [Mattermost High Error Rate](../mattermost-high-error-rate.md)
 - [DB Writer Pool Empty](mattermost-db-writer-pool-empty.md)
 - [High HTTP Error Rate](../high-http-error-rate.md)
+- [Ingress High 5xx](../ingress-high-5xx.md)

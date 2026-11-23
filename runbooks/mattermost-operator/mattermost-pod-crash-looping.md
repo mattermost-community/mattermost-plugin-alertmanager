@@ -10,7 +10,7 @@
 
 ```promql
 sum by (namespace, pod) (
-  rate(kube_pod_container_status_restarts_total{namespace="<namespace>", pod=~"<installation>-.*"}[5m])
+  rate(kube_pod_container_status_restarts_total{namespace="<namespace>", pod=~"<installation_mattermost_com_installation>-.*"}[5m])
 ) * 300 > 3
 ```
 
@@ -64,8 +64,8 @@ kubectl logs -n <namespace> <pod> -c mattermost --previous | grep -iE 'database|
 ### 3. Check for a recent change
 
 ```bash
-kubectl rollout history deploy -n <namespace> <installation>
-kubectl get mm -n <namespace> <installation> -o jsonpath='{.spec.image}:{.spec.version}{"\n"}'
+kubectl rollout history deploy -n <namespace> <installation_mattermost_com_installation>
+kubectl get mm -n <namespace> <installation_mattermost_com_installation> -o jsonpath='{.spec.image}:{.spec.version}{"\n"}'
 ```
 
 A crash loop that starts right after a version change points at the

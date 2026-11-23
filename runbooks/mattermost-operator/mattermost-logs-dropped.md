@@ -14,7 +14,7 @@ or
 sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_logging_logger_blocked_total{...}[5m])) > 0
 ```
 
-`{...}` is `namespace="<namespace>", installation_mattermost_com_installation="<installation>"`.
+`{...}` is `namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"`.
 Each log target (console, file, syslog, TCP, and any target in
 `LogSettings.AdvancedLoggingJSON`) has a buffer. "Dropped" means a record
 was thrown away because the buffer was full. "Blocked" means a caller
@@ -28,7 +28,7 @@ waited for room.
 # READ: one target (for example a syslog or TCP target) = that destination
 #   is slow or unreachable. Every target = the pod is overloaded, or
 #   logging is at debug level.
-sum by (pod, target) (rate({__name__=~"mattermost_logging_logger_(dropped|blocked)_total", namespace="<namespace>"}[5m]))
+sum by (pod, target) (rate({__name__=~"mattermost_logging_logger_(dropped|blocked)_total", namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m]))
 ```
 
 ```bash

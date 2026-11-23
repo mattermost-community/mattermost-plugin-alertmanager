@@ -12,7 +12,7 @@ One scrape target of this installation has answered `up == 0` for five
 minutes:
 
 ```promql
-up{namespace="<namespace>", installation_mattermost_com_installation="<installation>"} == 0
+up{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"} == 0
 ```
 
 The target is the pod's metrics port (8067, `/metrics`). The alert carries
@@ -61,7 +61,7 @@ footing as a crash. Work it as [Pod Crash Looping](mattermost-pod-crash-looping.
 ### 2. Are metrics enabled and licensed?
 
 ```bash
-kubectl get deploy -n <namespace> <installation> -o yaml | grep -A1 -E 'MM_METRICSSETTINGS_(ENABLE|LISTENADDRESS)'
+kubectl get deploy -n <namespace> <installation_mattermost_com_installation> -o yaml | grep -A1 -E 'MM_METRICSSETTINGS_(ENABLE|LISTENADDRESS)'
 kubectl logs -n <namespace> <pod> -c mattermost | grep -iE 'metrics|license' | tail -20
 ```
 
@@ -76,12 +76,12 @@ Open Prometheus → Status → Targets and find the pod. The error column says
 whether the scrape timed out, was refused, or got a 404.
 
 ```bash
-kubectl get servicemonitor -n <namespace> <installation> -o yaml | grep -A6 endpoints
+kubectl get servicemonitor -n <namespace> <installation_mattermost_com_installation> -o yaml | grep -A6 endpoints
 kubectl get networkpolicy -n <namespace>
 ```
 
 The ServiceMonitor must point at the `metrics` port of the
-`<installation>-metrics` Service. A NetworkPolicy that only admits ingress
+`<installation_mattermost_com_installation>-metrics` Service. A NetworkPolicy that only admits ingress
 traffic on 8065 blocks the scrape.
 
 ## Common causes & fixes

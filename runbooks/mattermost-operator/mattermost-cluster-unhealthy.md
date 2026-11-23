@@ -10,7 +10,7 @@
 ## What this alert means
 
 ```promql
-mattermost_cluster_cluster_health_score{namespace="<namespace>", installation_mattermost_com_installation="<installation>"} > 0
+mattermost_cluster_cluster_health_score{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"} > 0
 ```
 
 The score comes from the memberlist library Mattermost uses for gossip. 0
@@ -58,7 +58,7 @@ A throttled pod misses gossip deadlines even with a healthy network. Check
 ### 3. Are pods flapping?
 
 ```bash
-kubectl get pods -n <namespace> -l installation.mattermost.com/installation=<installation> -o wide
+kubectl get pods -n <namespace> -l installation.mattermost.com/installation=<installation_mattermost_com_installation> -o wide
 ```
 
 Pods that restart rejoin the cluster each time, which raises the score on
