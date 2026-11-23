@@ -101,6 +101,14 @@ jobs:
               /w/mattermost-group-rules-default.yaml \
               /w/mattermost-group-rules-all.yaml
 
+      - name: promtool test mattermost operator rules
+        run: |
+          install -m 0644 samples/mattermost-operator-rules.test.yaml "${{ runner.temp }}/pack-rules/"
+          docker run --rm --entrypoint promtool \
+            -v "${{ runner.temp }}/pack-rules":/w -w /w \
+            prom/prometheus:v3.5.0 \
+            test rules /w/mattermost-operator-rules.test.yaml
+
       - name: promtool test rules
         run: |
           docker run --rm --entrypoint promtool \

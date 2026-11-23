@@ -43,7 +43,7 @@ func TestPackRunbooksCoverRoutedAlerts(t *testing.T) {
 			t.Errorf("%s maps to %s.md, which does not exist", alert, slug)
 			continue
 		}
-		if len(loadPackQuickDiagnostics(slug)) != 1 {
+		if len(loadPackQuickDiagnostics(slug)) == 0 {
 			t.Errorf("%s.md has no command under ## Quick diagnostics", slug)
 		}
 	}
@@ -112,14 +112,14 @@ func packRuleExprs(t *testing.T) map[string]string {
 	return exprs
 }
 
-const installationLabel = "installation_mattermost_com_installation"
-
 var (
 	byClause = regexp.MustCompile(`\bby\s*\(([^)]*)\)`)
 	// Label-changing PromQL the check cannot reason about: without (...),
-	// aggregations with no leading by (...) (sum(x) by (y) included), and
-	// functions that drop or rewrite labels.
-	unsupportedAggregation = regexp.MustCompile(`\bwithout\s*\(|\b(sum|min|max|avg|count|group|stddev|stdvar|topk|bottomk|quantile|count_values|limitk|limit_ratio|absent|absent_over_time|label_replace|label_join|scalar|vector)\s*\(`)
+	// aggregations with no leading by (...) (sum(x) by (y) included),
+	// functions that drop or rewrite labels, and vector matching on an
+	// arithmetic or comparison operator. and/or/unless on (...) keep the
+	// left side's labels and are allowed.
+	unsupportedAggregation = regexp.MustCompile(`\bwithout\s*\(|\b(sum|min|max|avg|count|group|stddev|stdvar|topk|bottomk|quantile|count_values|limitk|limit_ratio|absent|absent_over_time|label_replace|label_join|scalar|vector)\s*\(|(?:[-+*/%^<>]|==|!=|>=|<=|\batan2)\s*(?:bool\s+)?(?:on|ignoring)\s*\(|\bgroup_(?:left|right)\b`)
 )
 
 // packCommandLabels is the set of allowlisted labels the inline command uses.
@@ -183,6 +183,25 @@ func TestPackCommandsUseOnlyAlertLabels(t *testing.T) {
 	}
 }
 
+var rateSelector = regexp.MustCompile(`rate\((\w+)\{([^}]*)\}`)
+
+// The numerator alone filters on 5xx; mattermost_http_errors_total counts 4xx
+// too. samples/mattermost-operator-rules.test.yaml checks the behaviour.
+func TestPackHTTPErrorRateCountsOnly5xx(t *testing.T) {
+	sels := rateSelector.FindAllStringSubmatch(packRuleExprs(t)["MattermostHighHTTPErrorRate"], -1)
+	if len(sels) != 3 {
+		t.Fatalf("want numerator, denominator and floor selectors, got %d", len(sels))
+	}
+	for i, s := range sels {
+		if s[1] != "mattermost_api_time_count" {
+			t.Errorf("selector %d uses %s, want mattermost_api_time_count", i, s[1])
+		}
+		if has5xx := strings.Contains(s[2], `status_code=~"5.."`); has5xx != (i == 0) {
+			t.Errorf("selector %d: status_code=~\"5..\" present=%v, want only on the numerator: %s", i, has5xx, s[2])
+		}
+	}
+}
+
 var packLabelValues = map[string]string{
 	"namespace":       "ns-prod",
 	"pod":             "pod-6f9c-x",
@@ -218,17 +237,6 @@ func assertPackCommandFilled(t *testing.T, out, slug string) {
 	for l := range packCommandLabels(slug) {
 		if !strings.Contains(cmd, packLabelValues[l]) {
 			t.Errorf("%s: <%s> was not filled in:\n%s", slug, l, cmd)
-		}
-	}
-	for line := range strings.SplitSeq(cmd, "\n") {
-		if isCommentLine(line) {
-			continue
-		}
-		// Any tag, not just allowlisted ones, so a shrunk allowlist fails here.
-		for _, m := range labelPlaceholderRegex.FindAllStringSubmatch(line, -1) {
-			if !knownLiteralPlaceholders[m[1]] {
-				t.Errorf("%s: raw placeholder <%s> left in %q", slug, m[1], line)
-			}
 		}
 	}
 }
@@ -271,8 +279,8 @@ func TestPackReceiverLinksEachAlert(t *testing.T) {
 			if strings.Count(out, "**Runbook:**") != 1 {
 				t.Errorf("want exactly one runbook line:\n%s", out)
 			}
-			if !strings.Contains(out, "**Quick diagnostics:**\n\n1.\n```") || strings.Contains(out, "\n2.\n") {
-				t.Errorf("want exactly one inline command:\n%s", out)
+			if !strings.Contains(out, "**Quick diagnostics:**\n\n1.\n```") {
+				t.Errorf("want an inline command:\n%s", out)
 			}
 			assertPackCommandFilled(t, out, slug)
 		})

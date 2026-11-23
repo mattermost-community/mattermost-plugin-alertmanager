@@ -1,0 +1,55 @@
+# Unit tests for mattermost-operator-rules.yaml as rendered for the test target
+# (namespace mattermost-crimson, installation mattermost, default thresholds).
+# CI renders the rules with TestWritePackRulesForPromtool, copies this file next
+# to them and runs `promtool test rules` (see .github/workflows/test.yml).
+rule_files:
+  - mattermost-operator-rules-default.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # Expired sessions and stale clients must not page: 1/3 of requests are 4xx.
+  - name: MattermostHighHTTPErrorRate ignores 4xx
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+600x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="401"}'
+        values: "0+180x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="404"}'
+        values: "0+120x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts: []
+
+  # 2 of 12 requests/s are 5xx (about 17%).
+  - name: MattermostHighHTTPErrorRate fires on 5xx
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+600x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="500"}'
+        values: "0+120x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: mattermost-crimson
+              installation_mattermost_com_installation: mattermost
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson/mattermost HTTP 5xx rate > 5%"
+              description: "More than 5% of Mattermost API requests have returned 5xx for 5 minutes, above 1 requests/s."
+
+  # Every request fails, but at 0.5 requests/s the floor keeps it quiet.
+  - name: MattermostHighHTTPErrorRate stays quiet below the request floor
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="500"}'
+        values: "0+30x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts: []

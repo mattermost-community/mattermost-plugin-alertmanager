@@ -17,6 +17,10 @@ import (
 // don't proxy `password`, `token`, or anything else that smells like
 // a secret — keeping the surface explicit prevents the "let's just
 // allow .Labels.* and trust the rule author" mistake.
+// installationLabel is the Mattermost CR name, copied from the pod label
+// installation.mattermost.com/installation by the ServiceMonitor.
+const installationLabel = "installation_mattermost_com_installation"
+
 var labelPlaceholderAllowlist = map[string]bool{
 	"alertname":  true,
 	"app":        true,
@@ -29,8 +33,8 @@ var labelPlaceholderAllowlist = map[string]bool{
 	"node":       true,
 	"pod":        true,
 	"service":    true,
-	// The Mattermost CR name, copied from the pod label by the ServiceMonitor.
-	"installation_mattermost_com_installation": true,
+
+	installationLabel: true,
 }
 
 // labelPlaceholderRegex matches `<name>` where name is a lowercase
