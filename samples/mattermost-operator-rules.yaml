@@ -128,8 +128,11 @@ groups:
     rules:
       - alert: MattermostDBReplicaLag
         # Read-replica lag over 5s for 5m (mattermost_db_replica_lag_time is seconds).
-        # No series when SqlSettings has no replica lag query, so a writer-only
-        # database (RDS, Azure Postgres, or a single in-cluster primary) does not fire.
+        # OFF unless mm-db-replicas=true (the operator: thresholds.dbReplicaLagSeconds):
+        # the series only exists when SqlSettings.ReplicaLagSettings has a lag query
+        # per replica, a JSON setting neither can set or read. A writer-only
+        # database (RDS, Azure Postgres, or a single in-cluster primary) never
+        # emits it.
         expr: max by (namespace, installation_mattermost_com_installation) (mattermost_db_replica_lag_time{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}) > __DB_REPLICA_LAG_SECONDS__
         for: 5m
         labels:

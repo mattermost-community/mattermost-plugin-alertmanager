@@ -118,6 +118,8 @@ Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come f
 
 Each alert has its own runbook. The `mattermost-server` receiver links the post to it and shows its first diagnostic command, unless the alert sets its own `runbook_url`.
 
+"Mattermost metrics" needs an Enterprise build with a license that includes metrics; Team Edition exports no `mattermost_*` series, so those alerts never fire there. See [Alert Requirements](ALERT_REQUIREMENTS.md).
+
 | Alert | Severity | Fires when | Needs | Runbook |
 |---|---|---|---|---|
 | MattermostServerDown | critical | One pod's metrics endpoint unscrapable for 5m | Mattermost metrics | [Server Down](../runbooks/mattermost-operator/mattermost-server-down.md) |

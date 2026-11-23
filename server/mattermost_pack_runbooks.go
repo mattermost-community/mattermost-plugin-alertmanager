@@ -62,13 +62,10 @@ func packRunbookPageURL(runbookDefaultURL, page string) string {
 // http(s) runbook_url wins; an alertname outside the pack gets no link.
 func packRunbookSection(runbookDefaultURL string) string {
 	var b strings.Builder
-	b.WriteString(`{{- if ` + runbookURLGate + ` -}}
-        **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}`)
+	b.WriteString(`{{- if ` + runbookURLGate + ` -}}` + runbookLine("{{SAN_RUNBOOK_URL}}"))
 	for _, name := range sortedPackAlertnames() {
 		url := packRunbookPageURL(runbookDefaultURL, packRunbookSlugs[name]+".html")
-		fmt.Fprintf(&b, `
-        {{- else if eq .Labels.alertname %q -}}
-        **Runbook:** [runbook](%s){{ "\n" }}`, name, url)
+		fmt.Fprintf(&b, "\n        {{- else if eq .Labels.alertname %q -}}%s", name, runbookLine(url))
 	}
 	b.WriteString(`
         {{- end -}}`)

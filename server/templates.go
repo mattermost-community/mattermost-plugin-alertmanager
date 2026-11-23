@@ -227,15 +227,18 @@ const runbookURLGate = `match "^https?://[^ \x60\r\n\t()<>]+$" .Annotations.runb
 // link to a nonexistent runbook page is rendered — a Runbook line appears only
 // if the alert itself sets a runbook_url annotation. Continuation lines carry
 // the 8-space YAML block indent to match the surrounding template.
-const runbookSectionStandard = `{{- if ` + runbookURLGate + ` -}}
-        **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
-        {{- else -}}
-        **Runbook:** [runbook]({{RUNBOOK_DEFAULT}}){{ "\n" }}
+var runbookSectionStandard = `{{- if ` + runbookURLGate + ` -}}` + runbookLine("{{SAN_RUNBOOK_URL}}") + `
+        {{- else -}}` + runbookLine("{{RUNBOOK_DEFAULT}}") + `
         {{- end -}}`
 
-const runbookSectionCustom = `{{- if ` + runbookURLGate + ` -}}
-        **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
+var runbookSectionCustom = `{{- if ` + runbookURLGate + ` -}}` + runbookLine("{{SAN_RUNBOOK_URL}}") + `
         {{- end -}}`
+
+// runbookLine is one Runbook line of a receiver body, on its own line at the
+// YAML block indent.
+func runbookLine(url string) string {
+	return "\n        **Runbook:** [runbook](" + url + `){{ "\n" }}`
+}
 
 // runbookSection resolves {{RUNBOOK_SECTION}} for a receiver. Custom receivers
 // get the annotation-only variant (no plugin fallback link); standard receivers

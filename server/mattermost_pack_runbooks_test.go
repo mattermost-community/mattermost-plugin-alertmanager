@@ -2,6 +2,7 @@ package main
 
 import (
 	"io/fs"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -50,6 +51,24 @@ func TestPackRunbooksCoverRoutedAlerts(t *testing.T) {
 	for f := range files {
 		if !slugs[f] {
 			t.Errorf("runbooks/%s/%s.md belongs to no pack alert", packRunbookDir, f)
+		}
+	}
+}
+
+// render-docs is its own module, so it repeats packRunbookDir. If the two
+// drift, every pack runbook link in an alert post 404s.
+func TestRenderDocsUsesPackRunbookDir(t *testing.T) {
+	src, err := os.ReadFile("../build/render-docs/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"../../runbooks/` + packRunbookDir + `"`,
+		`"../../public/runbooks/` + packRunbookDir + `"`,
+		`](` + packRunbookDir + `/home.html)`,
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("build/render-docs/main.go does not contain %s", want)
 		}
 	}
 }
