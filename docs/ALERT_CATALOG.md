@@ -128,7 +128,7 @@ Each alert has its own runbook. The `mattermost-server` receiver links the post 
 | MattermostMemoryLimitMissing | warning | Container runs without a memory limit | kube-state-metrics | [Memory Limit Missing](../runbooks/mattermost-operator/mattermost-memory-limit-missing.md) |
 | MattermostDBWriterPoolEmpty | critical | Process up, no writer connections for 10m | Mattermost metrics | [DB Writer Pool Empty](../runbooks/mattermost-operator/mattermost-db-writer-pool-empty.md) |
 | MattermostDBReplicaLag | warning | Replica lag over threshold (opt-in) | `ReplicaLagSettings` | [DB Replica Lag](../runbooks/mattermost-operator/mattermost-db-replica-lag.md) |
-| MattermostHighHTTPErrorRate | warning | Error responses above 5%, 4xx included | Mattermost metrics | [High HTTP Error Rate](../runbooks/mattermost-operator/mattermost-high-http-error-rate.md) |
+| MattermostHighHTTPErrorRate | warning | 5xx responses above 5% of API requests | Mattermost metrics | [High HTTP Error Rate](../runbooks/mattermost-operator/mattermost-high-http-error-rate.md) |
 | MattermostLoginFailureSpike | warning | Most logins failing, at least 20 in 15m | Mattermost metrics | [Login Failure Spike](../runbooks/mattermost-operator/mattermost-login-failure-spike.md) |
 | MattermostWebSocketDrop | warning | Connections below half of 10m ago | Mattermost metrics | [WebSocket Drop](../runbooks/mattermost-operator/mattermost-websocket-drop.md) |
 | MattermostSearchDown | warning | Elasticsearch enabled and unhealthy | Mattermost metrics | [Search Down](../runbooks/mattermost-operator/mattermost-search-down.md) |

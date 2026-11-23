@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-* The alert catalog lists all 16 pack alerts with their runbooks. `MattermostServerDown` fires when one pod's metrics endpoint is unscrapable, not when every pod is down. `MattermostHighHTTPErrorRate` counts 4xx responses too.
+* The alert catalog lists all 16 pack alerts with their runbooks. `MattermostServerDown` fires when one pod's metrics endpoint is unscrapable, not when every pod is down. `MattermostHighHTTPErrorRate` counts 5xx responses only, so expired sessions and 404s no longer page.
 
 ## [1.5.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.4.17...v1.5.0) (2026-11-03)
 
