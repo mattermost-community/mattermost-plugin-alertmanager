@@ -116,10 +116,10 @@ const installationLabel = "installation_mattermost_com_installation"
 
 var (
 	byClause = regexp.MustCompile(`\bby\s*\(([^)]*)\)`)
-	// Aggregations the label check cannot reason about: grouping with
-	// without (...), or no grouping at all, which drops every label.
-	unsupportedAggregation = regexp.MustCompile(`\bwithout\s*\(|\b(sum|min|max|avg|count|group|stddev|stdvar|topk|bottomk|quantile)\s*\(`)
-	selectorMetric         = regexp.MustCompile(`\b([a-zA-Z_:][a-zA-Z0-9_:]*)\{`)
+	// Label-changing PromQL the check cannot reason about: without (...),
+	// aggregations with no leading by (...) (sum(x) by (y) included), and
+	// functions that drop or rewrite labels.
+	unsupportedAggregation = regexp.MustCompile(`\bwithout\s*\(|\b(sum|min|max|avg|count|group|stddev|stdvar|topk|bottomk|quantile|count_values|limitk|limit_ratio|absent|absent_over_time|label_replace|label_join|scalar|vector)\s*\(`)
 )
 
 // packCommandLabels is the set of allowlisted labels the inline command uses.
@@ -138,19 +138,6 @@ func packCommandLabels(slug string) map[string]bool {
 		}
 	}
 	return used
-}
-
-// onlyClusterMetrics reports an expression built purely from kube-state-metrics
-// and cAdvisor series, which never carry the installation label: only the
-// Mattermost ServiceMonitor copies it from the pod.
-func onlyClusterMetrics(expr string) bool {
-	metrics := selectorMetric.FindAllStringSubmatch(expr, -1)
-	for _, m := range metrics {
-		if !strings.HasPrefix(m[1], "kube_") && !strings.HasPrefix(m[1], "container_") {
-			return false
-		}
-	}
-	return len(metrics) > 0
 }
 
 // TestPackCommandsUseOnlyAlertLabels: an inline command may only use labels
@@ -172,8 +159,10 @@ func TestPackCommandsUseOnlyAlertLabels(t *testing.T) {
 		if m := unsupportedAggregation.FindString(expr); m != "" {
 			t.Errorf("%s uses %q; extend this test before relying on its labels", alert, m)
 		}
-		if labels[installationLabel] && onlyClusterMetrics(expr) {
-			t.Errorf("%s.md lists %s, but %s only reads kube-state-metrics/cAdvisor series", slug, installationLabel, alert)
+		// Only series scraped by the Mattermost ServiceMonitor carry the
+		// installation label, and every such rule selects on it.
+		if labels[installationLabel] && !strings.Contains(expr, installationLabel) {
+			t.Errorf("%s.md lists %s, but the %s rule never selects it", slug, installationLabel, alert)
 		}
 		for _, m := range byClause.FindAllStringSubmatch(expr, -1) {
 			kept := map[string]bool{}
@@ -219,9 +208,13 @@ func packAlertSample(t *testing.T, alert, slug string) sanAlert {
 // post, since the Details section prints label values too.
 func assertPackCommandFilled(t *testing.T, out, slug string) {
 	t.Helper()
-	_, cmd, _ := strings.Cut(out, "**Quick diagnostics:**")
-	_, cmd, _ = strings.Cut(cmd, "```")
-	cmd, _, _ = strings.Cut(cmd, "```")
+	_, cmd, ok1 := strings.Cut(out, "**Quick diagnostics:**")
+	_, cmd, ok2 := strings.Cut(cmd, "```")
+	cmd, _, ok3 := strings.Cut(cmd, "```")
+	if !ok1 || !ok2 || !ok3 || strings.TrimSpace(cmd) == "" {
+		t.Errorf("%s: no fenced inline command in:\n%s", slug, out)
+		return
+	}
 	for l := range packCommandLabels(slug) {
 		if !strings.Contains(cmd, packLabelValues[l]) {
 			t.Errorf("%s: <%s> was not filled in:\n%s", slug, l, cmd)
@@ -231,8 +224,9 @@ func assertPackCommandFilled(t *testing.T, out, slug string) {
 		if isCommentLine(line) {
 			continue
 		}
+		// Any tag, not just allowlisted ones, so a shrunk allowlist fails here.
 		for _, m := range labelPlaceholderRegex.FindAllStringSubmatch(line, -1) {
-			if labelPlaceholderAllowlist[m[1]] {
+			if !knownLiteralPlaceholders[m[1]] {
 				t.Errorf("%s: raw placeholder <%s> left in %q", slug, m[1], line)
 			}
 		}

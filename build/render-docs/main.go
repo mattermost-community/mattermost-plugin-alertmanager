@@ -350,9 +350,9 @@ They reach Mattermost through the ` + "`mattermost-server`" + ` receiver, which 
 by alert name. Each post links to the page for its alert and shows that
 page's first diagnostic command.
 
-Every command targets one install by namespace and the
-` + "`installation.mattermost.com/installation`" + ` pod label, the same way the
-alert rules do.
+Commands target one install the same way its alert rule does: by namespace and
+the ` + "`installation.mattermost.com/installation`" + ` pod label, or by
+namespace and pod for alerts built on kube-state-metrics and cAdvisor series.
 
 **Availability** — Server Down, Pod Crash Looping.
 

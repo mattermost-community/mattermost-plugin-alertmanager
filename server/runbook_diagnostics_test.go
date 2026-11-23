@@ -130,6 +130,7 @@ func TestSubstituteLabelPlaceholders(t *testing.T) {
 		{"no placeholders", "psql -c 'SELECT 1'", "psql -c 'SELECT 1'"},
 		{"shell comments left alone", "# <namespace> is the alert's namespace\nkubectl get pod -n <namespace>", "# <namespace> is the alert's namespace\nkubectl get pod -n " + labelDirective("namespace")},
 		{"SQL comments left alone", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '<instance>';", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '" + labelDirective("instance") + "';"},
+		{"shell flag continuation is a command", "kubectl get pods \\\n  --namespace <namespace>", "kubectl get pods \\\n  --namespace " + labelDirective("namespace")},
 		{"indented comment still skipped", "   # <pod> here\nkubectl logs <pod>", "   # <pod> here\nkubectl logs " + labelDirective("pod")},
 	}
 

@@ -55,8 +55,9 @@ var labelPlaceholderRegex = regexp.MustCompile(`<([a-z][a-z_]*)>`)
 //
 // Comment detection is language-agnostic: lines whose first
 // non-whitespace character is `#` (shell/PromQL convention) or
-// whose first two non-whitespace characters are `--` (SQL
-// convention). Covers every language hint we emit (bash, promql,
+// that start with `-- ` or are a bare `--` (SQL convention). A shell
+// continuation such as `--namespace <namespace> \` is a command, not a
+// comment. Covers every language hint we emit (bash, promql,
 // sql) and anything else likely to land in a runbook.
 //
 // Called at YAML-render time (renderReceiverYAML) so the slack_configs
@@ -90,8 +91,8 @@ func substituteLabelPlaceholders(code string) string {
 // isCommentLine reports a shell/PromQL (#) or SQL (--) comment line, which
 // keeps its placeholders as literal text.
 func isCommentLine(line string) bool {
-	trim := strings.TrimLeft(line, " \t")
-	return strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--")
+	trim := strings.TrimSpace(line)
+	return strings.HasPrefix(trim, "#") || trim == "--" || strings.HasPrefix(trim, "-- ")
 }
 
 // quickDiagnosticLimit caps how many fenced code blocks the plugin
