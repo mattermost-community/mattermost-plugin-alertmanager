@@ -291,7 +291,8 @@ func TestPackReceiverLinksEachAlert(t *testing.T) {
 	for alert, slug := range packRunbookSlugs {
 		t.Run(alert, func(t *testing.T) {
 			out := executePackText(t, block, packAlertSample(t, alert, slug))
-			want := "**Runbook:** [runbook](https://mm.example/plugins/com.mattermost.alertmanager/public/runbooks/mattermost-operator/" + slug + ".html)"
+			// The newline keeps the next section off the link's line.
+			want := "**Runbook:** [runbook](https://mm.example/plugins/com.mattermost.alertmanager/public/runbooks/mattermost-operator/" + slug + ".html)\n"
 			if !strings.Contains(out, want) {
 				t.Errorf("missing %q in:\n%s", want, out)
 			}

@@ -66,6 +66,8 @@ jobs:
   # deploy-local verify-rules.sh gate uses.
   validate-rules:
     runs-on: ubuntu-latest
+    env:
+      PROMETHEUS_IMAGE: prom/prometheus:v3.5.0
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,7 +76,7 @@ jobs:
         run: |
           docker run --rm --entrypoint promtool \
             -v "${{ github.workspace }}/samples":/w -w /w \
-            prom/prometheus:v3.5.0 \
+            "${PROMETHEUS_IMAGE}" \
             check rules /w/prometheus-rules.yaml
 
       - name: Set up Go
@@ -94,7 +96,7 @@ jobs:
           chmod 0644 "${{ runner.temp }}/pack-rules"/*.yaml
           docker run --rm --entrypoint promtool \
             -v "${{ runner.temp }}/pack-rules":/w -w /w \
-            prom/prometheus:v3.5.0 \
+            "${PROMETHEUS_IMAGE}" \
             check rules \
               /w/mattermost-operator-rules-default.yaml \
               /w/mattermost-operator-rules-all.yaml \
@@ -106,12 +108,12 @@ jobs:
           install -m 0644 samples/mattermost-operator-rules.test.yaml "${{ runner.temp }}/pack-rules/"
           docker run --rm --entrypoint promtool \
             -v "${{ runner.temp }}/pack-rules":/w -w /w \
-            prom/prometheus:v3.5.0 \
+            "${PROMETHEUS_IMAGE}" \
             test rules /w/mattermost-operator-rules.test.yaml
 
       - name: promtool test rules
         run: |
           docker run --rm --entrypoint promtool \
             -v "${{ github.workspace }}/samples":/w -w /w \
-            prom/prometheus:v3.5.0 \
+            "${PROMETHEUS_IMAGE}" \
             test rules /w/prometheus-rules.test.yaml

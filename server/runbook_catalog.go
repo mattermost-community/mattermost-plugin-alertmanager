@@ -102,6 +102,8 @@ func loadRunbookSlugs() []string {
 	skip := map[string]bool{"INDEX.md": true, "TEMPLATE.md": true}
 
 	var slugs []string
+	// The FS is embedded, so a walk error is a build defect; the catalog
+	// tests fail on the empty result.
 	_ = fs.WalkDir(root.RunbooksFS, "runbooks", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil

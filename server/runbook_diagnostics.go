@@ -7,6 +7,10 @@ import (
 	root "github.com/mattermost/mattermost-plugin-alertmanager"
 )
 
+// installationLabel is the Mattermost CR name, copied from the pod label
+// installation.mattermost.com/installation by the ServiceMonitor.
+const installationLabel = "installation_mattermost_com_installation"
+
 // labelPlaceholderAllowlist is the set of `<name>` tags a runbook
 // author can put in a Quick diagnostics code block. Each entry maps
 // to a Prometheus label name that AM substitutes per alert at render
@@ -17,23 +21,18 @@ import (
 // don't proxy `password`, `token`, or anything else that smells like
 // a secret — keeping the surface explicit prevents the "let's just
 // allow .Labels.* and trust the rule author" mistake.
-// installationLabel is the Mattermost CR name, copied from the pod label
-// installation.mattermost.com/installation by the ServiceMonitor.
-const installationLabel = "installation_mattermost_com_installation"
-
 var labelPlaceholderAllowlist = map[string]bool{
-	"alertname":  true,
-	"app":        true,
-	"cluster":    true,
-	"container":  true,
-	"deployment": true,
-	"instance":   true,
-	"job":        true,
-	"namespace":  true,
-	"node":       true,
-	"pod":        true,
-	"service":    true,
-
+	"alertname":       true,
+	"app":             true,
+	"cluster":         true,
+	"container":       true,
+	"deployment":      true,
+	"instance":        true,
+	"job":             true,
+	"namespace":       true,
+	"node":            true,
+	"pod":             true,
+	"service":         true,
 	installationLabel: true,
 }
 

@@ -43,6 +43,41 @@ tests:
               summary: "Mattermost mattermost-crimson/mattermost HTTP 5xx rate > 5%"
               description: "More than 5% of Mattermost API requests have returned 5xx for 5 minutes, above 1 requests/s."
 
+  # 3% 5xx alongside heavy 4xx: the old errors_total rule paged at 25% here.
+  - name: MattermostHighHTTPErrorRate does not count 4xx toward the 5xx share
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+600x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="404"}'
+        values: "0+180x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="500"}'
+        values: "0+24x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts: []
+
+  # 6% 5xx, just over the 5% threshold.
+  - name: MattermostHighHTTPErrorRate fires just over the threshold
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+564x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="503"}'
+        values: "0+36x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: mattermost-crimson
+              installation_mattermost_com_installation: mattermost
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson/mattermost HTTP 5xx rate > 5%"
+              description: "More than 5% of Mattermost API requests have returned 5xx for 5 minutes, above 1 requests/s."
+
   # Every request fails, but at 0.5 requests/s the floor keeps it quiet.
   - name: MattermostHighHTTPErrorRate stays quiet below the request floor
     interval: 1m
