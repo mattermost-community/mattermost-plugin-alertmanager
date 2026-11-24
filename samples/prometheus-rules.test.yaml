@@ -94,8 +94,86 @@ tests:
               namespace: mm
               job: mattermost
             exp_annotations:
-              summary: "Mattermost WebSocket connections dropped > 50%"
+              summary: "Mattermost mm WebSocket connections dropped > 50%"
               description: "Active WebSocket connections are less than half their level from 10 minutes ago. Users are losing real-time updates."
+
+  # Two installs on one cluster. Ops fails half its requests; crimson is busy
+  # and healthy. Summed cluster-wide that is 1.5%, so ops never paged.
+  - name: MattermostHighErrorRate pages for one broken install a busy one would hide
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="crimson", status_code="200"}'
+        values: "0+6000x20"
+      - series: 'mattermost_api_time_count{namespace="crimson", status_code="500"}'
+        values: "0+30x20"
+      - series: 'mattermost_api_time_count{namespace="ops", status_code="200"}'
+        values: "0+60x20"
+      - series: 'mattermost_api_time_count{namespace="ops", status_code="500"}'
+        values: "0+60x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: mattermost
+              runbook: mattermost-high-error-rate
+              namespace: ops
+            exp_annotations:
+              summary: "Mattermost ops 5xx error rate > 5% (50%)"
+              description: "More than 5% of Mattermost API calls are returning server errors. Users see intermittent message and channel failures."
+
+  # Both installs fail, but ops has the mattermost-server pack, whose own 5xx
+  # rule covers it. Only crimson pages from the group's rule.
+  - name: MattermostHighErrorRate skips a namespace that has the pack
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="crimson", status_code="200"}'
+        values: "0+60x20"
+      - series: 'mattermost_api_time_count{namespace="crimson", status_code="500"}'
+        values: "0+60x20"
+      - series: 'mattermost_api_time_count{namespace="ops", status_code="200"}'
+        values: "0+60x20"
+      - series: 'mattermost_api_time_count{namespace="ops", status_code="500"}'
+        values: "0+60x20"
+      - series: 'mattermost_alertmanager:pack_namespace{namespace="ops"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: mattermost
+              runbook: mattermost-high-error-rate
+              namespace: crimson
+            exp_annotations:
+              summary: "Mattermost crimson 5xx error rate > 5% (50%)"
+              description: "More than 5% of Mattermost API calls are returning server errors. Users see intermittent message and channel failures."
+
+  - name: MattermostHighLoginFailures counts per namespace and skips pack namespaces
+    interval: 1m
+    input_series:
+      - series: 'mattermost_login_logins_fail_total{namespace="crimson", pod="a"}'
+        values: "0+1x20"
+      - series: 'mattermost_login_logins_fail_total{namespace="crimson", pod="b"}'
+        values: "0+1x20"
+      - series: 'mattermost_login_logins_fail_total{namespace="ops"}'
+        values: "0+5x20"
+      - series: 'mattermost_alertmanager:pack_namespace{namespace="ops"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighLoginFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: mattermost
+              runbook: mattermost-high-login-failures
+              namespace: crimson
+            exp_annotations:
+              summary: "Mattermost crimson login failures spiking (20 failures in 10m)"
+              description: "More than 10 failed login attempts accumulated in 10 minutes — investigate for credential stuffing or brute force."
 
   - name: MattermostWebSocketDrop stays quiet when a replaced pod keeps its connections
     interval: 1m

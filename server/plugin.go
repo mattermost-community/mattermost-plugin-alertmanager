@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -30,6 +31,10 @@ type Plugin struct {
 
 	configuration     *configuration
 	configurationLock sync.RWMutex
+
+	// unsafeSiteURLWarned holds the last rejected SiteURL, so each new bad
+	// value is logged once.
+	unsafeSiteURLWarned atomic.Value
 
 	// BotUserID is the bot account that owns the webhooks and posts we create
 	// and is the Username/IconURL override on the webhooks we register.

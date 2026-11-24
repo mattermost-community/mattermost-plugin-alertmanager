@@ -227,24 +227,49 @@ const runbookURLGate = `match "^https?://[^ \x60\r\n\t()<>]+$" .Annotations.runb
 // link to a nonexistent runbook page is rendered — a Runbook line appears only
 // if the alert itself sets a runbook_url annotation. Continuation lines carry
 // the 8-space YAML block indent to match the surrounding template.
-const runbookSectionStandard = `{{- if ` + runbookURLGate + ` -}}
-        **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
-        {{- else -}}
-        **Runbook:** [runbook]({{RUNBOOK_DEFAULT}}){{ "\n" }}
+var runbookSectionStandard = `{{- if ` + runbookURLGate + ` -}}` + runbookLine("{{SAN_RUNBOOK_URL}}") + `
+        {{- else -}}` + runbookLine("{{RUNBOOK_DEFAULT}}") + `
         {{- end -}}`
 
-const runbookSectionCustom = `{{- if ` + runbookURLGate + ` -}}
-        **Runbook:** [runbook]({{SAN_RUNBOOK_URL}}){{ "\n" }}
+var runbookSectionCustom = `{{- if ` + runbookURLGate + ` -}}` + runbookLine("{{SAN_RUNBOOK_URL}}") + `
         {{- end -}}`
+
+// runbookLine is one Runbook line of a receiver body, on its own line at the
+// YAML block indent.
+func runbookLine(url string) string {
+	return "\n        **Runbook:** [runbook](" + url + `){{ "\n" }}`
+}
 
 // runbookSection resolves {{RUNBOOK_SECTION}} for a receiver. Custom receivers
 // get the annotation-only variant (no plugin fallback link); standard receivers
-// get the fallback with runbookDefaultURL baked in.
+// get the fallback with runbookDefaultURL baked in; pack receivers link each
+// alert to its own page.
 func runbookSection(runbookDefaultURL string, kind receiverKind) string {
-	if !kind.hasRunbook() {
+	switch {
+	case kind == kindPack:
+		return packRunbookSection(runbookDefaultURL)
+	case !kind.hasRunbook():
 		return runbookSectionCustom
+	default:
+		return strings.Replace(runbookSectionStandard, "{{RUNBOOK_DEFAULT}}", runbookDefaultURL, 1)
 	}
-	return strings.Replace(runbookSectionStandard, "{{RUNBOOK_DEFAULT}}", runbookDefaultURL, 1)
+}
+
+// quickDiagnosticsFor is the {{QUICK_DIAGNOSTICS}} text for a receiver, already
+// indented for the YAML block. Custom receivers get none.
+func quickDiagnosticsFor(slug string, kind receiverKind, indent string) string {
+	switch {
+	case kind == kindPack:
+		return packQuickDiagnostics(indent)
+	case !kind.hasRunbook():
+		return ""
+	default:
+		diag := formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(slug))
+		if diag == "" {
+			return ""
+		}
+		return indentForYAMLBlock(diag, indent)
+	}
 }
 
 // renderReceiverYAML renders a standard (runbook-backed) receiver.
@@ -269,13 +294,7 @@ func renderReceiverYAMLForKind(name, webhookURL, channel, runbookDefaultURL, ico
 	// authoritative "no runbook content" contract, so it must hold even if a
 	// future catalog adds a runbook slug matching a persisted custom name (or an
 	// entry is written straight to the KV store, bypassing name-collision validation).
-	diagText := ""
-	if kind.hasRunbook() {
-		diagText = formatQuickDiagnosticsForAlert(loadQuickDiagnosticsForSlug(receiverBaseSlug(name)))
-		if diagText != "" {
-			diagText = indentForYAMLBlock(diagText, yamlBlockIndent)
-		}
-	}
+	diagText := quickDiagnosticsFor(receiverBaseSlug(name), kind, yamlBlockIndent)
 
 	r := strings.NewReplacer(
 		"{{RUNBOOK_SECTION}}", runbookSection(runbookDefaultURL, kind),

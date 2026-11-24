@@ -341,7 +341,7 @@ message links to, and what `silence` can reach.
 | Kind | Created by | Alerts reach it through | Chat message | `silence` group and `all` |
 |---|---|---|---|---|
 | `runbook` | `config add <group or slug>` | `runbook=<slug>` route | Runbook diagnostics and a link | Covered by the `runbook` label |
-| `pack` | `config add mattermost mm-namespace=<ns>` | `alertname` route on the operator alerts | No runbook link | `mattermost` and `all` add a second silence on the alert names |
+| `pack` | `config add mattermost mm-namespace=<ns>` | `alertname` route on the pack alerts | No runbook link | `mattermost` and `all` add a second silence on the alert names |
 | `custom` | `config add-custom` | A route you write | The raw alert, no runbook link | Skipped. Silence it in Alertmanager |
 
 The plugin stores the kind on the receiver entry (`kind`). Entries saved by earlier

@@ -22,7 +22,6 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer/html"
 )
 
 // mdLinkRe matches an HTML href whose target ends in `.md` (optionally
@@ -81,6 +80,15 @@ var sections = []siteSection{
 		// INDEX.md is rendered as home.html separately; TEMPLATE.md is a
 		// boilerplate file authors copy from, not a real runbook page.
 		SkipFiles: map[string]bool{"INDEX.md": true, "TEMPLATE.md": true},
+	},
+	{
+		// One page per alert the mattermost-server pack receiver routes. The
+		// receiver links here by alertname, so file names must match
+		// packRunbookSlugs in server/mattermost_pack_runbooks.go.
+		SrcDir:      "../../runbooks/mattermost-operator",
+		OutDir:      "../../public/runbooks/mattermost-operator",
+		SiteName:    "Mattermost Pack Runbooks",
+		LandingBody: operatorRunbookIndexBody,
 	},
 }
 
@@ -317,6 +325,9 @@ RBAC Privilege Escalation, Security Tooling Down.
 **Mattermost Application** — API High Latency, High Login Failures,
 WebSocket Drop, DB Slow Query, High Error Rate.
 
+**Mattermost pack alerts** — one page per alert the ` + "`mattermost-server`" + `
+receiver routes. See [Mattermost Pack Runbooks](mattermost-operator/home.html).
+
 Use the sidebar on the left to navigate. Use the search box up top to
 jump straight to a runbook by name or by error string.
 
@@ -327,6 +338,32 @@ the starting point. Fill in every section — don't leave placeholder
 text that might get read mid-incident. Use real ` + "`kubectl`" + `
 commands with real namespaces, not ` + "`<NAMESPACE>`" + `
 placeholders. The on-call wants to copy-paste.
+`
+
+// operatorRunbookIndexBody is the landing page for the Mattermost pack runbooks.
+const operatorRunbookIndexBody = `# Mattermost Pack Runbooks
+
+One runbook per alert in the Mattermost pack, the per-install alerts the
+plugin adds with ` + "`mm-namespace`" + `, including the optional Postgres pod alerts.
+They reach Mattermost through the ` + "`mattermost-server`" + ` receiver, which routes
+by alert name. Each post links to the page for its alert and shows that
+page's first diagnostic command.
+
+Commands target one install the same way its alert rule does: by namespace and
+the ` + "`installation.mattermost.com/installation`" + ` pod label, or by
+namespace and pod for alerts built on kube-state-metrics and cAdvisor series.
+
+**Availability** — Server Down, Pod Crash Looping.
+
+**Resources** — High CPU, CPU Limit Missing, High Memory, Memory Limit Missing.
+
+**Database** — DB Writer Pool Empty, DB Replica Lag, Postgres Pod Not Ready,
+Postgres Pod Crash Looping.
+
+**Application** — High HTTP Error Rate, High HTTP Auth Error Rate, Login
+Failure Spike, WebSocket Drop, Search Down, Cluster Unhealthy, Logs Dropped.
+
+The general runbook library is [here](../home.html).
 `
 
 // rulesSrcPath / rulesOutYAML — the shipped sample rules and where the raw
@@ -525,7 +562,6 @@ func renderSection(section siteSection) (int, error) {
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-		goldmark.WithRendererOptions(html.WithUnsafe()),
 	)
 
 	tmpl, err := template.New("page").Parse(pageTemplate)

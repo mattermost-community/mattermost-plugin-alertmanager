@@ -48,8 +48,9 @@ namespace, host), use `<labelname>` in the command line itself (not
 in the comment — comments are skipped by the substituter). At alert
 render time, Alertmanager fills in the real value. Allowed labels:
 `alertname`, `app`, `cluster`, `container`, `deployment`, `instance`,
-`job`, `namespace`, `node`, `pod`, `service`. Unknown placeholders
-pass through unchanged.
+`job`, `namespace`, `node`, `pod`, `service`, and
+`installation_mattermost_com_installation` (the Mattermost CR name).
+Unknown placeholders pass through unchanged.
 
 ```bash
 # WHERE: shell with kubectl context set.

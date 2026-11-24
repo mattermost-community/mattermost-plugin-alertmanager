@@ -7,6 +7,10 @@ import (
 	root "github.com/mattermost/mattermost-plugin-alertmanager"
 )
 
+// installationLabel is the Mattermost CR name, copied from the pod label
+// installation.mattermost.com/installation by the ServiceMonitor.
+const installationLabel = "installation_mattermost_com_installation"
+
 // labelPlaceholderAllowlist is the set of `<name>` tags a runbook
 // author can put in a Quick diagnostics code block. Each entry maps
 // to a Prometheus label name that AM substitutes per alert at render
@@ -18,17 +22,18 @@ import (
 // a secret — keeping the surface explicit prevents the "let's just
 // allow .Labels.* and trust the rule author" mistake.
 var labelPlaceholderAllowlist = map[string]bool{
-	"alertname":  true,
-	"app":        true,
-	"cluster":    true,
-	"container":  true,
-	"deployment": true,
-	"instance":   true,
-	"job":        true,
-	"namespace":  true,
-	"node":       true,
-	"pod":        true,
-	"service":    true,
+	"alertname":       true,
+	"app":             true,
+	"cluster":         true,
+	"container":       true,
+	"deployment":      true,
+	"instance":        true,
+	"job":             true,
+	"namespace":       true,
+	"node":            true,
+	"pod":             true,
+	"service":         true,
+	installationLabel: true,
 }
 
 // labelPlaceholderRegex matches `<name>` where name is a lowercase
@@ -53,8 +58,9 @@ var labelPlaceholderRegex = regexp.MustCompile(`<([a-z][a-z_]*)>`)
 //
 // Comment detection is language-agnostic: lines whose first
 // non-whitespace character is `#` (shell/PromQL convention) or
-// whose first two non-whitespace characters are `--` (SQL
-// convention). Covers every language hint we emit (bash, promql,
+// that start with `-- ` or are a bare `--` (SQL convention). A shell
+// continuation such as `--namespace <namespace> \` is a command, not a
+// comment. Covers every language hint we emit (bash, promql,
 // sql) and anything else likely to land in a runbook.
 //
 // Called at YAML-render time (renderReceiverYAML) so the slack_configs
@@ -64,8 +70,7 @@ var labelPlaceholderRegex = regexp.MustCompile(`<([a-z][a-z_]*)>`)
 func substituteLabelPlaceholders(code string) string {
 	lines := strings.Split(code, "\n")
 	for i, line := range lines {
-		trim := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "--") {
+		if isCommentLine(line) {
 			continue
 		}
 		lines[i] = labelPlaceholderRegex.ReplaceAllStringFunc(line, func(match string) string {
@@ -77,13 +82,23 @@ func substituteLabelPlaceholders(code string) string {
 				// lets `$(...)`/backticks execute in the on-call engineer's shell.
 				// Strip everything outside a safe charset (legit hostnames, pod
 				// names, namespaces, IPs are all inside it) and cap the length, so
-				// no shell metacharacter survives.
-				return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | printf "%.128s" }}`
+				// no shell metacharacter survives. Leading dashes go too: kubectl
+				// would read `-shttps://attacker` in a pod position as --server
+				// and send the engineer's token there. No Kubernetes name starts
+				// with `-`.
+				return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | reReplaceAll "^-+" "" | printf "%.128s" }}`
 			}
 			return match
 		})
 	}
 	return strings.Join(lines, "\n")
+}
+
+// isCommentLine reports a shell/PromQL (#) or SQL (--) comment line, which
+// keeps its placeholders as literal text.
+func isCommentLine(line string) bool {
+	trim := strings.TrimSpace(line)
+	return strings.HasPrefix(trim, "#") || trim == "--" || strings.HasPrefix(trim, "-- ")
 }
 
 // quickDiagnosticLimit caps how many fenced code blocks the plugin

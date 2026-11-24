@@ -12,11 +12,18 @@ More than 5% of Mattermost API calls are returning 5xx status codes over
 a 5-minute window. The alert fires on:
 
 ```promql
-sum(rate(mattermost_api_time_count{status_code=~"5.."}[5m]))
+sum by (namespace) (rate(mattermost_api_time_count{status_code=~"5.."}[5m]))
 /
-sum(rate(mattermost_api_time_count[5m]))
+sum by (namespace) (rate(mattermost_api_time_count[5m]))
 > 0.05
+unless on (namespace) mattermost_alertmanager:pack_namespace
 ```
+
+The share is per namespace, so a busy healthy installation cannot hide a
+broken one in the same cluster. A namespace that also has the
+`mattermost-server` pack is skipped, because
+[High HTTP Error Rate](mattermost-operator/mattermost-high-http-error-rate.md)
+covers it.
 
 A 5xx response means the server encountered an error it couldn't handle —
 not a client-side mistake. Unlike 4xx (expected errors: bad auth, not

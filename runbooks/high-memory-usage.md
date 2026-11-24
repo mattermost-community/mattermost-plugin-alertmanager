@@ -176,7 +176,7 @@ Common patterns: per-request goroutine leaks, unbounded caches, closure referenc
 
 | Symptom | Diagnosis | Fix |
 |---|---|---|
-| Process RSS is reasonable but cgroup memory keeps growing | `kubectl exec -- cat /proc/<pid>/status | grep VmRSS` vs `kubectl exec -- cat /sys/fs/cgroup/memory.current` show divergence | Restart pod, file bug in the application for unclosed FDs/socket buffers |
+| Process RSS is reasonable but cgroup memory keeps growing | `kubectl exec -- cat /proc/<pid>/status \| grep VmRSS` vs `kubectl exec -- cat /sys/fs/cgroup/memory.current` show divergence | Restart pod, file bug in the application for unclosed FDs/socket buffers |
 
 ## Escalation
 

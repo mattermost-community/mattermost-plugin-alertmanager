@@ -10,7 +10,7 @@
 # ".*postgres.*" inside that namespace, so a Postgres exporter that lives in the
 # same namespace is covered too. kube-state-metrics must be running.
 groups:
-  - name: mattermost.postgres
+  - name: mattermost.postgres.__NAMESPACE__
     rules:
       - alert: MattermostPostgresPodNotReady
         # Covers the primary and every replica. The pod label says which one.

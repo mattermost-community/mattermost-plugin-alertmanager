@@ -63,9 +63,12 @@ jobs:
   # PromQL expr or malformed YAML must never merge. promtool ships inside the
   # prom/prometheus image (its entrypoint is /bin/prometheus, hence the
   # --entrypoint override); the tag is pinned to match the version the
-  # deploy-local verify-rules.sh gate uses.
+  # deploy-local verify-rules.sh gate uses, and the digest (the multi-arch
+  # index) so a re-pushed tag cannot change what runs here.
   validate-rules:
     runs-on: ubuntu-latest
+    env:
+      PROMETHEUS_IMAGE: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,7 +77,7 @@ jobs:
         run: |
           docker run --rm --entrypoint promtool \
             -v "${{ github.workspace }}/samples":/w -w /w \
-            prom/prometheus:v3.5.0 \
+            "${PROMETHEUS_IMAGE}" \
             check rules /w/prometheus-rules.yaml
 
       - name: Set up Go
@@ -94,16 +97,31 @@ jobs:
           chmod 0644 "${{ runner.temp }}/pack-rules"/*.yaml
           docker run --rm --entrypoint promtool \
             -v "${{ runner.temp }}/pack-rules":/w -w /w \
-            prom/prometheus:v3.5.0 \
+            "${PROMETHEUS_IMAGE}" \
             check rules \
               /w/mattermost-operator-rules-default.yaml \
               /w/mattermost-operator-rules-all.yaml \
               /w/mattermost-group-rules-default.yaml \
               /w/mattermost-group-rules-all.yaml
+          # Two installs' packs in one plain file. Each pack filters on its own
+          # namespace, so the duplicate-rule lint (same name and labels) is noise;
+          # a repeated group name still fails.
+          docker run --rm --entrypoint promtool \
+            -v "${{ runner.temp }}/pack-rules":/w -w /w \
+            "${PROMETHEUS_IMAGE}" \
+            check rules --lint=none /w/mattermost-two-namespaces.yaml
+
+      - name: promtool test mattermost operator rules
+        run: |
+          install -m 0644 samples/mattermost-operator-rules.test.yaml samples/mattermost-group-rules.test.yaml "${{ runner.temp }}/pack-rules/"
+          docker run --rm --entrypoint promtool \
+            -v "${{ runner.temp }}/pack-rules":/w -w /w \
+            "${PROMETHEUS_IMAGE}" \
+            test rules /w/mattermost-operator-rules.test.yaml /w/mattermost-group-rules.test.yaml
 
       - name: promtool test rules
         run: |
           docker run --rm --entrypoint promtool \
             -v "${{ github.workspace }}/samples":/w -w /w \
-            prom/prometheus:v3.5.0 \
+            "${PROMETHEUS_IMAGE}" \
             test rules /w/prometheus-rules.test.yaml

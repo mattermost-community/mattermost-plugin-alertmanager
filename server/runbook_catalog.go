@@ -97,13 +97,21 @@ var shippedRunbookSlugs = sync.OnceValue(loadRunbookSlugs)
 
 // loadRunbookSlugs reads the embedded runbooks/ directory and returns the
 // slugs (filename without .md, lowercased). Filters out INDEX.md and TEMPLATE.md
-// which are meta files.
+// which are meta files. Subdirectories hold pack alert pages, not receivers.
 func loadRunbookSlugs() []string {
 	skip := map[string]bool{"INDEX.md": true, "TEMPLATE.md": true}
 
 	var slugs []string
+	// The FS is embedded, so a walk error is a build defect; the catalog
+	// tests fail on the empty result.
 	_ = fs.WalkDir(root.RunbooksFS, "runbooks", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != "runbooks" {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		name := d.Name()

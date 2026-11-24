@@ -1,12 +1,11 @@
-# Mattermost-focused alerting rules, scoped to this installation's pods.
+# Mattermost-focused alerting rules, scoped to one installation's pods.
 #
-# These mirror the rules in the Mattermost Operator's monitoring PR (draft
-# mattermost-operator #466). The operator does not ship them yet. If it does,
-# these are redundant: same groups, alert names and labels, so drop this pack.
-#
-# The plugin substitutes __NAMESPACE__, __INSTALLATION__ and __POD_SELECTOR__ for
-# one Mattermost CR, so every alert here targets that install by namespace and
-# installation name, never by Service name, static IP or CIDR.
+# The plugin fills __NAMESPACE__, __INSTALLATION__, __POD_SELECTOR__ and the
+# thresholds for one Mattermost CR (`mm-*` flags on `config add` or
+# `format rules`), so every alert here targets that install by namespace and
+# installation name, never by Service name, static IP or CIDR. They work with
+# any released Mattermost Operator: it labels the pods, and nothing else is
+# needed from it.
 #
 # Series sources:
 #   - up, mattermost_*   : scraped from the Mattermost /metrics endpoint. The
@@ -20,7 +19,20 @@
 # alerts only evaluate when a valid license is installed. Thresholds are a
 # conservative starting point and usually want per-environment tuning.
 groups:
-  - name: mattermost.availability
+  # Group names end in the namespace so packs for two installs can share one
+  # plain rules file.
+  #
+  # Marks this namespace as covered by the pack. The mattermost group's
+  # cluster-wide rules skip any namespace that has it, so one signal pages once.
+  # It exists only while the pack's own selectors see the install: with a wrong
+  # mm-name or no installation label, the cluster-wide rules keep paging. `up`
+  # stays at 0 while a pod is down, so the marker holds through an outage.
+  - name: mattermost.coverage.__NAMESPACE__
+    rules:
+      - record: mattermost_alertmanager:pack_namespace
+        expr: group by (namespace) (up{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"})
+
+  - name: mattermost.availability.__NAMESPACE__
     rules:
       - alert: MattermostServerDown
         # Metrics target unscrapable for 5m (server down, or metrics disabled /
@@ -52,7 +64,7 @@ groups:
           summary: "Mattermost pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
           description: "Pod {{ $labels.pod }} has restarted more than 3 times in the last 5 minutes."
 
-  - name: mattermost.resources
+  - name: mattermost.resources.__NAMESPACE__
     rules:
       - alert: MattermostHighCPU
         # CPU of the mattermost container > 85% of its limit. A zero or absent
@@ -124,12 +136,15 @@ groups:
           summary: "Mattermost pod {{ $labels.namespace }}/{{ $labels.pod }} has no memory limit"
           description: "Pod {{ $labels.pod }} is running the mattermost container without a memory limit, so MattermostHighMemory cannot fire."
 
-  - name: mattermost.application
+  - name: mattermost.application.__NAMESPACE__
     rules:
       - alert: MattermostDBReplicaLag
         # Read-replica lag over 5s for 5m (mattermost_db_replica_lag_time is seconds).
-        # No series when SqlSettings has no replica lag query, so a writer-only
-        # database (RDS, Azure Postgres, or a single in-cluster primary) does not fire.
+        # OFF unless mm-db-replicas=true: the series only exists when
+        # SqlSettings.ReplicaLagSettings has a lag query per replica, a JSON
+        # setting the plugin cannot set or read. A writer-only
+        # database (RDS, Azure Postgres, or a single in-cluster primary) never
+        # emits it.
         expr: max by (namespace, installation_mattermost_com_installation) (mattermost_db_replica_lag_time{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}) > __DB_REPLICA_LAG_SECONDS__
         for: 5m
         labels:
@@ -156,45 +171,74 @@ groups:
           description: "The process is up but its database pool to the configured writer has been empty for 10 minutes."
 
       - alert: MattermostHighHTTPErrorRate
-        # More than 5% of HTTP requests erroring, and more than 1 request/s.
+        # More than 5% of API requests returning 5xx, and more than 1 request/s.
         # The floor stops one error out of one request from paging.
+        # mattermost_http_errors_total is not used: it counts every AppError,
+        # so expired sessions (401) and missing resources (404) would page.
         expr: |
           (
-            sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_http_errors_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[5m]))
+            sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__", status_code=~"5.."}[5m]))
             /
-            sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_http_requests_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[5m]))
+            sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[5m]))
           ) > __HTTP_ERROR_RATIO__
           and
-          sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_http_requests_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[5m])) > __HTTP_MIN_RPS__
+          sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[5m])) > __HTTP_MIN_RPS__
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Mattermost {{ $labels.namespace }}/{{ $labels.installation_mattermost_com_installation }} HTTP error rate > __HTTP_ERROR_PERCENT__%"
-          description: "More than __HTTP_ERROR_PERCENT__% of Mattermost HTTP requests have been erroring for 5 minutes, above __HTTP_MIN_RPS__ requests/s."
+          summary: "Mattermost {{ $labels.namespace }}/{{ $labels.installation_mattermost_com_installation }} HTTP 5xx rate > __HTTP_ERROR_PERCENT__%"
+          description: "More than __HTTP_ERROR_PERCENT__% of Mattermost API requests have returned 5xx for 5 minutes, above __HTTP_MIN_RPS__ requests/s."
 
-      - alert: MattermostLoginFailureSpike
-        # Failed logins / (failed + successful). logins_total counts successes only.
-        # Half of attempts failing, and at least 20 failures in 15m: a slow
-        # password spray pages, a large server with a partial IdP blip does not.
+      - alert: MattermostHighHTTPAuthErrorRate
+        # More than 20% of API requests answered 401 or 403, above 1 such
+        # request/s. Stolen or replayed tokens, permission probing and a
+        # broken SSO proxy never reach the login endpoint, so
+        # MattermostLoginFailureSpike does not see them. 10m rides out a burst
+        # of expired sessions after a restart.
         expr: |
           (
-            sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_login_logins_fail_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m]))
+            sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__", status_code=~"401|403"}[5m]))
             /
-            sum by (namespace, installation_mattermost_com_installation) (
-              rate(mattermost_login_logins_fail_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m])
-              +
-              rate(mattermost_login_logins_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m])
-            )
-          ) > __LOGIN_FAILURE_RATIO__
+            sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[5m]))
+          ) > __AUTH_ERROR_RATIO__
           and
-          sum by (namespace, installation_mattermost_com_installation) (increase(mattermost_login_logins_fail_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m])) > __LOGIN_MIN_FAILURES__
+          sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__", status_code=~"401|403"}[5m])) > __AUTH_MIN_RPS__
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Mattermost {{ $labels.namespace }}/{{ $labels.installation_mattermost_com_installation }} login failures are most attempts"
-          description: "More than __LOGIN_FAILURE_PERCENT__% of login attempts have failed for 10 minutes, with at least __LOGIN_MIN_FAILURES__ failures in 15 minutes."
+          summary: "Mattermost {{ $labels.namespace }}/{{ $labels.installation_mattermost_com_installation }} HTTP 401/403 rate > __AUTH_ERROR_PERCENT__%"
+          description: "More than __AUTH_ERROR_PERCENT__% of Mattermost API requests have returned 401 or 403 for 10 minutes, above __AUTH_MIN_RPS__ such requests/s."
+
+      - alert: MattermostLoginFailureSpike
+        # Failed logins / (failed + successful). logins_total counts successes only.
+        # Half of attempts failing with at least 20 failures in 15m, or 50
+        # failures in 15m whatever the share. The ratio keeps a large server's
+        # partial IdP blip quiet; the absolute count catches a slow spray that
+        # normal traffic keeps under half.
+        expr: |
+          (
+            (
+              sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_login_logins_fail_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m]))
+              /
+              sum by (namespace, installation_mattermost_com_installation) (
+                rate(mattermost_login_logins_fail_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m])
+                +
+                rate(mattermost_login_logins_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m])
+              )
+            ) > __LOGIN_FAILURE_RATIO__
+            and
+            sum by (namespace, installation_mattermost_com_installation) (increase(mattermost_login_logins_fail_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m])) > __LOGIN_MIN_FAILURES__
+          )
+          or
+          sum by (namespace, installation_mattermost_com_installation) (increase(mattermost_login_logins_fail_total{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"}[15m])) > __LOGIN_SPRAY_FAILURES__
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mattermost {{ $labels.namespace }}/{{ $labels.installation_mattermost_com_installation }} login failures are spiking"
+          description: "For 10 minutes, either more than __LOGIN_FAILURE_PERCENT__% of login attempts failed with over __LOGIN_MIN_FAILURES__ failures in 15 minutes, or there were over __LOGIN_SPRAY_FAILURES__ failures in 15 minutes."
 
       - alert: MattermostWebSocketDrop
         # Active WebSocket connections fell below half of their level 10 minutes
