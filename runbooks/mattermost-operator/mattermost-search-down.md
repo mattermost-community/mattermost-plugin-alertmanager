@@ -32,7 +32,8 @@ kubectl logs -n <namespace> <pod> -c mattermost --since=15m | grep -iE 'elastics
 # WHAT: the cluster's own health.
 # READ: red = shards unassigned, search is failing. yellow = replicas
 #   missing, search still works. Unreachable = network or the cluster.
-curl -s -u "<es-user>:<es-password>" "https://<es-host>:9200/_cluster/health?pretty"
+#   curl prompts for the password, so it stays out of shell history.
+curl -s -u "<es-user>" "https://<es-host>:9200/_cluster/health?pretty"
 ```
 
 ## Diagnostic steps
@@ -45,7 +46,7 @@ Elastic Cloud), also check the provider's console.
 ### 2. Is the cluster read-only?
 
 ```bash
-curl -s -u "<es-user>:<es-password>" "https://<es-host>:9200/_cat/allocation?v"
+curl -s -u "<es-user>" "https://<es-host>:9200/_cat/allocation?v"
 ```
 
 A data node above the flood-stage watermark (95% disk by default) makes

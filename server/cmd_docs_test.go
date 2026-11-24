@@ -19,7 +19,8 @@ func (siteURLAPI) GetConfig() *model.Config {
 
 type fixedSiteURLAPI struct {
 	plugin.API
-	url string
+	url   string
+	warns *int
 }
 
 func (a fixedSiteURLAPI) GetConfig() *model.Config {
@@ -28,12 +29,25 @@ func (a fixedSiteURLAPI) GetConfig() *model.Config {
 	return cfg
 }
 
+func (a fixedSiteURLAPI) LogWarn(string, ...any) {
+	if a.warns != nil {
+		*a.warns++
+	}
+}
+
 func TestSiteURLRejectsUnsafeCharacters(t *testing.T) {
-	const placeholder = "https://CHANGE-ME-mattermost-site-url"
+	const placeholder = siteURLPlaceholder
 	cases := []struct{ in, want string }{
 		{"https://mm.example.com/", "https://mm.example.com"},
 		{"http://mm.internal:8065/sub/path", "http://mm.internal:8065/sub/path"},
+		{"https://[::1]:8065", "https://[::1]:8065"},
+		{"https://[2001:db8::1]/chat", "https://[2001:db8::1]/chat"},
+		{"https://mm.example.com/a%20b", "https://mm.example.com/a%20b"},
 		{"", placeholder},
+		{"https://mm.example.com/a\u2028x", placeholder},
+		{"https://mm.example.com/a\u0085x", placeholder},
+		{"https://mm.example.com/a\u00a0x", placeholder},
+		{"https://mm.example.com/a\x0cx", placeholder},
 		{"mm.example.com", placeholder},
 		{"https://mm.example.com/x)[evil](https://evil", placeholder},
 		{"https://mm.example.com/{{ .Labels.secret }}", placeholder},
@@ -51,6 +65,26 @@ func TestSiteURLRejectsUnsafeCharacters(t *testing.T) {
 		if got := p.siteURL(); got != tc.want {
 			t.Errorf("siteURL(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestUnsafeSiteURLWarnsOnce(t *testing.T) {
+	warns := 0
+	p := &Plugin{}
+	p.API = fixedSiteURLAPI{url: "https://mm.example.com/{x}", warns: &warns}
+	for range 3 {
+		p.siteURL()
+	}
+	if warns != 1 {
+		t.Errorf("unsafe SiteURL logged %d warnings, want 1", warns)
+	}
+
+	p = &Plugin{}
+	p.API = fixedSiteURLAPI{url: "", warns: &warns}
+	warns = 0
+	p.siteURL()
+	if warns != 0 {
+		t.Errorf("unset SiteURL should not warn, got %d", warns)
 	}
 }
 

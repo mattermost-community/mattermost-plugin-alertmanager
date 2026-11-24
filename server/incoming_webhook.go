@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -316,21 +317,34 @@ func (p *Plugin) runbookDefaultURL(slug string) string {
 	return fmt.Sprintf("%s/plugins/%s/public/runbooks/%s.html", p.siteURL(), Manifest.Id, slug)
 }
 
-// safeSiteURL rejects characters that would break out of the markdown links,
-// Alertmanager template text and double-quoted YAML the SiteURL is baked into.
-// Mattermost's own SiteURL validation accepts several of them.
-var safeSiteURL = regexp.MustCompile("^https?://[^ `\\r\\n\\t()<>{}'\"\\\\\\[\\]]+$")
+// safeSiteURL is an ASCII allowlist: it leaves out the characters that break
+// out of the markdown links, Alertmanager template text and quoted YAML the
+// SiteURL is baked into (( ) { } < > ' " ` \, whitespace), and all non-ASCII,
+// since YAML treats U+0085, U+2028 and U+2029 as line breaks. Mattermost's own
+// SiteURL validation accepts all of these. [ ] stay for IPv6 hosts.
+var safeSiteURL = regexp.MustCompile(`^https?://[A-Za-z0-9._~:/?#\[\]@!$&*+,;=%-]+$`)
+
+const siteURLPlaceholder = "https://CHANGE-ME-mattermost-site-url"
 
 // siteURL returns the configured Mattermost SiteURL with trailing
 // slash trimmed, or a clearly-bogus placeholder if SiteURL is unset or
 // unsafe. The placeholder shows up in rendered YAML so an admin pasting
 // an unconfigured system's output sees what's missing.
 func (p *Plugin) siteURL() string {
-	siteURL := "https://CHANGE-ME-mattermost-site-url"
-	if cfg := p.API.GetConfig(); cfg != nil && cfg.ServiceSettings.SiteURL != nil {
-		if trimmed := strings.TrimRight(*cfg.ServiceSettings.SiteURL, "/"); safeSiteURL.MatchString(trimmed) {
-			siteURL = trimmed
-		}
+	cfg := p.API.GetConfig()
+	if cfg == nil || cfg.ServiceSettings.SiteURL == nil {
+		return siteURLPlaceholder
 	}
-	return siteURL
+	trimmed := strings.TrimRight(*cfg.ServiceSettings.SiteURL, "/")
+	if trimmed == "" {
+		return siteURLPlaceholder
+	}
+	if !safeSiteURL.MatchString(trimmed) {
+		p.unsafeSiteURLWarning.Do(func() {
+			p.API.LogWarn("SiteURL contains characters that are unsafe in generated links and Alertmanager config; using a placeholder until it is fixed",
+				"site_url", strconv.QuoteToASCII(trimmed))
+		})
+		return siteURLPlaceholder
+	}
+	return trimmed
 }

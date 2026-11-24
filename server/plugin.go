@@ -31,6 +31,8 @@ type Plugin struct {
 	configuration     *configuration
 	configurationLock sync.RWMutex
 
+	unsafeSiteURLWarning sync.Once
+
 	// BotUserID is the bot account that owns the webhooks and posts we create
 	// and is the Username/IconURL override on the webhooks we register.
 	// The webhook's user_id field is actually set to the calling sysadmin

