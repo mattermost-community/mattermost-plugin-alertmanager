@@ -44,7 +44,7 @@ kubectl logs -n <namespace> -l installation.mattermost.com/installation=<install
 # READ: successes near zero while failures climb = nobody can log in, so
 #   treat it as an outage. Successes normal = most users are fine and the
 #   failures come from someone else.
-sum(rate(mattermost_login_logins_total{namespace="<namespace>"}[5m]))
+sum(rate(mattermost_login_logins_total{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m]))
 ```
 
 ## Diagnostic steps

@@ -38,7 +38,7 @@ kubectl top pod -n <namespace> --containers
 # WHAT: slowest API handlers on the installation right now.
 # READ: one handler dominating points at the workload driving CPU, for
 #   example search, file uploads or exports.
-topk(5, sum by (handler) (rate(mattermost_api_time_sum{namespace="<namespace>"}[5m])))
+topk(5, sum by (handler) (rate(mattermost_api_time_sum{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m])))
 ```
 
 ## Diagnostic steps

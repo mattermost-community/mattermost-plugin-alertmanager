@@ -116,9 +116,9 @@ Rules for the Mattermost server itself. Requires `MetricsSettings.Enable: true` 
 
 Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come from the Mattermost Operator's own PrometheusRule. Two more, with `mm-postgres-pod=true`, are plugin-only. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
 
-Each alert has its own runbook. The `mattermost-server` receiver links the post to it and shows its first diagnostic command, unless the alert sets its own `runbook_url`.
+Each alert has its own runbook. The `mattermost-server` receiver links the post to it and shows its first diagnostic command. An alert that sets its own `runbook_url` links there instead; the diagnostic command still shows.
 
-"Mattermost metrics" needs an Enterprise build with a license that includes metrics; Team Edition exports no `mattermost_*` series, so those alerts never fire there. See [Alert Requirements](ALERT_REQUIREMENTS.md).
+"Mattermost metrics" needs an Enterprise build with a license that includes metrics. Without one there are no `mattermost_*` series, so alerts on them never fire, while `MattermostServerDown` (which reads `up`) fires as soon as Prometheus scrapes the dead `/metrics` port. See [Alert Requirements](ALERT_REQUIREMENTS.md).
 
 | Alert | Severity | Fires when | Needs | Runbook |
 |---|---|---|---|---|

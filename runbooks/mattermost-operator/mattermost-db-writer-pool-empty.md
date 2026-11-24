@@ -83,7 +83,7 @@ Near `max_connections`, every new Mattermost connection is refused. See
 |---|---|---|
 | `password authentication failed` | Credentials rotated without updating the secret | Update the database secret; the operator restarts the pods |
 | `dial tcp ... i/o timeout` | Network path blocked | Check NetworkPolicy, security groups, private DNS |
-| `too many connections` | Database at its connection limit | Lower `SqlSettings.MaxOpenConns` per pod or raise `max_connections` |
+| `too many connections` | Database at its connection limit | Lower `SqlSettings.MaxOpenConns` per pod first. Raising `max_connections` restarts Postgres (a reboot on RDS) and stops all writes, so schedule it with database on-call |
 | Database in maintenance or failover | Planned or managed failover | Wait for failover; the pool reconnects on its own |
 
 ## Escalation

@@ -58,7 +58,7 @@ kubectl exec -n <namespace> <pod> -- df -h /bitnami/postgresql /var/lib/postgres
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `OOMKilled` | Memory limit too low | Raise the Postgres memory limit, or lower `max_connections` |
+| `OOMKilled` | Memory limit too low | Raise the Postgres memory limit, or lower `max_connections`. Changing `max_connections` needs a Postgres restart; lower `SqlSettings.MaxOpenConns` on the Mattermost pods first so they fit under the new limit |
 | `No space left on device` | Volume full | Expand the PVC |
 | Only the exporter restarts | Exporter credentials or version | Fix the exporter secret; Postgres is fine |
 | Liveness probe kills it during recovery | Probe too strict | Raise the probe's `initialDelaySeconds` or `failureThreshold` |

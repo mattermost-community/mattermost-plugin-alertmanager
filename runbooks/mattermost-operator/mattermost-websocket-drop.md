@@ -41,7 +41,7 @@ kubectl get pods -n <namespace> -l installation.mattermost.com/installation=<ins
 # WHAT: connections per pod over the last hour.
 # READ: one pod falling to zero = that pod. Every pod falling together =
 #   something shared, such as the ingress.
-sum by (pod) (mattermost_http_websockets_total{namespace="<namespace>"})
+sum by (pod) (mattermost_http_websockets_total{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"})
 ```
 
 ## Diagnostic steps

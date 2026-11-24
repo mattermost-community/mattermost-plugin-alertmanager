@@ -79,7 +79,11 @@ console. For in-cluster Postgres, check the replica pod's CPU and disk.
 
 If lag stays high, Mattermost can be pointed at the primary for reads by
 removing the replica from `SqlSettings.DataSourceReplicas` until it
-catches up.
+catches up. Every read then lands on the primary, so first confirm with
+database on-call that it has CPU and connection headroom: its active
+connections plus each pod's `MaxOpenConns` must stay under
+`max_connections`. If the primary's write load is what is causing the
+lag, this makes it worse.
 
 ## Escalation
 

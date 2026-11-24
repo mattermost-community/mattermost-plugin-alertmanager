@@ -34,7 +34,7 @@ kubectl logs -n <namespace> <pod> -c mattermost --since=15m | grep -iE 'cluster|
 # WHAT: the score on every pod of the installation.
 # READ: one pod high = that pod's network or CPU. Every pod high = the
 #   network between pods.
-mattermost_cluster_cluster_health_score{namespace="<namespace>"}
+mattermost_cluster_cluster_health_score{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}
 ```
 
 ## Diagnostic steps

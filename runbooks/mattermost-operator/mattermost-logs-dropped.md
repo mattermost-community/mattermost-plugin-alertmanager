@@ -63,9 +63,9 @@ A full log volume makes the file target block.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| One remote target | Syslog or TCP endpoint slow or down | Fix the endpoint, or remove the target |
+| One remote target | Syslog or TCP endpoint slow or down | Fix the endpoint. Remove the target only after security confirms it is not the audit or SIEM sink |
 | All targets, DEBUG level | Log volume too high | Set console and file level back to INFO |
-| File target blocked | Log volume full | Expand or clean the volume |
+| File target blocked | Log volume full | Expand the volume. Before cleaning it, copy the logs off: they may be audit evidence |
 | All targets, CPU throttled | Pod overloaded | See [High CPU](mattermost-high-cpu.md) |
 
 ## Escalation
