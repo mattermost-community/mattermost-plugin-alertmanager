@@ -118,7 +118,7 @@ Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come f
 
 Each alert has its own runbook. The `mattermost-server` receiver links the post to it and shows its first diagnostic command. An alert that sets its own `runbook_url` links there instead; the diagnostic command still shows.
 
-"Mattermost metrics" needs an Enterprise build with a license that includes metrics. Without one there are no `mattermost_*` series, so alerts on them never fire, while `MattermostServerDown` (which reads `up`) fires as soon as Prometheus scrapes the dead `/metrics` port. See [Alert Requirements](ALERT_REQUIREMENTS.md).
+"Mattermost metrics" needs an Enterprise build with a license that includes metrics. Without one there are no `mattermost_*` series, so alerts on them never fire, while `MattermostServerDown` (which reads `up`) fires once scrapes of the dead `/metrics` port have failed for 5 minutes. See [Alert Requirements](ALERT_REQUIREMENTS.md).
 
 | Alert | Severity | Fires when | Needs | Runbook |
 |---|---|---|---|---|

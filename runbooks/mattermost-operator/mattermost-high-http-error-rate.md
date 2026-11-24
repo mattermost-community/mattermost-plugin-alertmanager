@@ -36,10 +36,11 @@ request-rate floor so a quiet installation cannot page on one failure.
 ```promql
 # WHERE: Prometheus or Grafana Explore.
 # WHAT: 5xx per second by status code for this installation.
-# READ: 500 = an application error; read the logs. 502 = Mattermost
-#   could not reach an upstream: an interactive message button's
-#   integration URL, or Elasticsearch/OpenSearch. 503 = the server is
-#   shedding load or a dependency is down.
+# READ: 500 = an application error; read the logs. 502 = an
+#   interactive message integration answered with a 5xx. 503 = Server
+#   Busy mode is on, a plugin the request needs is not active, or an
+#   integration answered 503. 504 = the image proxy timed out fetching
+#   an external image.
 sum by (status_code) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>", status_code=~"5.."}[5m]))
 ```
 
@@ -92,8 +93,8 @@ Check its restarts and its node before touching shared dependencies.
 | 5xx with `pq:` errors | Database | See [DB Writer Pool Empty](mattermost-db-writer-pool-empty.md) |
 | 5xx on file endpoints | File store credentials or network | Check `FileSettings` and the bucket |
 | 5xx from one pod only | Pod on a bad node or stuck after an OOM | Save `kubectl logs` and `kubectl describe pod` output first. If the other pods are Ready, delete the pod and the Deployment replaces it. With one replica, that is a full outage until the new pod is Ready |
-| 502 on post action endpoints | An interactive message integration's URL is down or blocked | Check egress to that integration and `ServiceSettings.AllowedUntrustedInternalConnections`; the handler in the second quick diagnostic names it |
-| 502 on Elasticsearch endpoints | Search backend unreachable | See [Search Down](mattermost-search-down.md) |
+| 502 on post action endpoints | The interactive message integration behind a button returns 5xx | Fix the integration; the handler in the second quick diagnostic names the endpoint. An integration that cannot be reached returns 400, not 502, so it does not fire this alert |
+| 504 on `/api/v4/image` | The image proxy timed out fetching an external image | Check egress to the image hosts, or `ImageProxySettings`; posts still load without the preview |
 | 5xx after an upgrade | Regression | Contact support. Don't just lower `spec.version`: once the new version migrated the schema, a downgrade needs the database backup taken before the upgrade |
 
 ## Escalation

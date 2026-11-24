@@ -221,6 +221,9 @@ func TestReceiverTextSanitizesHostileAlert(t *testing.T) {
 	if strings.Count(out, "](") != 1 || !strings.Contains(out, "**Runbook:** [runbook](") {
 		t.Errorf("runbook link was not the only markdown link:\n%s", out)
 	}
+	if !regexp.MustCompile(`\*\*Runbook:\*\* \[runbook\]\([^)\n]*\)\n`).MatchString(out) {
+		t.Errorf("runbook link does not end its own line:\n%s", out)
+	}
 	if strings.Contains(out, "$(") {
 		t.Errorf("shell command substitution survived (found `$(`):\n%s", out)
 	}

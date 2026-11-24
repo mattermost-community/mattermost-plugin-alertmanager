@@ -9,6 +9,8 @@ evaluation_interval: 1m
 
 tests:
   # Expired sessions and stale clients must not page: 1/3 of requests are 4xx.
+  # The http_*_total series are what the server also emits for this traffic;
+  # a rule built on them, like the old one, pages here.
   - name: MattermostHighHTTPErrorRate ignores 4xx
     interval: 1m
     input_series:
@@ -18,6 +20,10 @@ tests:
         values: "0+180x20"
       - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="404"}'
         values: "0+120x20"
+      - series: 'mattermost_http_errors_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+300x20"
+      - series: 'mattermost_http_requests_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+900x20"
     alert_rule_test:
       - eval_time: 15m
         alertname: MattermostHighHTTPErrorRate
@@ -53,6 +59,10 @@ tests:
         values: "0+180x20"
       - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="500"}'
         values: "0+24x20"
+      - series: 'mattermost_http_errors_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+204x20"
+      - series: 'mattermost_http_requests_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+804x20"
     alert_rule_test:
       - eval_time: 15m
         alertname: MattermostHighHTTPErrorRate

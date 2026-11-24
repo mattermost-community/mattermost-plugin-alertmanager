@@ -88,7 +88,9 @@ Platform on-call if latency is user-visible or the alert holds for an hour.
 
 ## Required Prometheus labels
 
-`namespace` and `pod`, from cAdvisor and kube-state-metrics.
+`namespace` and `pod`, from cAdvisor and kube-state-metrics. The alert
+does not carry the installation name the `mattermost_*` queries need: it
+is the pod name without its last two dash-separated parts.
 
 ## Related runbooks
 
