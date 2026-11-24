@@ -1,0 +1,126 @@
+# End-to-end tests for the `mattermost` group's rules loaded next to a real
+# pack (namespace mattermost-crimson, installation mattermost, default
+# thresholds), the file `config add mattermost standard mm-namespace=...`
+# sends. CI renders it with TestWritePackRulesForPromtool, copies this file next
+# to it and runs `promtool test rules` (see .github/workflows/test.yml).
+rule_files:
+  - mattermost-group-rules-default.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # The pack sees its install, so its own 5xx alert pages and the group's
+  # rule stays quiet for that namespace. Another install keeps the group's rule.
+  - name: A covered namespace pages once for 5xx
+    interval: 1m
+    input_series:
+      - series: 'up{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "1x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+600x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="500"}'
+        values: "0+600x20"
+      - series: 'mattermost_api_time_count{namespace="ops", status_code="200"}'
+        values: "0+60x20"
+      - series: 'mattermost_api_time_count{namespace="ops", status_code="500"}'
+        values: "0+60x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: mattermost
+              runbook: mattermost-high-error-rate
+              namespace: ops
+            exp_annotations:
+              summary: "Mattermost ops 5xx error rate > 5% (50%)"
+              description: "More than 5% of Mattermost API calls are returning server errors. Users see intermittent message and channel failures."
+      - eval_time: 15m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: mattermost-crimson
+              installation_mattermost_com_installation: mattermost
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson/mattermost HTTP 5xx rate > 5%"
+              description: "More than 5% of Mattermost API requests have returned 5xx for 5 minutes, above 1 requests/s."
+
+  # The series carry another installation name (a wrong mm-name), so the pack
+  # sees nothing. The group's rule must keep paging for the namespace.
+  - name: A pack that misses its install does not mute the group's 5xx rule
+    interval: 1m
+    input_series:
+      - series: 'up{namespace="mattermost-crimson", installation_mattermost_com_installation="other"}'
+        values: "1x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="other", status_code="200"}'
+        values: "0+600x20"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="other", status_code="500"}'
+        values: "0+600x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: mattermost
+              runbook: mattermost-high-error-rate
+              namespace: mattermost-crimson
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson 5xx error rate > 5% (50%)"
+              description: "More than 5% of Mattermost API calls are returning server errors. Users see intermittent message and channel failures."
+      - eval_time: 15m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts: []
+
+  # The group's rule and the pack's share the alert name; only the pack's,
+  # with the installation label and no runbook, may fire.
+  - name: A covered namespace pages once for a WebSocket drop
+    interval: 1m
+    input_series:
+      - series: 'up{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", job="mattermost"}'
+        values: "1x30"
+      - series: 'mattermost_http_websockets_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", job="mattermost"}'
+        values: "100x10 10x20"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MattermostWebSocketDrop
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: mattermost-crimson
+              installation_mattermost_com_installation: mattermost
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson/mattermost WebSocket connections dropped by more than half"
+              description: "Active WebSocket connections are below half of their level 10 minutes ago. Users are losing real-time updates."
+
+  # Two installs without a pack: only the slow one pages, so a fast install's
+  # buckets cannot pull the other's p99 under the threshold.
+  - name: MattermostDBSlowQuery counts each namespace on its own
+    interval: 1m
+    input_series:
+      - series: 'mattermost_db_store_time_bucket{namespace="slow", le="0.1"}'
+        values: "0+0x20"
+      - series: 'mattermost_db_store_time_bucket{namespace="slow", le="1"}'
+        values: "0+10x20"
+      - series: 'mattermost_db_store_time_bucket{namespace="slow", le="+Inf"}'
+        values: "0+10x20"
+      - series: 'mattermost_db_store_time_bucket{namespace="fast", le="0.1"}'
+        values: "0+1000x20"
+      - series: 'mattermost_db_store_time_bucket{namespace="fast", le="1"}'
+        values: "0+1000x20"
+      - series: 'mattermost_db_store_time_bucket{namespace="fast", le="+Inf"}'
+        values: "0+1000x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MattermostDBSlowQuery
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: mattermost
+              runbook: mattermost-db-slow-query
+              namespace: slow
+            exp_annotations:
+              summary: "Mattermost slow DB p99 query latency > 500ms"
+              description: "99th-percentile database store operation time has exceeded 500ms for 5 minutes. API latency will follow."

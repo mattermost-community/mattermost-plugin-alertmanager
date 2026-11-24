@@ -145,7 +145,7 @@ var helpRegistry = []helpTopic{
 	{
 		Path:    "config add",
 		Summary: "Create receivers for runbooks in this channel",
-		Usage:   "/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>]",
+		Usage:   "/alertmanager config add <am-url> [target] [standard|crd] [on] [namespace=<ns>] [webhook-host=<url>] [mm-namespace=<ns>] [mm-name=<cr>] [mm-db-replicas=true] [mm-postgres-pod=true] [mm-<threshold>=<n>]",
 		Description: "Run it in the channel that should receive the alerts. It creates the Mattermost webhook and receiver entries for that channel, then DMs you the Alertmanager config to apply, with the Prometheus rules for the runbooks you added attached to the same message. " +
 			"Create the channel first if it does not exist. Applying the DM'd config to Alertmanager is still your step.",
 		Options: []helpOption{
@@ -158,7 +158,9 @@ var helpRegistry = []helpTopic{
 			{"webhook-host=<url>", "Base URL Alertmanager should use to reach Mattermost, when it differs from the site URL."},
 			{"mm-namespace=<ns>", "`mattermost` only, optional. The namespace Mattermost runs in. It adds one receiver and one route for the per-install Mattermost alert pack. Those alerts carry no `runbook` label, so the route matches their alert names. Their rules ride in the same DM. Without it you get the runbook alerts only."},
 			{"mm-name=<cr>", "`mattermost` only. The Mattermost custom resource name. Default `mattermost`. The rules match the series carrying this `installation.mattermost.com/installation` value, so the ServiceMonitor must copy that pod label (`podTargetLabels`)."},
-			{"mm-<threshold>=<n>", packThresholdHelp},
+			{"mm-db-replicas=true", "`mattermost` with `mm-namespace` only. Adds `MattermostDBReplicaLag`. Use it only when `SqlSettings.ReplicaLagSettings` has a lag query for each replica, or the alert can never fire."},
+			{"mm-postgres-pod=true", "`mattermost` with `mm-namespace` only. Adds the Postgres pod alerts for a Postgres that runs as `*postgres*` pods in the Mattermost namespace."},
+			{"mm-<threshold>=<n>", packThresholdHelp()},
 		},
 		Who: "System admin, or a team admin of this channel's team.",
 		Examples: []string{
@@ -289,13 +291,15 @@ var helpRegistry = []helpTopic{
 	{
 		Path:        "format rules",
 		Summary:     "Get the sample Prometheus alert rules",
-		Usage:       "/alertmanager format rules [standard|crd] [group|runbook] [namespace=<ns>] [mm-namespace=<ns>] [mm-name=<cr>]",
+		Usage:       "/alertmanager format rules [standard|crd] [group|runbook] [namespace=<ns>] [mm-namespace=<ns>] [mm-name=<cr>] [mm-db-replicas=true] [mm-postgres-pod=true] [mm-<threshold>=<n>]",
 		Description: "Rules only, all 36 of them unless you name a group, not limited to this channel. For this channel's rules together with its config, use `format export`. A group or runbook name gives you just those rules as one PrometheusRule named `mattermost-alertmanager-rules-<group>`, the same object `config add` sends. With `mattermost` you also get the per-install Mattermost alert pack when you add `mm-namespace`, as its own PrometheusRule `mattermost-alertmanager-rules-mattermost-<ns>`.",
 		Options: []helpOption{
 			{"<group|runbook>", "DM only that group's rules, for example `security`, or one runbook's, for example `high-cpu-usage`. Use `all` for every group. Add `crd` for a PrometheusRule."},
 			{"mm-namespace=<ns>", "`mattermost` only, optional. The namespace Mattermost runs in. Adds the 14 pack alerts, filled in for your install. Run it once per Mattermost namespace."},
 			{"mm-name=<cr>", "`mattermost` only. The Mattermost custom resource name. Default `mattermost`. The ServiceMonitor must copy the `installation.mattermost.com/installation` pod label onto the series (`podTargetLabels`)."},
-			{"mm-<threshold>=<n>", packThresholdHelp},
+			{"mm-db-replicas=true", "`mattermost` with `mm-namespace` only. Adds `MattermostDBReplicaLag`. Use it only when `SqlSettings.ReplicaLagSettings` has a lag query for each replica, or the alert can never fire."},
+			{"mm-postgres-pod=true", "`mattermost` with `mm-namespace` only. Adds the Postgres pod alerts for a Postgres that runs as `*postgres*` pods in the Mattermost namespace."},
+			{"mm-<threshold>=<n>", packThresholdHelp()},
 			{"standard", "Links to browse the rules in your browser or download a plain Prometheus rules file. The default."},
 			{"crd", "DM a PrometheusRule (`monitoring.coreos.com/v1`) with all 36 rules, ready to apply."},
 			{"namespace=<ns>", "Namespace for the `crd` object. Default `monitoring`."},

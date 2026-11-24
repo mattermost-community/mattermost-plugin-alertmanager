@@ -193,14 +193,34 @@ tests:
               summary: "Mattermost mattermost-crimson/mattermost login failures are spiking"
               description: "For 10 minutes, either more than 50% of login attempts failed with over 20 failures in 15 minutes, or there were over 50 failures in 15 minutes."
 
+  # Two pods, one of them down: the marker still holds, once per namespace.
   - name: The pack records its namespace for the group rules to skip
     interval: 1m
+    input_series:
+      - series: 'up{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", pod="mattermost-a-1"}'
+        values: "1x10"
+      - series: 'up{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", pod="mattermost-a-2"}'
+        values: "0x10"
     promql_expr_test:
       - expr: mattermost_alertmanager:pack_namespace
         eval_time: 5m
         exp_samples:
           - labels: 'mattermost_alertmanager:pack_namespace{namespace="mattermost-crimson"}'
             value: 1
+
+  # A wrong mm-name or a ServiceMonitor without podTargetLabels: the pack sees
+  # nothing, so it must not mark the namespace and mute the group's rules.
+  - name: The pack records nothing when its selectors miss the install
+    interval: 1m
+    input_series:
+      - series: 'up{namespace="mattermost-crimson", installation_mattermost_com_installation="other", pod="other-a-1"}'
+        values: "1x10"
+      - series: 'up{namespace="mattermost-crimson", pod="mattermost-a-1"}'
+        values: "1x10"
+    promql_expr_test:
+      - expr: mattermost_alertmanager:pack_namespace
+        eval_time: 5m
+        exp_samples: []
 
   # Every request fails, but at 0.5 requests/s the floor keeps it quiet.
   - name: MattermostHighHTTPErrorRate stays quiet below the request floor

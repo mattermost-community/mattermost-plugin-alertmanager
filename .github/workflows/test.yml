@@ -103,14 +103,21 @@ jobs:
               /w/mattermost-operator-rules-all.yaml \
               /w/mattermost-group-rules-default.yaml \
               /w/mattermost-group-rules-all.yaml
-
-      - name: promtool test mattermost operator rules
-        run: |
-          install -m 0644 samples/mattermost-operator-rules.test.yaml "${{ runner.temp }}/pack-rules/"
+          # Two installs' packs in one plain file. Each pack filters on its own
+          # namespace, so the duplicate-rule lint (same name and labels) is noise;
+          # a repeated group name still fails.
           docker run --rm --entrypoint promtool \
             -v "${{ runner.temp }}/pack-rules":/w -w /w \
             "${PROMETHEUS_IMAGE}" \
-            test rules /w/mattermost-operator-rules.test.yaml
+            check rules --lint=none /w/mattermost-two-namespaces.yaml
+
+      - name: promtool test mattermost operator rules
+        run: |
+          install -m 0644 samples/mattermost-operator-rules.test.yaml samples/mattermost-group-rules.test.yaml "${{ runner.temp }}/pack-rules/"
+          docker run --rm --entrypoint promtool \
+            -v "${{ runner.temp }}/pack-rules":/w -w /w \
+            "${PROMETHEUS_IMAGE}" \
+            test rules /w/mattermost-operator-rules.test.yaml /w/mattermost-group-rules.test.yaml
 
       - name: promtool test rules
         run: |

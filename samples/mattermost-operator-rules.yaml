@@ -19,16 +19,20 @@
 # alerts only evaluate when a valid license is installed. Thresholds are a
 # conservative starting point and usually want per-environment tuning.
 groups:
+  # Group names end in the namespace so packs for two installs can share one
+  # plain rules file.
+  #
   # Marks this namespace as covered by the pack. The mattermost group's
   # cluster-wide rules skip any namespace that has it, so one signal pages once.
-  - name: mattermost.coverage
+  # It exists only while the pack's own selectors see the install: with a wrong
+  # mm-name or no installation label, the cluster-wide rules keep paging. `up`
+  # stays at 0 while a pod is down, so the marker holds through an outage.
+  - name: mattermost.coverage.__NAMESPACE__
     rules:
       - record: mattermost_alertmanager:pack_namespace
-        expr: vector(1)
-        labels:
-          namespace: __NAMESPACE__
+        expr: group by (namespace) (up{namespace="__NAMESPACE__", installation_mattermost_com_installation="__INSTALLATION__"})
 
-  - name: mattermost.availability
+  - name: mattermost.availability.__NAMESPACE__
     rules:
       - alert: MattermostServerDown
         # Metrics target unscrapable for 5m (server down, or metrics disabled /
@@ -60,7 +64,7 @@ groups:
           summary: "Mattermost pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
           description: "Pod {{ $labels.pod }} has restarted more than 3 times in the last 5 minutes."
 
-  - name: mattermost.resources
+  - name: mattermost.resources.__NAMESPACE__
     rules:
       - alert: MattermostHighCPU
         # CPU of the mattermost container > 85% of its limit. A zero or absent
@@ -132,7 +136,7 @@ groups:
           summary: "Mattermost pod {{ $labels.namespace }}/{{ $labels.pod }} has no memory limit"
           description: "Pod {{ $labels.pod }} is running the mattermost container without a memory limit, so MattermostHighMemory cannot fire."
 
-  - name: mattermost.application
+  - name: mattermost.application.__NAMESPACE__
     rules:
       - alert: MattermostDBReplicaLag
         # Read-replica lag over 5s for 5m (mattermost_db_replica_lag_time is seconds).

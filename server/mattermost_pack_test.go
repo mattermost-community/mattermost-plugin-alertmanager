@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -89,7 +90,7 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 		"> 5\n",
 		"> 50\n",
 		"85% of limit",
-		"namespace: mattermost-crimson",
+		"name: mattermost.coverage.mattermost-crimson",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered rules missing %q", want)
@@ -114,7 +115,7 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 	for _, g := range doc.Groups {
 		for _, r := range g.Rules {
 			if r.Record != "" {
-				if r.Record != packCoverageRecord || r.Labels["namespace"] != "mattermost-crimson" {
+				if r.Record != packCoverageRecord || len(r.Labels) != 0 {
 					t.Errorf("unexpected recording rule %s %v", r.Record, r.Labels)
 				}
 				continue
@@ -252,6 +253,7 @@ type ruleObject struct {
 	} `yaml:"metadata"`
 	Spec struct {
 		Groups []struct {
+			Name  string `yaml:"name"`
 			Rules []struct {
 				Alert  string            `yaml:"alert"`
 				Record string            `yaml:"record"`
@@ -337,9 +339,18 @@ func TestMattermostRulesFileSplitsPackPerNamespace(t *testing.T) {
 
 	marked := false
 	for _, g := range pack.Spec.Groups {
+		if !strings.HasSuffix(g.Name, ".mattermost-crimson") {
+			t.Errorf("pack group %q must end in its namespace so two packs can share a plain file", g.Name)
+		}
 		for _, r := range g.Rules {
-			if r.Record == packCoverageRecord && r.Labels["namespace"] == "mattermost-crimson" {
-				marked = true
+			if r.Record != packCoverageRecord {
+				continue
+			}
+			marked = true
+			// Static labels would turn namespaces like `on` or `123` into YAML
+			// booleans and numbers; the marker takes its namespace from `up`.
+			if len(r.Labels) != 0 || !strings.Contains(r.Expr, `up{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}`) {
+				t.Errorf("the marker must come from the install's own up series: %s %v", r.Expr, r.Labels)
 			}
 		}
 	}
@@ -388,8 +399,76 @@ func TestMattermostRulesFileSplitsPackPerNamespace(t *testing.T) {
 	if n := len(ruleAlertNames(t, plain.data)); n != wantTotal || plain.name != crd.name {
 		t.Fatalf("standard file %q has %d alerts, want %d", plain.name, n, wantTotal)
 	}
-	if !strings.Contains(plain.section(), "only its `mattermost.*` groups") {
+	if !strings.Contains(plain.section(), "copy only the groups ending in that namespace") {
 		t.Fatalf("standard section should say how to add a second namespace:\n%s", plain.section())
+	}
+	for _, f := range []*rulesFile{crd, plain} {
+		if !strings.Contains(f.section(), "replaces this install's pack") {
+			t.Fatalf("section should say a second CR in the namespace replaces the pack:\n%s", f.section())
+		}
+	}
+	if !strings.Contains(string(crd.data), "-f "+crd.name+"\n---\napiVersion: "+TargetPrometheusRuleAPIVersion+"\nkind: PrometheusRule\nmetadata:\n  name: "+group.Metadata.Name+"\n") {
+		t.Fatalf("the first object's apply comment must name the downloaded file %s:\n%s", crd.name, crd.data)
+	}
+}
+
+// twoNamespaceRules is a plain rules file for target with a second install's
+// pack groups copied in, as the DM tells users to do.
+func twoNamespaceRules(t *testing.T, target, second mattermostTarget) []byte {
+	t.Helper()
+	first, err := rulesTestPlugin().mattermostRulesFile(testRulesContext(formatStandard), &target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack, err := renderMattermostOperatorRules(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(first.data, strings.TrimPrefix(pack, "groups:\n")...)
+}
+
+func TestTwoNamespacesShareOnePlainRulesFile(t *testing.T) {
+	second, err := newMattermostTarget("ops", "mm-ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Groups []struct {
+			Name string `yaml:"name"`
+		} `yaml:"groups"`
+	}
+	if err = yaml.Unmarshal(twoNamespaceRules(t, testTarget(t), second), &doc); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, g := range doc.Groups {
+		if seen[g.Name] {
+			t.Errorf("group %q appears twice; Prometheus rejects the file", g.Name)
+		}
+		seen[g.Name] = true
+	}
+}
+
+// Namespaces YAML reads as numbers, booleans or null must still render a valid
+// PrometheusRule whose namespace stays a string.
+func TestPackRendersYAMLAmbiguousNamespaces(t *testing.T) {
+	for _, ns := range []string{"123", "0123", "on", "y", "null"} {
+		target, err := newMattermostTarget(ns, "")
+		if err != nil {
+			t.Fatalf("%s: %v", ns, err)
+		}
+		f, err := rulesTestPlugin().mattermostRulesFile(testRulesContext(formatCRD), &target)
+		if err != nil {
+			t.Fatalf("%s: %v", ns, err)
+		}
+		pack := decodeRuleObjects(t, f.data)[1]
+		for _, g := range pack.Spec.Groups {
+			for _, r := range g.Rules {
+				if r.Record == packCoverageRecord && !strings.Contains(r.Expr, `namespace="`+ns+`"`) {
+					t.Errorf("%s: marker lost its namespace: %s", ns, r.Expr)
+				}
+			}
+		}
 	}
 }
 
@@ -597,6 +676,14 @@ func TestWritePackRulesForPromtool(t *testing.T) {
 		if err = os.WriteFile(filepath.Join(dir, "mattermost-group-rules-"+name+".yaml"), merged.data, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	second, err := newMattermostTarget("ops", "mm-ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := twoNamespaceRules(t, testTarget(t), second)
+	if err = os.WriteFile(filepath.Join(dir, "mattermost-two-namespaces.yaml"), two, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -870,18 +957,43 @@ func TestPackThresholdFlags(t *testing.T) {
 	for _, bad := range []string{
 		"mm-http-error-percent=0", "mm-http-error-percent=101", "mm-cpu-limit-percent=8.5", "mm-auth-error-percent=x",
 		"mm-http-min-rps=-1", "mm-login-spray-failures=NaN", "mm-auth-min-rps=Inf", "mm-db-replica-lag-seconds=1e400",
-		`mm-login-min-failures=1"}`,
+		`mm-login-min-failures=1"}`, "mm-cpu-limit-percent=100", "mm-login-min-failures=0", "mm-login-spray-failures=0.5",
+		"mm-http-min-rps=1000001", "mm-http-error-percent=", "mm-db-replicas=",
 	} {
-		if _, _, err := extractMattermostOptions([]string{bad}); err == nil {
+		if _, _, badErr := extractMattermostOptions([]string{bad}); badErr == nil {
 			t.Errorf("%s must be refused", bad)
+		}
+	}
+	for _, twice := range [][]string{
+		{"mm-cpu-limit-percent=90", "mm-cpu-limit-percent=95"},
+		{"mm-postgres-pod=true", "mm-postgres-pod=false"},
+	} {
+		if _, _, twiceErr := extractMattermostOptions(twice); twiceErr == nil || !strings.Contains(twiceErr.Error(), "more than once") {
+			t.Errorf("%v must be refused, got %v", twice, twiceErr)
 		}
 	}
 	if _, msg := parseFormatArgs([]string{"security", "mm-cpu-limit-percent=90"}); !strings.Contains(msg, "only apply") {
 		t.Fatalf("threshold flag on another group must be refused, got %q", msg)
 	}
-	for _, flag := range thresholdFlagNames() {
-		if !strings.Contains(packThresholdHelp, "`"+strings.TrimSuffix(flag, "=")+"`") {
-			t.Errorf("help does not describe %s", flag)
+
+	_, opts, err = extractMattermostOptions([]string{"mm-http-min-rps=-0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = renderMattermostOperatorRules(testTarget(t).withOptions(opts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "-0") {
+		t.Fatal("-0 must render as 0")
+	}
+
+	help := packThresholdHelp()
+	th := defaultPackThresholds
+	for _, f := range th.flags() {
+		want := fmt.Sprintf("`%s` (%s)", strings.TrimSuffix(f.flag, "="), f.current())
+		if !strings.Contains(help, want) {
+			t.Errorf("help does not describe %s", want)
 		}
 	}
 }

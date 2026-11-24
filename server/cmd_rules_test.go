@@ -25,7 +25,7 @@ func TestFilterPrometheusRulesKeepsTheGroup(t *testing.T) {
 	if strings.Contains(filtered, "runbook: high-http-error-rate") {
 		t.Fatal("compute filter kept an application rule")
 	}
-	manifest := buildPrometheusRuleManifest(filtered, "monitoring", prometheusRuleObject+"-compute")
+	manifest := buildPrometheusRuleManifest(filtered, "monitoring", prometheusRuleObject+"-compute", prometheusRuleObject+"-compute.yaml")
 	if !strings.Contains(manifest, "name: mattermost-alertmanager-rules-compute") {
 		t.Fatal("per-group object name was not set")
 	}
@@ -39,7 +39,7 @@ func TestFullPrometheusRuleDownloadCoversEveryGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := buildPrometheusRuleManifest(string(raw), "monitoring", prometheusRuleObject)
+	manifest := buildPrometheusRuleManifest(string(raw), "monitoring", prometheusRuleObject, "mattermost-prometheus-rules.yaml")
 	for _, name := range []string{
 		"compute",
 		"application",

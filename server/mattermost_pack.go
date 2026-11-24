@@ -37,7 +37,7 @@ const (
 )
 
 // packThresholds are the numbers the pack's rules compare against. Percents are
-// whole numbers from 1 to 100; the rest are floors of 0 or more.
+// whole numbers from 1 to 99, since a share can never exceed 100%.
 type packThresholds struct {
 	httpErrorPercent    int
 	httpMinRPS          float64
@@ -65,43 +65,57 @@ var defaultPackThresholds = packThresholds{
 }
 
 // thresholdFlag binds one mm- flag to a percent or a floor in packThresholds.
+// minFloor is the smallest floor allowed: a login count of 0 would page on a
+// single failure.
 type thresholdFlag struct {
-	flag    string
-	percent *int
-	floor   *float64
+	flag     string
+	help     string
+	percent  *int
+	floor    *float64
+	minFloor float64
 }
+
+const (
+	maxThresholdPercent = 99
+	maxThresholdFloor   = 1e6
+)
 
 func (t *packThresholds) flags() []thresholdFlag {
 	return []thresholdFlag{
-		{flag: "mm-http-error-percent=", percent: &t.httpErrorPercent},
-		{flag: "mm-http-min-rps=", floor: &t.httpMinRPS},
-		{flag: "mm-auth-error-percent=", percent: &t.authErrorPercent},
-		{flag: "mm-auth-min-rps=", floor: &t.authMinRPS},
-		{flag: "mm-login-failure-percent=", percent: &t.loginFailurePercent},
-		{flag: "mm-login-min-failures=", floor: &t.loginMinFailures},
-		{flag: "mm-login-spray-failures=", floor: &t.loginSprayFailures},
-		{flag: "mm-cpu-limit-percent=", percent: &t.cpuLimitPercent},
-		{flag: "mm-memory-limit-percent=", percent: &t.memoryLimitPercent},
-		{flag: "mm-db-replica-lag-seconds=", floor: &t.dbReplicaLagSeconds},
+		{flag: "mm-http-error-percent=", help: "5xx share of requests", percent: &t.httpErrorPercent},
+		{flag: "mm-http-min-rps=", help: "requests/s before the 5xx share counts", floor: &t.httpMinRPS},
+		{flag: "mm-auth-error-percent=", help: "401/403 share of requests", percent: &t.authErrorPercent},
+		{flag: "mm-auth-min-rps=", help: "401/403 requests/s before that share counts", floor: &t.authMinRPS},
+		{flag: "mm-login-failure-percent=", help: "failed share of logins", percent: &t.loginFailurePercent},
+		{flag: "mm-login-min-failures=", help: "failed logins in 15m before that share counts", floor: &t.loginMinFailures, minFloor: 1},
+		{flag: "mm-login-spray-failures=", help: "failed logins in 15m that page whatever the share", floor: &t.loginSprayFailures, minFloor: 1},
+		{flag: "mm-cpu-limit-percent=", help: "CPU use against the limit", percent: &t.cpuLimitPercent},
+		{flag: "mm-memory-limit-percent=", help: "memory use against the limit", percent: &t.memoryLimitPercent},
+		{flag: "mm-db-replica-lag-seconds=", help: "replica lag", floor: &t.dbReplicaLagSeconds},
 	}
 }
 
-const packThresholdHelp = "`mattermost` with `mm-namespace` only. Tune the pack. Percents take 1 to 100, the rest 0 or more. " +
-	"`mm-http-error-percent` (5) and `mm-http-min-rps` (1): 5xx share and request floor. " +
-	"`mm-auth-error-percent` (20) and `mm-auth-min-rps` (1): 401/403 share and floor. " +
-	"`mm-login-failure-percent` (50) and `mm-login-min-failures` (20): failed share of logins and failures in 15m. " +
-	"`mm-login-spray-failures` (50): failures in 15m that page whatever the share. " +
-	"`mm-cpu-limit-percent` (85), `mm-memory-limit-percent` (90), `mm-db-replica-lag-seconds` (5)."
-
-// thresholdFlagNames lists every threshold flag, for help text and tests.
-func thresholdFlagNames() []string {
-	var t packThresholds
-	flags := t.flags()
-	names := make([]string, len(flags))
-	for i, f := range flags {
-		names[i] = f.flag
+// packThresholdHelp describes every threshold flag with its default.
+func packThresholdHelp() string {
+	th := defaultPackThresholds
+	var b strings.Builder
+	fmt.Fprintf(&b, "`mattermost` with `mm-namespace` only. Tune the pack. Percents take 1 to %d, the rest 0 to %s (login counts start at 1). ",
+		maxThresholdPercent, formatFloor(maxThresholdFloor))
+	for i, f := range th.flags() {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "`%s` (%s): %s", strings.TrimSuffix(f.flag, "="), f.current(), f.help)
 	}
-	return names
+	b.WriteString(".")
+	return b.String()
+}
+
+func (f thresholdFlag) current() string {
+	if f.percent != nil {
+		return strconv.Itoa(*f.percent)
+	}
+	return formatFloor(*f.floor)
 }
 
 // set parses value into the bound field. The value reaches PromQL only after
@@ -109,18 +123,43 @@ func thresholdFlagNames() []string {
 func (f thresholdFlag) set(value string) error {
 	if f.percent != nil {
 		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 || n > 100 {
-			return fmt.Errorf("invalid `%s` value %q: use a whole percent from 1 to 100", f.flag, value)
+		if err != nil || n < 1 || n > maxThresholdPercent {
+			return fmt.Errorf("invalid `%s` value %q: use a whole percent from 1 to %d", f.flag, value, maxThresholdPercent)
 		}
 		*f.percent = n
 		return nil
 	}
 	v, err := strconv.ParseFloat(value, 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-		return fmt.Errorf("invalid `%s` value %q: use a number of 0 or more", f.flag, value)
+	if err != nil || math.IsNaN(v) || v < f.minFloor || v > maxThresholdFloor {
+		return fmt.Errorf("invalid `%s` value %q: use a number from %s to %s", f.flag, value, formatFloor(f.minFloor), formatFloor(maxThresholdFloor))
+	}
+	if v == 0 {
+		v = 0 // -0 would render as "-0"
 	}
 	*f.floor = v
 	return nil
+}
+
+// extractSingleFlag pulls prefix out of words. Unlike extractFlagValue it
+// rejects an empty value or a repeated flag, either of which would otherwise
+// leave a default in place without a word.
+func extractSingleFlag(words []string, prefix string) (value string, found bool, rest []string, err error) {
+	rest = make([]string, 0, len(words))
+	for _, w := range words {
+		after, ok := strings.CutPrefix(w, prefix)
+		if !ok {
+			rest = append(rest, w)
+			continue
+		}
+		if found {
+			return "", false, nil, fmt.Errorf("`%s` is given more than once", prefix)
+		}
+		if after == "" {
+			return "", false, nil, fmt.Errorf("`%s` needs a value", prefix)
+		}
+		value, found = after, true
+	}
+	return value, found, rest, nil
 }
 
 // extractPackThresholds pulls the threshold flags out of words. thresholds is
@@ -130,13 +169,16 @@ func extractPackThresholds(words []string) ([]string, *packThresholds, error) {
 	given := false
 	rest := words
 	for _, f := range th.flags() {
-		var value string
-		value, rest = extractFlagValue(rest, f.flag)
-		if value == "" {
+		value, found, next, err := extractSingleFlag(rest, f.flag)
+		if err != nil {
+			return nil, nil, err
+		}
+		rest = next
+		if !found {
 			continue
 		}
 		given = true
-		if err := f.set(value); err != nil {
+		if err = f.set(value); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -175,9 +217,14 @@ type mattermostOptions struct {
 // threshold flags out of words. The first two take true or false.
 func extractMattermostOptions(words []string) ([]string, mattermostOptions, error) {
 	var opts mattermostOptions
-	replicas, rest := extractFlagValue(words, mmDBReplicasFlag)
-	postgres, rest := extractFlagValue(rest, mmPostgresPodFlag)
-	var err error
+	replicas, _, rest, err := extractSingleFlag(words, mmDBReplicasFlag)
+	if err != nil {
+		return nil, opts, err
+	}
+	postgres, _, rest, err := extractSingleFlag(rest, mmPostgresPodFlag)
+	if err != nil {
+		return nil, opts, err
+	}
 	if opts.dbReplicas, err = parseMMBool(mmDBReplicasFlag, replicas); err != nil {
 		return nil, opts, err
 	}
@@ -449,19 +496,21 @@ func (p *Plugin) mattermostRulesFile(rc rulesContext, t *mattermostTarget) (*rul
 	spec.extraName = packRuleObjectName(t.namespace)
 	spec.extraCount = len(packAlertLine.FindAllStringSubmatch(body, -1))
 	overlap := fmt.Sprintf("Do not also apply the full `%s` object or another export or add that covers the same runbooks, or these alerts fire twice. ", prometheusRuleObject)
+	onePerNamespace := fmt.Sprintf("The pack is per namespace: running this for another Mattermost CR in `%s` replaces this install's pack. ", t.namespace)
 	if rc.format == formatCRD {
-		spec.tail = overlap + fmt.Sprintf(
+		spec.tail = overlap + onePerNamespace + fmt.Sprintf(
 			"The file holds two PrometheusRules: `%s`, the group's cluster-wide rules, which are the same for every namespace, and `%s`, the alerts for this install. "+
 				"For another Mattermost namespace, run this again with its `mm-namespace` and apply that file too. "+
-				"The cluster-wide 5xx, login failure and WebSocket rules skip every namespace that has its own pack, so nothing pages twice.",
+				"The cluster-wide 5xx, login failure and WebSocket rules skip every namespace whose pack sees its install, so nothing pages twice.",
 			spec.name, spec.extraName,
 		)
 	} else {
-		spec.tail = overlap + fmt.Sprintf(
-			"The file holds the group's cluster-wide rules and the `mattermost.*` groups for this install. "+
-				"For another Mattermost namespace, run this again and add only its `mattermost.*` groups, or the cluster-wide rules load twice. "+
+		spec.tail = overlap + onePerNamespace + fmt.Sprintf(
+			"The file holds the group's cluster-wide rules and this install's groups, whose names end in `.%s`. "+
+				"For another Mattermost namespace, run this again and copy only the groups ending in that namespace into this file: "+
+				"the cluster-wide groups are the same in both, and Prometheus rejects a group name it sees twice. "+
 				"It replaces `%s.yaml` from earlier versions of the plugin: remove that file.",
-			spec.name,
+			t.namespace, spec.name,
 		)
 	}
 	return p.buildRules(spec)

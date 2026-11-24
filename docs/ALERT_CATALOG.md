@@ -116,7 +116,7 @@ The five rules above count per namespace, one Mattermost each, so a busy healthy
 
 ### Mattermost per-install pack (`mattermost` with `mm-namespace=<ns>`)
 
-Kubernetes installs only. 14 alerts, 15 with `mm-db-replicas=true`, and two more with `mm-postgres-pod=true`, filled in for one Mattermost CR. They need no Mattermost Operator feature beyond the `installation.mattermost.com/installation` label it already puts on its pods. They carry no `runbook` label and route by alert name. Render the pack once per Mattermost namespace. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
+Kubernetes installs only. 14 alerts, 15 with `mm-db-replicas=true`, and two more with `mm-postgres-pod=true`, filled in for one Mattermost CR. They need no Mattermost Operator feature beyond the `installation.mattermost.com/installation` label it already puts on its pods. They carry no `runbook` label and route by alert name. Render the pack once per Mattermost namespace. See [Kubernetes](KUBERNETES.md#mattermost-alert-pack).
 
 Each alert has its own runbook. The `mattermost-server` receiver links the post to it and shows its first diagnostic command. An alert that sets its own `runbook_url` links there instead; the diagnostic command still shows.
 
