@@ -17,6 +17,52 @@ func (siteURLAPI) GetConfig() *model.Config {
 	return cfg
 }
 
+type fixedSiteURLAPI struct {
+	plugin.API
+	url string
+}
+
+func (a fixedSiteURLAPI) GetConfig() *model.Config {
+	cfg := &model.Config{}
+	cfg.ServiceSettings.SiteURL = &a.url
+	return cfg
+}
+
+func TestSiteURLRejectsUnsafeCharacters(t *testing.T) {
+	const placeholder = "https://CHANGE-ME-mattermost-site-url"
+	cases := []struct{ in, want string }{
+		{"https://mm.example.com/", "https://mm.example.com"},
+		{"http://mm.internal:8065/sub/path", "http://mm.internal:8065/sub/path"},
+		{"", placeholder},
+		{"mm.example.com", placeholder},
+		{"https://mm.example.com/x)[evil](https://evil", placeholder},
+		{"https://mm.example.com/{{ .Labels.secret }}", placeholder},
+		{"https://mm.example.com/'x", placeholder},
+		{"https://mm.example.com/\"x", placeholder},
+		{"https://mm.example.com/`x`", placeholder},
+		{"https://mm.example.com/\\x", placeholder},
+		{"https://mm.example.com/<x>", placeholder},
+		{"https://mm.example.com/a b", placeholder},
+		{"https://mm.example.com/\nx", placeholder},
+	}
+	for _, tc := range cases {
+		p := &Plugin{}
+		p.API = fixedSiteURLAPI{url: tc.in}
+		if got := p.siteURL(); got != tc.want {
+			t.Errorf("siteURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestHostileSiteURLCannotBreakRunbookLink(t *testing.T) {
+	p := &Plugin{}
+	p.API = fixedSiteURLAPI{url: "https://mm.example.com/x){{ .Labels.secret }}"}
+	out := renderReceiverYAML("high-cpu-usage--t-c", "https://mm.example/hooks/x", "alerts", p.runbookDefaultURL("high-cpu-usage"), p.siteURL()+webhookIconURL)
+	if strings.Contains(out, ".Labels.secret") || !strings.Contains(out, "(https://CHANGE-ME-mattermost-site-url/plugins/") {
+		t.Errorf("hostile SiteURL reached the receiver template:\n%s", out)
+	}
+}
+
 func newDocsTestPlugin() *Plugin {
 	p := &Plugin{}
 	p.API = siteURLAPI{}

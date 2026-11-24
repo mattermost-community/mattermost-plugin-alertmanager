@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Runbooks for the 16 Mattermost pack alerts (the operator's 14 plus the two Postgres pod alerts), under `runbooks/mattermost-operator/`. The `mattermost-server` receiver now links each post to its alert's runbook and shows the runbook's first diagnostic command. An alert's own `runbook_url` annotation still wins. Existing `mattermost-server` receivers keep the old template until you run `format export` (`format export crd` for an AlertmanagerConfig) and apply the receiver again.
 * Quick diagnostics can use the `<installation_mattermost_com_installation>` placeholder.
 
+### Security
+
+* A SiteURL containing characters that break markdown links, Alertmanager templates or quoted YAML (``( ) { } [ ] < > ' " ` \``, spaces or newlines) is no longer baked into runbook, icon and help links. The plugin shows the `CHANGE-ME` placeholder instead, so the bad SiteURL is visible.
+
 ### Bug Fixes
 
 * `MattermostHighHTTPErrorRate` counts 5xx responses only, matching the Mattermost Operator. Before, every application error counted, so expired sessions (401) and stale clients (404) paged. The request-rate floor (`httpMinRequestsPerSecond`) now counts API requests only, without WebSocket upgrades. Rules applied from an earlier version keep paging on 4xx until you run `format rules mattermost mm-namespace=<ns>` (`format rules mattermost crd mm-namespace=<ns>` for a PrometheusRule) and apply them again.

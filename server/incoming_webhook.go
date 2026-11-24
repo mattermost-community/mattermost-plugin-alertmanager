@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -315,14 +316,19 @@ func (p *Plugin) runbookDefaultURL(slug string) string {
 	return fmt.Sprintf("%s/plugins/%s/public/runbooks/%s.html", p.siteURL(), Manifest.Id, slug)
 }
 
+// safeSiteURL rejects characters that would break out of the markdown links,
+// Alertmanager template text and double-quoted YAML the SiteURL is baked into.
+// Mattermost's own SiteURL validation accepts several of them.
+var safeSiteURL = regexp.MustCompile("^https?://[^ `\\r\\n\\t()<>{}'\"\\\\\\[\\]]+$")
+
 // siteURL returns the configured Mattermost SiteURL with trailing
-// slash trimmed, or a clearly-bogus placeholder if SiteURL isn't set.
-// The placeholder shows up in rendered YAML so an admin pasting an
-// unconfigured system's output sees what's missing.
+// slash trimmed, or a clearly-bogus placeholder if SiteURL is unset or
+// unsafe. The placeholder shows up in rendered YAML so an admin pasting
+// an unconfigured system's output sees what's missing.
 func (p *Plugin) siteURL() string {
 	siteURL := "https://CHANGE-ME-mattermost-site-url"
 	if cfg := p.API.GetConfig(); cfg != nil && cfg.ServiceSettings.SiteURL != nil {
-		if trimmed := strings.TrimRight(*cfg.ServiceSettings.SiteURL, "/"); trimmed != "" {
+		if trimmed := strings.TrimRight(*cfg.ServiceSettings.SiteURL, "/"); safeSiteURL.MatchString(trimmed) {
 			siteURL = trimmed
 		}
 	}
