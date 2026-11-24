@@ -63,11 +63,12 @@ jobs:
   # PromQL expr or malformed YAML must never merge. promtool ships inside the
   # prom/prometheus image (its entrypoint is /bin/prometheus, hence the
   # --entrypoint override); the tag is pinned to match the version the
-  # deploy-local verify-rules.sh gate uses.
+  # deploy-local verify-rules.sh gate uses, and the digest (the multi-arch
+  # index) so a re-pushed tag cannot change what runs here.
   validate-rules:
     runs-on: ubuntu-latest
     env:
-      PROMETHEUS_IMAGE: prom/prometheus:v3.5.0
+      PROMETHEUS_IMAGE: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

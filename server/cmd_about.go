@@ -94,16 +94,15 @@ func (p *Plugin) handleAbout(args *model.CommandArgs) string {
 }
 
 // publicSiteURL returns the Mattermost SiteURL with trailing slash
-// stripped. Returns empty string if config or SiteURL is unset — the
-// caller is responsible for handling the empty case gracefully (we hide
-// the inventory-page link when SiteURL isn't known since the URL would
-// be broken).
+// stripped. Returns empty string if SiteURL is unset or fails the
+// siteURL() safety check — the caller is responsible for handling the
+// empty case gracefully (we hide the inventory-page link when SiteURL
+// isn't usable since the URL would be broken).
 func (p *Plugin) publicSiteURL() string {
-	cfg := p.API.GetConfig()
-	if cfg == nil || cfg.ServiceSettings.SiteURL == nil {
-		return ""
+	if u := p.siteURL(); u != siteURLPlaceholder {
+		return u
 	}
-	return strings.TrimRight(*cfg.ServiceSettings.SiteURL, "/")
+	return ""
 }
 
 // countDistinctAMs counts unique AlertManagerURL values across the

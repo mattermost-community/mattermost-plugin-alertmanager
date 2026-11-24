@@ -321,8 +321,9 @@ func (p *Plugin) runbookDefaultURL(slug string) string {
 // out of the markdown links, Alertmanager template text and quoted YAML the
 // SiteURL is baked into (( ) { } < > ' " ` \, whitespace), and all non-ASCII,
 // since YAML treats U+0085, U+2028 and U+2029 as line breaks. Mattermost's own
-// SiteURL validation accepts all of these. [ ] stay for IPv6 hosts.
-var safeSiteURL = regexp.MustCompile(`^https?://[A-Za-z0-9._~:/?#\[\]@!$&*+,;=%-]+$`)
+// SiteURL validation accepts all of these. [ ] stay for IPv6 hosts. ? and #
+// are left out because every link appends /plugins/... to the SiteURL.
+var safeSiteURL = regexp.MustCompile(`^https?://[A-Za-z0-9._~:/\[\]@!$&*+,;=%-]+$`)
 
 const siteURLPlaceholder = "https://CHANGE-ME-mattermost-site-url"
 
@@ -340,10 +341,10 @@ func (p *Plugin) siteURL() string {
 		return siteURLPlaceholder
 	}
 	if !safeSiteURL.MatchString(trimmed) {
-		p.unsafeSiteURLWarning.Do(func() {
+		if prev := p.unsafeSiteURLWarned.Swap(trimmed); prev != trimmed {
 			p.API.LogWarn("SiteURL contains characters that are unsafe in generated links and Alertmanager config; using a placeholder until it is fixed",
 				"site_url", strconv.QuoteToASCII(trimmed))
-		})
+		}
 		return siteURLPlaceholder
 	}
 	return trimmed

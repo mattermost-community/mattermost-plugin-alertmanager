@@ -2,10 +2,32 @@ package main
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"text/template"
 )
+
+// TestLabelPlaceholderAllowlistIsPinned fails when a label is added so the
+// author checks it first: its values must be Kubernetes-name or host:port
+// shaped (the sanitizer keeps only [a-zA-Z0-9._:/-]) and never a secret.
+func TestLabelPlaceholderAllowlistIsPinned(t *testing.T) {
+	want := []string{
+		"alertname", "app", "cluster", "container", "deployment", installationLabel,
+		"instance", "job", "namespace", "node", "pod", "service",
+	}
+	got := make([]string, 0, len(labelPlaceholderAllowlist))
+	for name, ok := range labelPlaceholderAllowlist {
+		if ok {
+			got = append(got, name)
+		}
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("labelPlaceholderAllowlist changed:\n got  %v\n want %v\nCheck the new label's values are name-shaped and secret-free, then update this list.", got, want)
+	}
+}
 
 // labelDirective mirrors the exact AM Go-template directive
 // substituteLabelPlaceholders emits for an allowlisted label (CL-05):

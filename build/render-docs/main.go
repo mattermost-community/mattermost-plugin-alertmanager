@@ -22,7 +22,6 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer/html"
 )
 
 // mdLinkRe matches an HTML href whose target ends in `.md` (optionally
@@ -563,7 +562,6 @@ func renderSection(section siteSection) (int, error) {
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-		goldmark.WithRendererOptions(html.WithUnsafe()),
 	)
 
 	tmpl, err := template.New("page").Parse(pageTemplate)

