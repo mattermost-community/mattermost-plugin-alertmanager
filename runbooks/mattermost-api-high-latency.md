@@ -12,11 +12,14 @@ for at least 5 minutes. The alert fires on:
 
 ```promql
 histogram_quantile(0.95,
-  sum by (le, handler) (
+  sum by (le, namespace, handler) (
     rate(mattermost_api_time_bucket[5m])
   )
 ) > 1
 ```
+
+One alert per namespace and handler, so the `namespace` label names the
+installation.
 
 This is p95 across all API handlers. A single slow handler (e.g.
 `/api/v4/posts` for a large channel) can lift the overall p95 without

@@ -9,8 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
-* Runbooks for the 16 Mattermost pack alerts (the operator's 14 plus the two Postgres pod alerts), under `runbooks/mattermost-operator/`. The `mattermost-server` receiver now links each post to its alert's runbook and shows the runbook's first diagnostic command. An alert's own `runbook_url` annotation still wins. Existing `mattermost-server` receivers keep the old template until you run `format export` (`format export crd` for an AlertmanagerConfig) and apply the receiver again.
+* Runbooks for the 17 Mattermost pack alerts (15 per-install alerts plus the two Postgres pod alerts), under `runbooks/mattermost-operator/`. The `mattermost-server` receiver now links each post to its alert's runbook and shows the runbook's first diagnostic command. An alert's own `runbook_url` annotation still wins. Existing `mattermost-server` receivers keep the old template until you run `format export` (`format export crd` for an AlertmanagerConfig) and apply the receiver again.
 * Quick diagnostics can use the `<installation_mattermost_com_installation>` placeholder.
+* `MattermostHighHTTPAuthErrorRate`: more than 20% of an install's API requests answered 401 or 403 for 10 minutes, above 1 such request a second. Token replay, permission probing and a broken SSO proxy never reach the login endpoint, so `MattermostLoginFailureSpike` missed them. Existing `mattermost-server` routes match it only after you run `format export` and apply the receiver again.
+* Pack thresholds are flags on `config add` and `format rules`: `mm-http-error-percent`, `mm-http-min-rps`, `mm-auth-error-percent`, `mm-auth-min-rps`, `mm-login-failure-percent`, `mm-login-min-failures`, `mm-login-spray-failures`, `mm-cpu-limit-percent`, `mm-memory-limit-percent` and `mm-db-replica-lag-seconds`. The runbooks name the flag for each threshold.
+
+### Changed
+
+* The pack is its own PrometheusRule per namespace, `mattermost-alertmanager-rules-mattermost-<ns>`, so packs for two installs on one cluster no longer overwrite each other. The crd file also carries `mattermost-alertmanager-rules-mattermost` with the group's five rules, the same for every namespace, which replaces the merged object of earlier versions in place. A plain rules file now has the per-namespace name: delete `mattermost-alertmanager-rules-mattermost.yaml` from an earlier version.
+* The `mattermost` group's five rules count per namespace. Summed across the cluster, a busy healthy install hid a broken one in another namespace, and the alert did not say which install it was.
+* With `mm-namespace`, the group's login failure, WebSocket drop and 5xx error rate rules are no longer dropped. They skip any namespace that has a pack (the pack records `mattermost_alertmanager:pack_namespace`), so other installs on the cluster keep those alerts and the pack's install still pages once.
+* The pack no longer describes itself as the Mattermost Operator's rules. It works with any released operator.
 
 ### Security
 
@@ -21,12 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
-* `MattermostHighHTTPErrorRate` counts 5xx responses only, matching the Mattermost Operator. Before, every application error counted, so expired sessions (401) and stale clients (404) paged. The request-rate floor (`httpMinRequestsPerSecond`) now counts API requests only, without WebSocket upgrades. Rules applied from an earlier version keep paging on 4xx until you run `format rules mattermost mm-namespace=<ns>` (`format rules mattermost crd mm-namespace=<ns>` for a PrometheusRule) and apply them again.
-* With `mm-namespace`, the group's `MattermostHighErrorRate` is left out. It now watches the same 5xx signal as `MattermostHighHTTPErrorRate`, so keeping both paged twice for one outage.
+* `MattermostHighHTTPErrorRate` counts 5xx responses only. Before, every application error counted, so expired sessions (401) and stale clients (404) paged. The request-rate floor (`mm-http-min-rps`) now counts API requests only, without WebSocket upgrades. Rules applied from an earlier version keep paging on 4xx until you run `format rules mattermost mm-namespace=<ns>` (`format rules mattermost crd mm-namespace=<ns>` for a PrometheusRule) and apply them again.
+* `MattermostLoginFailureSpike` also fires on more than 50 failed logins in 15 minutes, whatever the share (`mm-login-spray-failures`). On a busy server, normal logins kept a slow password spray under the 50% ratio, so it never paged.
 
 ### Documentation
 
-* The alert catalog lists all 16 pack alerts with their runbooks. `MattermostServerDown` fires when one pod's metrics endpoint is unscrapable, not when every pod is down.
+* The alert catalog lists all 17 pack alerts with their runbooks. `MattermostServerDown` fires when one pod's metrics endpoint is unscrapable, not when every pod is down.
 
 ## [1.5.0](https://github.com/mattermost-community/mattermost-plugin-alertmanager/compare/v1.4.17...v1.5.0) (2026-11-03)
 

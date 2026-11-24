@@ -17,8 +17,8 @@ max by (namespace, installation_mattermost_com_installation) (
 Mattermost runs the lag query in `SqlSettings.ReplicaLagSettings` against
 each replica and exports the answer in seconds. Without that setting the
 series does not exist, which is why this alert is opt-in
-(`mm-db-replicas=true`). The threshold is
-`prometheusRule.thresholds.dbReplicaLagSeconds` on the Mattermost CR.
+(`mm-db-replicas=true`). The threshold is `mm-db-replica-lag-seconds`
+(default 5).
 
 ## Quick diagnostics
 

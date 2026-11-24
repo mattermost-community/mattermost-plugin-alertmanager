@@ -331,7 +331,7 @@ rules. To mute one stock alert instead of a whole group, use
 
 ### Mattermost operator alerts
 
-The Mattermost Operator can generate its own PrometheusRule for an install. Its alerts set `severity`, `summary` and `description`, and no `runbook` label, so the runbook routes above never match them. Add `mm-namespace` to the `mattermost` target and the plugin routes them by alert name through one extra receiver.
+Add `mm-namespace` to the `mattermost` target for a per-install alert pack: 14 alerts filled in for one Mattermost CR. They work with any released Mattermost Operator, which already puts the installation label on its pods; nothing else is needed from it. The alerts set `severity`, `summary` and `description`, and no `runbook` label, so the runbook routes above never match them. The plugin routes them by alert name through one extra receiver.
 
 From the channel that should receive them:
 
@@ -340,15 +340,14 @@ From the channel that should receive them:
 ```
 
 - **`mm-namespace`** is where Mattermost runs. **`mm-name`** is the Mattermost custom resource name and defaults to `mattermost`. The rules match on `namespace` and the installation name, not on the Service name, so it does not matter which Service Prometheus scrapes. For that to work the ServiceMonitor must copy the pod label `installation.mattermost.com/installation` onto the series (`podTargetLabels`). Prometheus exposes it as `installation_mattermost_com_installation`. Check with `count by (namespace, installation_mattermost_com_installation) (up{namespace="<ns>"})`. If it returns no installation label, add the setting below to the ServiceMonitor that scrapes Mattermost. Without `mm-namespace` you get the five runbook alerts only, as before.
-- The DM carries two Secret and AlertmanagerConfig pairs and one PrometheusRule named `mattermost-alertmanager-rules-mattermost`. It holds the group's runbook rules and the operator's 13 alerts with the thresholds filled in. Apply all of it, with the `release` label set to your Helm release.
-- The operator alerts get their own Secret and AlertmanagerConfig ending in `-mattermost-server`. Adding `mm-namespace` never renames the objects of the runbook group in the same channel.
+- The DM carries two Secret and AlertmanagerConfig pairs and one rules file with two PrometheusRules. `mattermost-alertmanager-rules-mattermost` holds the group's five cluster-wide rules and is the same for every namespace. `mattermost-alertmanager-rules-mattermost-<mm-namespace>` holds the pack for this install. Apply all of it, with the `release` label set to your Helm release.
+- Thresholds default to the numbers in the [catalog](ALERT_CATALOG.md). Change them with `mm-http-error-percent`, `mm-http-min-rps`, `mm-auth-error-percent`, `mm-auth-min-rps`, `mm-login-failure-percent`, `mm-login-min-failures`, `mm-login-spray-failures`, `mm-cpu-limit-percent`, `mm-memory-limit-percent` and `mm-db-replica-lag-seconds`, for example `mm-login-spray-failures=200` on a large install. Percents take whole numbers from 1 to 100. Render and apply the rules again after a change.
+- The pack alerts get their own Secret and AlertmanagerConfig ending in `-mattermost-server`. Adding `mm-namespace` never renames the objects of the runbook group in the same channel.
 - The extra AlertmanagerConfig has one route on the pack's alert names (`alertname=~"^(MattermostServerDown|...)$"`). Severity picks the color: `critical` red, `warning` yellow, resolved green.
 - Each post links to the runbook for its alert under `/plugins/<id>/public/runbooks/mattermost-operator/` and shows that runbook's first diagnostic command, with the namespace, pod and installation filled in. An alert that sets its own `runbook_url` links there instead. Receivers created before this change have no links: run `format export crd` and apply the receiver again.
-- `format rules mattermost crd mm-namespace=<ns>` sends the rules alone. `format export` leaves the operator rules out, because the plugin does not keep the namespace or name.
-- Kubernetes only. Five of the 13 alerts (crash loop, CPU and memory pressure, missing limits) need kube-state-metrics. The other eight use `mattermost_*` metrics and `up`.
-- `config remove mattermost force` removes the operator receiver along with the group.
-
-This pack stands in for monitoring the Mattermost Operator does not ship yet. It mirrors the rules in the operator's draft monitoring PR ([mattermost-operator #466](https://github.com/mattermost/mattermost-operator/pull/466)): same groups, alert names and labels. If the operator creates these rules itself, stop adding the pack and remove the `mattermost.*` groups from the plugin's file. Nothing else needs to change, since the AlertmanagerConfig matches alert names only.
+- `format rules mattermost crd mm-namespace=<ns>` sends the rules alone. `format export` leaves the pack rules out, because the plugin does not keep the namespace or name.
+- Kubernetes only. Five of the 14 alerts (crash loop, CPU and memory pressure, missing limits) need kube-state-metrics. The other nine use `mattermost_*` metrics and `up`.
+- `config remove mattermost force` removes the pack receiver along with the group.
 
 To add the label to a ServiceMonitor you manage yourself:
 
@@ -360,12 +359,12 @@ spec:
 
 Limits to know about:
 
-- With `mm-namespace`, the group's WebSocket drop, login failure and 5xx error rate rules are left out. `MattermostWebSocketDrop`, `MattermostLoginFailureSpike` and `MattermostHighHTTPErrorRate` from the operator pack cover them, scoped to one install instead of every Mattermost in the cluster. Other Mattermost installs scraped by the same Prometheus lose those three cluster-wide alerts: add `mm-namespace` for each of them too. Applying the group's rules without `mm-namespace` brings the cluster-wide alerts back, but this install then pages twice.
+- One Mattermost per namespace. The group's five rules count per namespace, and its WebSocket drop, login failure and 5xx error rate rules skip any namespace that has a pack: the pack records `mattermost_alertmanager:pack_namespace{namespace="<ns>"}` and those rules end in `unless on (namespace) mattermost_alertmanager:pack_namespace`. Installs without a pack keep the cluster-wide alerts, and an install with a pack pages once. For a second install, run `config add` or `format rules` again with its `mm-namespace`. The group object in that file is identical, so applying it again changes nothing.
+- If your Prometheus sets `enforcedNamespaceLabel`, it overwrites the `namespace` label on recorded series with the PrometheusRule's namespace, and the skip stops matching. Apply the rules in a Prometheus without that setting, or expect the three overlapping alerts twice for pack namespaces.
+- Plain rules files (`standard`) hold the group's rules and the pack in one file named `mattermost-alertmanager-rules-mattermost-<ns>.yaml`. For a second namespace, add only the new file's `mattermost.*` groups, or the group's rules load twice. Delete `mattermost-alertmanager-rules-mattermost.yaml` from an earlier version.
 - `MattermostDBReplicaLag` is off by default. Add `mm-db-replicas=true` only if Mattermost reports replica lag. It does so once `SqlSettings.ReplicaLagSettings` has a lag query for each replica (set it in `config.json`, the System Console or with `mmctl config set`; there is no environment variable for it). Without that, or on a writer-only database such as a single RDS or Azure Postgres instance, the metric has no series and the alert can never fire. Having `MM_SQLSETTINGS_DATASOURCEREPLICAS` is not enough.
 - `mm-postgres-pod=true` adds `MattermostPostgresPodNotReady` (critical) and `MattermostPostgresPodCrashLooping` (warning) for a Postgres that runs as pods in the Mattermost namespace. It matches pods named `*postgres*` there, so the primary and each replica are covered and the `pod` label says which. These two alerts are plugin-only; the Mattermost Operator has no counterpart. Replication lag from a Postgres exporter is not included, because the exporter's series carry no label that ties them to one Mattermost.
 - A system admin's `silence create <TTL> mattermost` (or `all`) also silences the operator alerts by name, on the Alertmanagers of this channel's operator receivers. `validate` for `mattermost` covers the runbook alerts only.
-
-Once your operator creates its own `<name>-rules` PrometheusRule, remove the `mattermost.*` groups from the plugin's file. The AlertmanagerConfig stays as it is, since it matches alert names only.
 
 ### Prometheus ignores objects without the release label
 

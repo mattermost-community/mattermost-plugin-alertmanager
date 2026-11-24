@@ -76,7 +76,7 @@ func parseFormatArgs(words []string) (rulesOptions, string) {
 		return opts, fmt.Sprintf(":warning: Unknown format or target `%s`. Use `standard` or `crd`, or a group such as `security`.", unknown[0])
 	}
 	if opts.target != mattermostGroup && (opts.mmNamespace != "" || opts.mmName != "" || opts.mmOptions.given) {
-		return opts, fmt.Sprintf(":warning: `mm-namespace`, `mm-name`, `mm-db-replicas` and `mm-postgres-pod` only apply to `%s`.", mattermostGroup)
+		return opts, fmt.Sprintf(":warning: The `mm-*` flags only apply to `%s`.", mattermostGroup)
 	}
 	return opts, ""
 }
@@ -88,9 +88,9 @@ func parseFormatArgs(words []string) (rulesOptions, string) {
 //	format rules [standard|crd] [namespace=<ns>]    the sample Prometheus rules only
 //	format rules <group|slug> [standard|crd] [namespace=<ns>]
 //	                                                one group's rules, or one runbook's
-//	format rules mattermost [mm-namespace=<ns>] [mm-name=<cr>] [mm-db-replicas=true] [mm-postgres-pod=true] [standard|crd] [namespace=<ns>]
-//	                                                the mattermost group's rules, plus the operator's
-//	                                                Mattermost rules when mm-namespace is given
+//	format rules mattermost [mm-namespace=<ns>] [mm-name=<cr>] [mm-db-replicas=true] [mm-postgres-pod=true] [mm-<threshold>=<n>] [standard|crd] [namespace=<ns>]
+//	                                                the mattermost group's rules, plus the
+//	                                                per-install pack when mm-namespace is given
 func (p *Plugin) handleFormatGroup(args *model.CommandArgs) (string, error) {
 	fields := strings.Fields(args.Command)
 	if len(fields) < 3 {

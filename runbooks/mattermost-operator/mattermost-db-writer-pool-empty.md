@@ -81,7 +81,7 @@ Near `max_connections`, every new Mattermost connection is refused. See
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `password authentication failed` | Credentials rotated without updating the secret | Update the database secret; the operator restarts the pods |
+| `password authentication failed` | Credentials rotated without updating the secret | Update the database secret, then `kubectl rollout restart deployment/<installation_mattermost_com_installation> -n <namespace>`. Pods read the secret into environment variables at start, so running pods keep the old password |
 | `dial tcp ... i/o timeout` | Network path blocked | Check NetworkPolicy, security groups, private DNS |
 | `too many connections` | Database at its connection limit | Keep pods × `SqlSettings.MaxOpenConns`, plus other clients, under `max_connections`: lower `MaxOpenConns` first (it applies when the pods restart). Raising `max_connections` restarts Postgres (a reboot on RDS) and stops all writes, so schedule it with database on-call |
 | Database in maintenance or failover | Planned or managed failover | Wait for failover; the pool reconnects on its own |

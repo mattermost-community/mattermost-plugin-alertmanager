@@ -19,8 +19,7 @@ sum by (namespace, pod) (
 ```
 
 Working set is the number the OOM killer uses. The threshold is
-`prometheusRule.thresholds.memoryLimitPercent` on the Mattermost CR
-(default 90).
+`mm-memory-limit-percent` on `config add` or `format rules` (default 90).
 
 ## Quick diagnostics
 

@@ -31,6 +31,7 @@ var packRunbookSlugs = map[string]string{
 	"MattermostDBReplicaLag":            "mattermost-db-replica-lag",
 	"MattermostDBWriterPoolEmpty":       "mattermost-db-writer-pool-empty",
 	"MattermostHighHTTPErrorRate":       "mattermost-high-http-error-rate",
+	"MattermostHighHTTPAuthErrorRate":   "mattermost-high-http-auth-error-rate",
 	"MattermostLoginFailureSpike":       "mattermost-login-failure-spike",
 	"MattermostWebSocketDrop":           "mattermost-websocket-drop",
 	"MattermostSearchDown":              "mattermost-search-down",

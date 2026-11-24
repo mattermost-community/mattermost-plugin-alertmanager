@@ -64,8 +64,8 @@ func (p *Plugin) handleFormatRules(args *model.CommandArgs, opts rulesOptions) (
 }
 
 // handleTargetRules DMs the rules for one group or runbook as a plain rules file
-// or a PrometheusRule manifest. For `mattermost`, mm-namespace adds the
-// operator's rules for that install. It carries no secrets.
+// or a PrometheusRule manifest. For `mattermost`, mm-namespace adds the pack
+// for that install. It carries no secrets.
 func (p *Plugin) handleTargetRules(userID string, rc rulesContext, opts rulesOptions) (string, error) {
 	if rc.format == "" {
 		rc.format = formatStandard
@@ -402,7 +402,7 @@ func (p *Plugin) rulesFileForChannel(rc rulesContext, scoped []alertConfig) (*ru
 	}
 	packRulesHint := "Run `/alertmanager format rules " + mattermostGroup + " mm-namespace=<ns>` for its rules."
 	if len(slugs) == 0 && hasPack {
-		return nil, ":information_source: No rules file: the plugin does not keep the Mattermost namespace or name for the Mattermost operator alerts receiver. " + packRulesHint
+		return nil, ":information_source: No rules file: the plugin does not keep the Mattermost namespace or name for the Mattermost alert pack receiver. " + packRulesHint
 	}
 	if len(slugs) == 0 {
 		return nil, ":information_source: No rules file: this channel has only custom receivers, and the sample rules are written for the shipped runbooks. Write the Prometheus rule for your own alert and give it the labels your route matches."
@@ -414,7 +414,7 @@ func (p *Plugin) rulesFileForChannel(rc rulesContext, scoped []alertConfig) (*ru
 		return nil, fmt.Sprintf(":warning: Couldn't build the rules file for this channel (%v). Run `/alertmanager format rules` for the full set.", err)
 	}
 	if hasPack {
-		rules.note = ":information_source: This file leaves out the Mattermost operator alerts, because the plugin does not keep the Mattermost namespace. " + packRulesHint
+		rules.note = ":information_source: This file leaves out the Mattermost alert pack, because the plugin does not keep the Mattermost namespace. " + packRulesHint
 	}
 	return rules, ""
 }
@@ -456,14 +456,16 @@ type rulesContext struct {
 }
 
 // rulesSpec describes one rules file. extraGroups is a `groups:` body without
-// the key itself and holds extraCount rules; tail replaces the default overlap
-// warning in the DM text.
+// the key itself, holds extraCount rules and needs extraName: the file takes
+// that name, and a crd file carries extraGroups as a second PrometheusRule of
+// that name. tail replaces the default overlap warning in the DM text.
 type rulesSpec struct {
 	rulesContext
 	name        string
 	scope       string
 	slugs       []string
 	extraGroups string
+	extraName   string
 	extraCount  int
 	tail        string
 }
@@ -492,13 +494,20 @@ func (p *Plugin) buildRules(spec rulesSpec) (*rulesFile, error) {
 		return nil, err
 	}
 
-	filtered += spec.extraGroups
-	rules := &rulesFile{name: spec.name + ".yaml", count: n + spec.extraCount, scope: spec.scope, format: spec.format, tail: spec.tail}
+	fileName := spec.name
+	if spec.extraName != "" {
+		fileName = spec.extraName
+	}
+	rules := &rulesFile{name: fileName + ".yaml", count: n + spec.extraCount, scope: spec.scope, format: spec.format, tail: spec.tail}
 	if spec.format == formatCRD {
-		rules.data = []byte(buildPrometheusRuleManifest(filtered, spec.namespace, spec.name))
+		manifest := buildPrometheusRuleManifest(filtered, spec.namespace, spec.name)
+		if spec.extraName != "" {
+			manifest += buildPrometheusRuleManifest("groups:\n"+spec.extraGroups, spec.namespace, spec.extraName)
+		}
+		rules.data = []byte(manifest)
 		rules.apply = fmt.Sprintf("```\nkubectl apply -n %s -f %s\n```", spec.namespace, rules.name)
 	} else {
-		rules.data = []byte(filtered)
+		rules.data = []byte(filtered + spec.extraGroups)
 		rules.apply = "Add it to your Prometheus `rule_files:` glob and reload Prometheus."
 	}
 	return rules, nil

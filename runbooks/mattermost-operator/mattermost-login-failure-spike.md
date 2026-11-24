@@ -2,8 +2,9 @@
 
 !!! warning "Severity: Warning"
     **Target response: 15 minutes.**
-    Most login attempts on this installation are failing, with at least
-    20 failures in fifteen minutes. That is either an attack (password
+    Most login attempts on this installation are failing with at least 20
+    failures in fifteen minutes, or there were more than 50 failures in
+    fifteen minutes whatever the share. That is either an attack (password
     spraying, credential stuffing) or a broken login path that locks real
     users out.
 
@@ -11,20 +12,28 @@
 
 ```promql
 (
-  sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_login_logins_fail_total{...}[15m]))
-  /
-  sum by (namespace, installation_mattermost_com_installation) (
-    rate(mattermost_login_logins_fail_total{...}[15m]) + rate(mattermost_login_logins_total{...}[15m])
-  )
-) > 0.5
-and
-sum by (namespace, installation_mattermost_com_installation) (increase(mattermost_login_logins_fail_total{...}[15m])) > 20
+  (
+    sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_login_logins_fail_total{...}[15m]))
+    /
+    sum by (namespace, installation_mattermost_com_installation) (
+      rate(mattermost_login_logins_fail_total{...}[15m]) + rate(mattermost_login_logins_total{...}[15m])
+    )
+  ) > 0.5
+  and
+  sum by (namespace, installation_mattermost_com_installation) (increase(mattermost_login_logins_fail_total{...}[15m])) > 20
+)
+or
+sum by (namespace, installation_mattermost_com_installation) (increase(mattermost_login_logins_fail_total{...}[15m])) > 50
 ```
 
 `{...}` is `namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"`.
 `mattermost_login_logins_total` counts successes only, so the denominator
-adds the two. The ratio and the floor are `loginFailurePercent` and
-`loginMinFailures` under `prometheusRule.thresholds` on the Mattermost CR.
+adds the two. The first half catches a broken login path or a loud attack.
+The second catches a slow spray on a busy server, where normal logins keep
+the failed share under half. The numbers are `mm-login-failure-percent`,
+`mm-login-min-failures` and `mm-login-spray-failures` on `config add` or
+`format rules`. Raise `mm-login-spray-failures` if 50 failures in 15
+minutes is ordinary for your user count.
 
 ## Quick diagnostics
 
@@ -94,4 +103,5 @@ outage break every login of that type at once.
 ## Related runbooks
 
 - [Mattermost High Login Failures](../mattermost-high-login-failures.md)
+- [High HTTP Auth Error Rate](mattermost-high-http-auth-error-rate.md)
 - [API Server Auth Failure Spike](../apiserver-auth-failure-spike.md)

@@ -14,7 +14,12 @@ The number of active Mattermost WebSocket connections dropped by more than
 ```promql
 sum by (namespace, job) (mattermost_http_websockets_total)
   < sum by (namespace, job) (mattermost_http_websockets_total offset 10m) * 0.5
+unless on (namespace) mattermost_alertmanager:pack_namespace
 ```
+
+A namespace that also has the `mattermost-server` pack is skipped, because
+its own [WebSocket Drop](mattermost-operator/mattermost-websocket-drop.md)
+rule covers it.
 
 This detects relative drops, which makes it scale-agnostic: whether you
 have 100 or 10,000 active connections, a 50% drop is always an anomaly.

@@ -13,11 +13,13 @@ The 99th-percentile Mattermost database store operation time has exceeded
 
 ```promql
 histogram_quantile(0.99,
-  sum by (le) (
+  sum by (le, namespace) (
     rate(mattermost_db_store_time_bucket[5m])
   )
 ) > 0.5
 ```
+
+One alert per namespace, so the `namespace` label names the installation.
 
 This covers all database store calls Mattermost makes internally — posts,
 channels, user lookups, sessions, etc. A spike here propagates directly

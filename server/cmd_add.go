@@ -161,14 +161,14 @@ func (p *Plugin) parseAddRequest(args *model.CommandArgs) (addRequest, string) {
 		return addRequest{}, ":warning: Target `" + target + "` resolved to zero runbooks. Either the embedded runbook list is empty or the category map is misconfigured."
 	}
 
-	// mm-namespace turns the operator alerts on for the `mattermost` group: one
-	// extra receiver claims them by alertname. Without it the group is the
+	// mm-namespace turns the per-install pack on for the `mattermost` group: one
+	// extra receiver claims its alerts by alertname. Without it the group is the
 	// runbook alerts only.
 	var mmTarget *mattermostTarget
 	runbookSlugs := slugs
 	if mmNamespace != "" || mmName != "" || mmOpts.given {
 		if groupName != mattermostGroup {
-			return addRequest{}, fmt.Sprintf(":warning: `mm-namespace`, `mm-name`, `mm-db-replicas` and `mm-postgres-pod` only apply to the `%s` target.", mattermostGroup)
+			return addRequest{}, fmt.Sprintf(":warning: The `mm-*` flags only apply to the `%s` target.", mattermostGroup)
 		}
 		t, tErr := newMattermostTarget(mmNamespace, mmName)
 		if tErr != nil {
@@ -480,7 +480,7 @@ func addUsageMessage() string {
 		b.WriteString(fmt.Sprintf("| `%s` | %d | %s |\n", name, len(slugs), strings.Join(slugs, ", ")))
 	}
 
-	b.WriteString(fmt.Sprintf("\n**Mattermost alerts:** `%s` creates the runbook receivers. Add `mm-namespace=<ns>`, the namespace Mattermost runs in, to also create one receiver for the alerts the Mattermost Operator generates (they carry no `runbook` label, so its route matches alert names). The matching Prometheus rules come in the same DM. `all` never includes them.\n", mattermostGroup))
+	b.WriteString(fmt.Sprintf("\n**Mattermost alerts:** `%s` creates the runbook receivers. Add `mm-namespace=<ns>`, the namespace Mattermost runs in, to also create one receiver for the per-install Mattermost alert pack (its alerts carry no `runbook` label, so its route matches alert names). The matching Prometheus rules come in the same DM. `all` never includes them.\n", mattermostGroup))
 	b.WriteString("\n**Individual slug targets:** any runbook slug. Run `/alertmanager docs` for the runbook library link.\n\n")
 	b.WriteString("**Optional args:**\n")
 	b.WriteString("- `standard` (default) or `crd` — format of the config DM'd to you. `standard` is `alertmanager.yml` receivers and routes. `crd` is a Prometheus Operator AlertmanagerConfig plus Secret.\n")

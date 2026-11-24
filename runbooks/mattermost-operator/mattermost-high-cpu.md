@@ -18,8 +18,8 @@ sum by (namespace, pod) (
 ) > 0.85
 ```
 
-The threshold is `prometheusRule.thresholds.cpuLimitPercent` on the
-Mattermost CR (default 85). A container with no CPU limit never fires this
+The threshold is `mm-cpu-limit-percent` on `config add` or `format rules`
+(default 85). A container with no CPU limit never fires this
 alert; [CPU Limit Missing](mattermost-cpu-limit-missing.md) covers it.
 
 ## Quick diagnostics

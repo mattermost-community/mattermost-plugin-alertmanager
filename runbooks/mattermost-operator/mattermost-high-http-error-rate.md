@@ -18,15 +18,17 @@ and
 sum by (namespace, installation_mattermost_com_installation) (rate(mattermost_api_time_count{namespace="<namespace>", installation_mattermost_com_installation="<installation_mattermost_com_installation>"}[5m])) > 1
 ```
 
-The thresholds are `prometheusRule.thresholds.httpErrorPercent` and
-`httpMinRequestsPerSecond` on the Mattermost CR.
+The share and the floor are `mm-http-error-percent` and `mm-http-min-rps`
+on `config add` or `format rules`. Render the rules again after changing
+them.
 
 Only 5xx counts. Expired sessions (401), permission denials (403) and
 clients polling deleted resources (404) do not fire this alert, so a page
 means the server failed a request it should have served. A flood of 401
-or 403 from token guessing or permission probing does not page here
-either: [Login Failure Spike](mattermost-login-failure-spike.md) covers
-password logins, and the rest needs the audit log or your SIEM. WebSocket
+or 403 from token replay or permission probing pages
+[High HTTP Auth Error Rate](mattermost-high-http-auth-error-rate.md)
+instead, and [Login Failure Spike](mattermost-login-failure-spike.md)
+covers password logins. WebSocket
 upgrades are not in the denominator. Mattermost records the metric itself,
 so errors an ingress or load balancer returns without reaching a pod are
 not counted here; see [Ingress High 5xx](../ingress-high-5xx.md) for those.

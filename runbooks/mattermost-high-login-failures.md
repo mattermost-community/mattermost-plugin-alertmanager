@@ -11,12 +11,17 @@ The number of failed Mattermost login attempts has spiked above the
 threshold in a short window. The alert fires on:
 
 ```promql
-sum(increase(mattermost_login_logins_fail_total[10m])) > 10
+sum by (namespace) (increase(mattermost_login_logins_fail_total[10m])) > 10
+unless on (namespace) mattermost_alertmanager:pack_namespace
 ```
 
-This counts failed login attempts across all Mattermost pods over the
-last 10 minutes. A handful of failed logins is normal
-(users forget passwords). A sharp spike is not.
+This counts failed login attempts across all Mattermost pods in one
+namespace over the last 10 minutes, so the `namespace` label on the alert
+names the installation. A handful of failed logins is normal
+(users forget passwords). A sharp spike is not. A namespace that also has
+the `mattermost-server` pack is skipped, because
+[Login Failure Spike](mattermost-operator/mattermost-login-failure-spike.md)
+covers it.
 
 ## Quick diagnostics
 

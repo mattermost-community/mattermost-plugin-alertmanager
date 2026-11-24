@@ -88,6 +88,120 @@ tests:
               summary: "Mattermost mattermost-crimson/mattermost HTTP 5xx rate > 5%"
               description: "More than 5% of Mattermost API requests have returned 5xx for 5 minutes, above 1 requests/s."
 
+  # 4 of 14 requests/s are 401 or 403 (about 29%).
+  - name: MattermostHighHTTPAuthErrorRate fires on a 401 flood
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+600x25"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="401"}'
+        values: "0+180x25"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="403"}'
+        values: "0+60x25"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MattermostHighHTTPAuthErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: mattermost-crimson
+              installation_mattermost_com_installation: mattermost
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson/mattermost HTTP 401/403 rate > 20%"
+              description: "More than 20% of Mattermost API requests have returned 401 or 403 for 10 minutes, above 1 such requests/s."
+      - eval_time: 20m
+        alertname: MattermostHighHTTPErrorRate
+        exp_alerts: []
+
+  # Half the requests are 401, but at 0.5/s the floor keeps it quiet.
+  - name: MattermostHighHTTPAuthErrorRate stays quiet below the floor
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+30x25"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="401"}'
+        values: "0+30x25"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MattermostHighHTTPAuthErrorRate
+        exp_alerts: []
+
+  # 10% 401 (expired sessions on a busy server) is under the 20% share.
+  - name: MattermostHighHTTPAuthErrorRate ignores normal session expiry
+    interval: 1m
+    input_series:
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="200"}'
+        values: "0+5400x25"
+      - series: 'mattermost_api_time_count{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost", status_code="401"}'
+        values: "0+600x25"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MattermostHighHTTPAuthErrorRate
+        exp_alerts: []
+
+  # A slow spray on a busy server: 5 failures a minute against 1000
+  # successes is well under half, but 75 failures in 15m pages.
+  - name: MattermostLoginFailureSpike pages on a slow spray under the ratio
+    interval: 1m
+    input_series:
+      - series: 'mattermost_login_logins_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+1000x40"
+      - series: 'mattermost_login_logins_fail_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+5x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: MattermostLoginFailureSpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: mattermost-crimson
+              installation_mattermost_com_installation: mattermost
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson/mattermost login failures are spiking"
+              description: "For 10 minutes, either more than 50% of login attempts failed with over 20 failures in 15 minutes, or there were over 50 failures in 15 minutes."
+
+  # 2 failures a minute (30 in 15m) on a busy server stays under both.
+  - name: MattermostLoginFailureSpike stays quiet on ordinary failures
+    interval: 1m
+    input_series:
+      - series: 'mattermost_login_logins_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+1000x40"
+      - series: 'mattermost_login_logins_fail_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+2x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: MattermostLoginFailureSpike
+        exp_alerts: []
+
+  # A broken IdP: most logins fail, 30 in 15m, under the spray count.
+  - name: MattermostLoginFailureSpike pages when most logins fail
+    interval: 1m
+    input_series:
+      - series: 'mattermost_login_logins_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+0x40"
+      - series: 'mattermost_login_logins_fail_total{namespace="mattermost-crimson", installation_mattermost_com_installation="mattermost"}'
+        values: "0+2x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: MattermostLoginFailureSpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: mattermost-crimson
+              installation_mattermost_com_installation: mattermost
+            exp_annotations:
+              summary: "Mattermost mattermost-crimson/mattermost login failures are spiking"
+              description: "For 10 minutes, either more than 50% of login attempts failed with over 20 failures in 15 minutes, or there were over 50 failures in 15 minutes."
+
+  - name: The pack records its namespace for the group rules to skip
+    interval: 1m
+    promql_expr_test:
+      - expr: mattermost_alertmanager:pack_namespace
+        eval_time: 5m
+        exp_samples:
+          - labels: 'mattermost_alertmanager:pack_namespace{namespace="mattermost-crimson"}'
+            value: 1
+
   # Every request fails, but at 0.5 requests/s the floor keeps it quiet.
   - name: MattermostHighHTTPErrorRate stays quiet below the request floor
     interval: 1m

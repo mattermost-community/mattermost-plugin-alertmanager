@@ -711,7 +711,7 @@ groups:
       - alert: MattermostAPIHighLatency
         expr: |
           histogram_quantile(0.95,
-            sum by (le, handler) (
+            sum by (le, namespace, handler) (
               rate(mattermost_api_time_bucket[5m])
             )
           ) > 1
@@ -721,22 +721,25 @@ groups:
           category: mattermost
           runbook: mattermost-api-high-latency
         annotations:
-          summary: "Mattermost API p95 latency > 1s on {{ $labels.handler }}"
+          summary: "Mattermost {{ $labels.namespace }} API p95 latency > 1s on {{ $labels.handler }}"
           description: "95th-percentile API response time has exceeded 1 second for 5 minutes. Users may see stalls on message send and channel load."
 
       # MattermostHighLoginFailures — spike in failed login attempts.
       # This is the earliest signal of a credential stuffing or brute force
       # attack. mattermost_login_logins_fail_total counts every failed login.
+      # Counted per namespace, one Mattermost each. A namespace that has the
+      # mattermost-server pack is skipped: MattermostLoginFailureSpike covers it.
       - alert: MattermostHighLoginFailures
         expr: |
-          sum(increase(mattermost_login_logins_fail_total[10m])) > 10
+          sum by (namespace) (increase(mattermost_login_logins_fail_total[10m])) > 10
+          unless on (namespace) mattermost_alertmanager:pack_namespace
         for: 0m
         labels:
           severity: warning
           category: mattermost
           runbook: mattermost-high-login-failures
         annotations:
-          summary: "Mattermost login failures spiking ({{ $value | printf \"%.0f\" }} failures in 10m)"
+          summary: "Mattermost {{ $labels.namespace }} login failures spiking ({{ $value | printf \"%.0f\" }} failures in 10m)"
           description: "More than 10 failed login attempts accumulated in 10 minutes — investigate for credential stuffing or brute force."
 
       # MattermostWebSocketDrop — active WebSocket connections dropped > 50%
@@ -744,18 +747,20 @@ groups:
       # scale. Typical cause: pod restart, LB timeout misconfiguration, or
       # a network disruption affecting long-lived connections. Totals are
       # summed per namespace and scrape job, because a replacement pod's
-      # series has no value 10 minutes ago to compare with.
+      # series has no value 10 minutes ago to compare with. A namespace that
+      # has the mattermost-server pack is skipped; its own rule covers it.
       - alert: MattermostWebSocketDrop
         expr: |
           sum by (namespace, job) (mattermost_http_websockets_total)
             < sum by (namespace, job) (mattermost_http_websockets_total offset 10m) * 0.5
+          unless on (namespace) mattermost_alertmanager:pack_namespace
         for: 5m
         labels:
           severity: warning
           category: mattermost
           runbook: mattermost-websocket-drop
         annotations:
-          summary: "Mattermost WebSocket connections dropped > 50%"
+          summary: "Mattermost {{ $labels.namespace }} WebSocket connections dropped > 50%"
           description: "Active WebSocket connections are less than half their level from 10 minutes ago. Users are losing real-time updates."
 
       # MattermostDBSlowQuery — p99 database store operation time above 500ms.
@@ -764,7 +769,7 @@ groups:
       - alert: MattermostDBSlowQuery
         expr: |
           histogram_quantile(0.99,
-            sum by (le) (
+            sum by (le, namespace) (
               rate(mattermost_db_store_time_bucket[5m])
             )
           ) > 0.5
@@ -774,23 +779,27 @@ groups:
           category: mattermost
           runbook: mattermost-db-slow-query
         annotations:
-          summary: "Mattermost DB p99 query latency > 500ms"
+          summary: "Mattermost {{ $labels.namespace }} DB p99 query latency > 500ms"
           description: "99th-percentile database store operation time has exceeded 500ms for 5 minutes. API latency will follow."
 
       # MattermostHighErrorRate — more than 5% of API calls returning 5xx.
       # Unlike 4xx (expected user errors), 5xx means the server failed.
       # Common causes: DB connectivity loss, plugin panic, bad deployment.
+      # Per namespace, so a busy healthy install cannot hide a broken one. A
+      # namespace that has the mattermost-server pack is skipped:
+      # MattermostHighHTTPErrorRate covers it.
       - alert: MattermostHighErrorRate
         expr: |
-          sum(rate(mattermost_api_time_count{status_code=~"5.."}[5m]))
+          sum by (namespace) (rate(mattermost_api_time_count{status_code=~"5.."}[5m]))
           /
-          sum(rate(mattermost_api_time_count[5m]))
+          sum by (namespace) (rate(mattermost_api_time_count[5m]))
           > 0.05
+          unless on (namespace) mattermost_alertmanager:pack_namespace
         for: 5m
         labels:
           severity: warning
           category: mattermost
           runbook: mattermost-high-error-rate
         annotations:
-          summary: "Mattermost 5xx error rate > 5% ({{ $value | humanizePercentage }})"
+          summary: "Mattermost {{ $labels.namespace }} 5xx error rate > 5% ({{ $value | humanizePercentage }})"
           description: "More than 5% of Mattermost API calls are returning server errors. Users see intermittent message and channel failures."

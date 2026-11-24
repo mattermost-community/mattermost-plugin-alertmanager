@@ -60,7 +60,7 @@ func mmNamespaceItem(value string) model.AutocompleteListItem {
 	return model.AutocompleteListItem{
 		Item:     value,
 		Hint:     "<namespace>",
-		HelpText: "Optional. The namespace your Mattermost runs in, for example mm-namespace=mattermost. Adds the alerts the Mattermost Operator generates, with their Prometheus rules.",
+		HelpText: "Optional. The namespace your Mattermost runs in, for example mm-namespace=mattermost. Adds the per-install Mattermost alert pack, with its Prometheus rules.",
 	}
 }
 
@@ -267,7 +267,7 @@ func rulesGroupItems() []model.AutocompleteListItem {
 		case "all":
 			help = "Every group's rules, all 36. Same as leaving the group out."
 		case mattermostGroup:
-			help = "DM the mattermost group's rules. Add mm-namespace=<ns> to include the 13 rules the Mattermost Operator generates for that install, plus mm-db-replicas=true and mm-postgres-pod=true for the optional ones."
+			help = "DM the mattermost group's rules. Add mm-namespace=<ns> to include the 14 pack alerts for that install, plus mm-db-replicas=true and mm-postgres-pod=true for the optional ones and mm-<threshold>=<n> to tune them."
 		}
 		items = append(items, model.AutocompleteListItem{Item: name, HelpText: help})
 	}

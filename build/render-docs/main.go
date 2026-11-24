@@ -87,7 +87,7 @@ var sections = []siteSection{
 		// packRunbookSlugs in server/mattermost_pack_runbooks.go.
 		SrcDir:      "../../runbooks/mattermost-operator",
 		OutDir:      "../../public/runbooks/mattermost-operator",
-		SiteName:    "Mattermost Operator Runbooks",
+		SiteName:    "Mattermost Pack Runbooks",
 		LandingBody: operatorRunbookIndexBody,
 	},
 }
@@ -325,8 +325,8 @@ RBAC Privilege Escalation, Security Tooling Down.
 **Mattermost Application** — API High Latency, High Login Failures,
 WebSocket Drop, DB Slow Query, High Error Rate.
 
-**Mattermost Operator alerts** — one page per alert the ` + "`mattermost-server`" + `
-receiver routes. See [Mattermost Operator Runbooks](mattermost-operator/home.html).
+**Mattermost pack alerts** — one page per alert the ` + "`mattermost-server`" + `
+receiver routes. See [Mattermost Pack Runbooks](mattermost-operator/home.html).
 
 Use the sidebar on the left to navigate. Use the search box up top to
 jump straight to a runbook by name or by error string.
@@ -341,10 +341,10 @@ placeholders. The on-call wants to copy-paste.
 `
 
 // operatorRunbookIndexBody is the landing page for the Mattermost pack runbooks.
-const operatorRunbookIndexBody = `# Mattermost Operator Runbooks
+const operatorRunbookIndexBody = `# Mattermost Pack Runbooks
 
-One runbook per alert in the Mattermost pack: the alerts the Mattermost
-Operator puts in its PrometheusRule, plus the plugin's Postgres pod alerts.
+One runbook per alert in the Mattermost pack, the per-install alerts the
+plugin adds with ` + "`mm-namespace`" + `, including the optional Postgres pod alerts.
 They reach Mattermost through the ` + "`mattermost-server`" + ` receiver, which routes
 by alert name. Each post links to the page for its alert and shows that
 page's first diagnostic command.
@@ -360,8 +360,8 @@ namespace and pod for alerts built on kube-state-metrics and cAdvisor series.
 **Database** — DB Writer Pool Empty, DB Replica Lag, Postgres Pod Not Ready,
 Postgres Pod Crash Looping.
 
-**Application** — High HTTP Error Rate, Login Failure Spike, WebSocket Drop,
-Search Down, Cluster Unhealthy, Logs Dropped.
+**Application** — High HTTP Error Rate, High HTTP Auth Error Rate, Login
+Failure Spike, WebSocket Drop, Search Down, Cluster Unhealthy, Logs Dropped.
 
 The general runbook library is [here](../home.html).
 `

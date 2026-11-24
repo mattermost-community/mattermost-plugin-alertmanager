@@ -112,9 +112,11 @@ Rules for the Mattermost server itself. Requires `MetricsSettings.Enable: true` 
 | Mattermost DB Slow Query | `mattermost-db-slow-query` | warning | p99 DB store op > 500ms for 5m | Mattermost metrics |
 | Mattermost High Error Rate | `mattermost-high-error-rate` | warning | > 5% of API calls return 5xx for 5m | Mattermost metrics |
 
-### Mattermost operator alerts (`mattermost` with `mm-namespace=<ns>`)
+The five rules above count per namespace, one Mattermost each, so a busy healthy install cannot hide a broken one on the same cluster. Login failures, WebSocket drop and 5xx error rate skip any namespace that has the per-install pack below, because the pack's own rules cover it.
 
-Kubernetes installs only. These 13 alerts, 14 with `mm-db-replicas=true`, come from the Mattermost Operator's own PrometheusRule. Two more, with `mm-postgres-pod=true`, are plugin-only. They carry no `runbook` label and route by alert name. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
+### Mattermost per-install pack (`mattermost` with `mm-namespace=<ns>`)
+
+Kubernetes installs only. 14 alerts, 15 with `mm-db-replicas=true`, and two more with `mm-postgres-pod=true`, filled in for one Mattermost CR. They need no Mattermost Operator feature beyond the `installation.mattermost.com/installation` label it already puts on its pods. They carry no `runbook` label and route by alert name. Render the pack once per Mattermost namespace. See [Kubernetes](KUBERNETES.md#mattermost-operator-alerts).
 
 Each alert has its own runbook. The `mattermost-server` receiver links the post to it and shows its first diagnostic command. An alert that sets its own `runbook_url` links there instead; the diagnostic command still shows.
 
@@ -131,7 +133,8 @@ Each alert has its own runbook. The `mattermost-server` receiver links the post 
 | MattermostDBWriterPoolEmpty | critical | Process up, no writer connections for 10m | Mattermost metrics | [DB Writer Pool Empty](../runbooks/mattermost-operator/mattermost-db-writer-pool-empty.md) |
 | MattermostDBReplicaLag | warning | Replica lag over threshold (opt-in) | `ReplicaLagSettings` | [DB Replica Lag](../runbooks/mattermost-operator/mattermost-db-replica-lag.md) |
 | MattermostHighHTTPErrorRate | warning | 5xx responses above 5% of API requests | Mattermost metrics | [High HTTP Error Rate](../runbooks/mattermost-operator/mattermost-high-http-error-rate.md) |
-| MattermostLoginFailureSpike | warning | Most logins failing, at least 20 in 15m | Mattermost metrics | [Login Failure Spike](../runbooks/mattermost-operator/mattermost-login-failure-spike.md) |
+| MattermostHighHTTPAuthErrorRate | warning | 401/403 above 20% of API requests and 1/s for 10m | Mattermost metrics | [High HTTP Auth Error Rate](../runbooks/mattermost-operator/mattermost-high-http-auth-error-rate.md) |
+| MattermostLoginFailureSpike | warning | Most logins failing with more than 20 in 15m, or more than 50 in 15m | Mattermost metrics | [Login Failure Spike](../runbooks/mattermost-operator/mattermost-login-failure-spike.md) |
 | MattermostWebSocketDrop | warning | Connections below half of 10m ago | Mattermost metrics | [WebSocket Drop](../runbooks/mattermost-operator/mattermost-websocket-drop.md) |
 | MattermostSearchDown | warning | Elasticsearch enabled and unhealthy | Mattermost metrics | [Search Down](../runbooks/mattermost-operator/mattermost-search-down.md) |
 | MattermostClusterUnhealthy | warning | Gossip health score above 0 for 10m | Mattermost metrics | [Cluster Unhealthy](../runbooks/mattermost-operator/mattermost-cluster-unhealthy.md) |
@@ -139,7 +142,7 @@ Each alert has its own runbook. The `mattermost-server` receiver links the post 
 | MattermostPostgresPodNotReady | critical | A `*postgres*` pod not Ready for 5m (plugin-only) | kube-state-metrics | [Postgres Pod Not Ready](../runbooks/mattermost-operator/mattermost-postgres-pod-not-ready.md) |
 | MattermostPostgresPodCrashLooping | warning | More than 3 restarts in 15m (plugin-only) | kube-state-metrics | [Postgres Pod Crash Looping](../runbooks/mattermost-operator/mattermost-postgres-pod-crash-looping.md) |
 
-Thresholds live in the operator's rules and are filled in by the plugin. Read `samples/mattermost-operator-rules.yaml` for the exact expressions.
+The numbers above are the defaults. Change them with the `mm-<threshold>=<n>` flags on `config add` or `format rules` (`/alertmanager help format rules` lists them), then apply the new rules. Read `samples/mattermost-operator-rules.yaml` for the exact expressions.
 
 ## Wiring a set into a channel
 

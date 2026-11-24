@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +26,7 @@ var wantPackAlerts = []string{
 	"MattermostDBReplicaLag",
 	"MattermostDBWriterPoolEmpty",
 	"MattermostHighHTTPErrorRate",
+	"MattermostHighHTTPAuthErrorRate",
 	"MattermostLoginFailureSpike",
 	"MattermostWebSocketDrop",
 	"MattermostSearchDown",
@@ -80,9 +84,12 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 		"> 0.85",
 		"> 0.9",
 		"> 0.05",
+		"> 0.2\n",
 		"> 0.5",
 		"> 5\n",
+		"> 50\n",
 		"85% of limit",
+		"namespace: mattermost-crimson",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered rules missing %q", want)
@@ -93,6 +100,7 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 		Groups []struct {
 			Rules []struct {
 				Alert       string            `yaml:"alert"`
+				Record      string            `yaml:"record"`
 				Expr        string            `yaml:"expr"`
 				Labels      map[string]string `yaml:"labels"`
 				Annotations map[string]string `yaml:"annotations"`
@@ -105,6 +113,12 @@ func TestRenderMattermostOperatorRules(t *testing.T) {
 	var got []string
 	for _, g := range doc.Groups {
 		for _, r := range g.Rules {
+			if r.Record != "" {
+				if r.Record != packCoverageRecord || r.Labels["namespace"] != "mattermost-crimson" {
+					t.Errorf("unexpected recording rule %s %v", r.Record, r.Labels)
+				}
+				continue
+			}
 			got = append(got, r.Alert)
 			if strings.TrimSpace(r.Expr) == "" {
 				t.Errorf("%s has an empty expr", r.Alert)
@@ -218,13 +232,69 @@ func ruleAlertNames(t *testing.T, data []byte) []string {
 	var out []string
 	for _, g := range doc.Groups {
 		for _, r := range g.Rules {
-			out = append(out, r.Alert)
+			if r.Alert != "" {
+				out = append(out, r.Alert)
+			}
 		}
 	}
 	return out
 }
 
-func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
+// packCoverageRecord is the series the pack records for its namespace and the
+// group's overlapping rules exclude.
+const packCoverageRecord = "mattermost_alertmanager:pack_namespace"
+
+type ruleObject struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace"`
+	} `yaml:"metadata"`
+	Spec struct {
+		Groups []struct {
+			Rules []struct {
+				Alert  string            `yaml:"alert"`
+				Record string            `yaml:"record"`
+				Expr   string            `yaml:"expr"`
+				Labels map[string]string `yaml:"labels"`
+			} `yaml:"rules"`
+		} `yaml:"groups"`
+	} `yaml:"spec"`
+}
+
+func decodeRuleObjects(t *testing.T, data []byte) []ruleObject {
+	t.Helper()
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var objs []ruleObject
+	for {
+		var obj ruleObject
+		err := dec.Decode(&obj)
+		if errors.Is(err, io.EOF) {
+			return objs
+		}
+		if err != nil {
+			t.Fatalf("manifest is not valid YAML: %v\n%s", err, data)
+		}
+		objs = append(objs, obj)
+	}
+}
+
+func (o ruleObject) alerts() []string {
+	var out []string
+	for _, g := range o.Spec.Groups {
+		for _, r := range g.Rules {
+			if r.Alert != "" {
+				out = append(out, r.Alert)
+			}
+		}
+	}
+	return out
+}
+
+// The pack is its own PrometheusRule per namespace. The group's rules keep
+// covering every other install: they count per namespace and skip namespaces
+// carrying the pack's coverage marker, so rendering two packs never pages twice.
+func TestMattermostRulesFileSplitsPackPerNamespace(t *testing.T) {
 	p := rulesTestPlugin()
 	target := testTarget(t)
 
@@ -236,70 +306,76 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 	if len(baseAlerts) != len(scaffoldSets[mattermostGroup]) || slices.Contains(baseAlerts, "MattermostServerDown") {
 		t.Fatalf("without mm-namespace want only the group's runbook rules, got %v", baseAlerts)
 	}
-
-	// The pack replaces these built-in rules; keeping both would alert twice.
-	var keptAlerts []string
-	for _, a := range baseAlerts {
-		if a != "MattermostWebSocketDrop" && a != "MattermostHighLoginFailures" && a != "MattermostHighErrorRate" {
-			keptAlerts = append(keptAlerts, a)
-		}
-	}
-	wantTotal := len(keptAlerts) + len(defaultPackAlerts)
+	wantTotal := len(baseAlerts) + len(defaultPackAlerts)
 
 	crd, err := p.mattermostRulesFile(testRulesContext(formatCRD), &target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if crd.count != wantTotal {
-		t.Fatalf("count = %d, want %d", crd.count, wantTotal)
+	if crd.count != wantTotal || crd.name != packRuleObjectName("mattermost-crimson")+".yaml" {
+		t.Fatalf("name = %q count = %d, want %d", crd.name, crd.count, wantTotal)
 	}
-	var obj struct {
-		Kind     string `yaml:"kind"`
-		Metadata struct {
-			Name      string            `yaml:"name"`
-			Namespace string            `yaml:"namespace"`
-			Labels    map[string]string `yaml:"labels"`
-		} `yaml:"metadata"`
-		Spec struct {
-			Groups []struct {
-				Rules []struct {
-					Alert string `yaml:"alert"`
-				} `yaml:"rules"`
-			} `yaml:"groups"`
-		} `yaml:"spec"`
+	objs := decodeRuleObjects(t, crd.data)
+	if len(objs) != 2 {
+		t.Fatalf("want the group object and the pack object, got %d", len(objs))
 	}
-	if err = yaml.Unmarshal(crd.data, &obj); err != nil {
-		t.Fatalf("manifest is not valid YAML: %v", err)
+	group, pack := objs[0], objs[1]
+	if group.Metadata.Name != prometheusRuleObject+"-"+mattermostGroup || pack.Metadata.Name != prometheusRuleObject+"-mattermost-mattermost-crimson" {
+		t.Fatalf("object names = %q, %q", group.Metadata.Name, pack.Metadata.Name)
 	}
-	if obj.Kind != "PrometheusRule" || obj.Metadata.Namespace != "monitoring" || obj.Metadata.Name != prometheusRuleObject+"-"+mattermostGroup {
-		t.Fatalf("unexpected object: %+v", obj)
+	for _, o := range objs {
+		if o.Kind != "PrometheusRule" || o.Metadata.Namespace != "monitoring" {
+			t.Fatalf("unexpected object: %+v", o.Metadata)
+		}
 	}
-	var got []string
-	for _, g := range obj.Spec.Groups {
+	if !slices.Equal(group.alerts(), baseAlerts) {
+		t.Fatalf("group object = %v, want the same rules as without mm-namespace %v", group.alerts(), baseAlerts)
+	}
+	if !slices.Equal(pack.alerts(), defaultPackAlerts) {
+		t.Fatalf("pack object = %v, want %v", pack.alerts(), defaultPackAlerts)
+	}
+
+	marked := false
+	for _, g := range pack.Spec.Groups {
 		for _, r := range g.Rules {
-			got = append(got, r.Alert)
+			if r.Record == packCoverageRecord && r.Labels["namespace"] == "mattermost-crimson" {
+				marked = true
+			}
 		}
 	}
-	for _, want := range append(slices.Clone(keptAlerts), defaultPackAlerts...) {
-		if !slices.Contains(got, want) {
-			t.Errorf("merged manifest missing %s", want)
-		}
+	if !marked {
+		t.Fatal("the pack must record its namespace so the group's rules skip it")
 	}
-	seen := map[string]bool{}
-	for _, a := range got {
-		if seen[a] {
-			t.Errorf("alert %s is defined twice, so it would fire twice", a)
+	overlapping := map[string]bool{"MattermostHighLoginFailures": true, "MattermostWebSocketDrop": true, "MattermostHighErrorRate": true}
+	for _, g := range group.Spec.Groups {
+		for _, r := range g.Rules {
+			if !strings.Contains(r.Expr, "by (namespace") && !strings.Contains(r.Expr, "by (le, namespace") {
+				t.Errorf("%s must count per namespace: %s", r.Alert, r.Expr)
+			}
+			skips := strings.Contains(r.Expr, "unless on (namespace) "+packCoverageRecord)
+			if skips != overlapping[r.Alert] {
+				t.Errorf("%s skips pack namespaces = %v, want %v", r.Alert, skips, overlapping[r.Alert])
+			}
 		}
-		seen[a] = true
-	}
-	if slices.Contains(got, "MattermostHighLoginFailures") {
-		t.Error("MattermostHighLoginFailures is covered by MattermostLoginFailureSpike and must be dropped")
 	}
 	if packPlaceholder.MatchString(string(crd.data)) {
 		t.Fatal("manifest still carries a placeholder")
 	}
-	if !strings.Contains(crd.section(), "remove them from this file") || !strings.Contains(crd.section(), "ships these rules itself") {
-		t.Fatalf("section missing the operator hand-off:\n%s", crd.section())
+	if s := crd.section(); !strings.Contains(s, "two PrometheusRules") || !strings.Contains(s, "pages twice") || strings.Contains(s, "Operator") {
+		t.Fatalf("section should explain the two objects without leaning on the operator:\n%s", s)
+	}
+
+	other, err := newMattermostTarget("ops", "mm-ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.mattermostRulesFile(testRulesContext(formatCRD), &other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondObjs := decodeRuleObjects(t, second.data)
+	if secondObjs[0].Metadata.Name != group.Metadata.Name || secondObjs[1].Metadata.Name == pack.Metadata.Name {
+		t.Fatalf("a second namespace must reuse the group object and get its own pack object: %q %q", secondObjs[0].Metadata.Name, secondObjs[1].Metadata.Name)
 	}
 
 	plain, err := p.mattermostRulesFile(testRulesContext(formatStandard), &target)
@@ -309,8 +385,11 @@ func TestMattermostRulesFileMergesOperatorAlerts(t *testing.T) {
 	if strings.Contains(string(plain.data), "kind: PrometheusRule") || !strings.Contains(string(plain.data), "groups:") {
 		t.Fatalf("standard rules should be a bare groups file:\n%s", plain.data)
 	}
-	if n := len(ruleAlertNames(t, plain.data)); n != wantTotal {
-		t.Fatalf("standard merged file has %d alerts", n)
+	if n := len(ruleAlertNames(t, plain.data)); n != wantTotal || plain.name != crd.name {
+		t.Fatalf("standard file %q has %d alerts, want %d", plain.name, n, wantTotal)
+	}
+	if !strings.Contains(plain.section(), "only its `mattermost.*` groups") {
+		t.Fatalf("standard section should say how to add a second namespace:\n%s", plain.section())
 	}
 }
 
@@ -691,7 +770,9 @@ func TestDBReplicaLagIsOptIn(t *testing.T) {
 				t.Errorf("group %s is empty", g.Name)
 			}
 			for _, r := range g.Rules {
-				names = append(names, r.Alert)
+				if r.Alert != "" {
+					names = append(names, r.Alert)
+				}
 			}
 		}
 		return names
@@ -757,6 +838,54 @@ func TestExtractMattermostOptions(t *testing.T) {
 	}
 }
 
+func TestPackThresholdFlags(t *testing.T) {
+	rest, opts, err := extractMattermostOptions([]string{
+		"mattermost", "mm-http-error-percent=10", "mm-http-min-rps=0.5", "mm-auth-error-percent=30", "mm-auth-min-rps=2",
+		"mm-login-failure-percent=40", "mm-login-min-failures=10", "mm-login-spray-failures=200",
+		"mm-cpu-limit-percent=95", "mm-memory-limit-percent=80", "mm-db-replicas=true", "mm-db-replica-lag-seconds=30", "crd",
+	})
+	if err != nil || !opts.given || opts.thresholds == nil || !slices.Equal(rest, []string{"mattermost", "crd"}) {
+		t.Fatalf("rest=%v opts=%+v err=%v", rest, opts, err)
+	}
+	out, err := renderMattermostOperatorRules(testTarget(t).withOptions(opts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		") > 0.1\n", "> 0.5\n", ") > 0.3\n", "> 2\n", ") > 0.4\n", "> 10\n", "> 200\n",
+		") > 0.95\n", ") > 0.8\n", "> 30\n", "401/403 rate > 30%", "over 200 failures", "95% of limit",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered rules missing %q", want)
+		}
+	}
+
+	if _, opts, err = extractMattermostOptions([]string{"mattermost"}); err != nil || opts.thresholds != nil || opts.given {
+		t.Fatalf("no threshold flags must keep the defaults: %+v %v", opts, err)
+	}
+	if testTarget(t).withOptions(opts).thresholds != defaultPackThresholds {
+		t.Fatal("a target without threshold flags must use the defaults")
+	}
+
+	for _, bad := range []string{
+		"mm-http-error-percent=0", "mm-http-error-percent=101", "mm-cpu-limit-percent=8.5", "mm-auth-error-percent=x",
+		"mm-http-min-rps=-1", "mm-login-spray-failures=NaN", "mm-auth-min-rps=Inf", "mm-db-replica-lag-seconds=1e400",
+		`mm-login-min-failures=1"}`,
+	} {
+		if _, _, err := extractMattermostOptions([]string{bad}); err == nil {
+			t.Errorf("%s must be refused", bad)
+		}
+	}
+	if _, msg := parseFormatArgs([]string{"security", "mm-cpu-limit-percent=90"}); !strings.Contains(msg, "only apply") {
+		t.Fatalf("threshold flag on another group must be refused, got %q", msg)
+	}
+	for _, flag := range thresholdFlagNames() {
+		if !strings.Contains(packThresholdHelp, "`"+strings.TrimSuffix(flag, "=")+"`") {
+			t.Errorf("help does not describe %s", flag)
+		}
+	}
+}
+
 func TestParseFormatArgsPackOptions(t *testing.T) {
 	opts, msg := parseFormatArgs([]string{"mattermost", "mm-namespace=chat", "mm-db-replicas=true", "mm-postgres-pod=true", "crd"})
 	if msg != "" || !opts.mmOptions.dbReplicas || !opts.mmOptions.postgresPod {
@@ -781,7 +910,10 @@ func TestFilterKeepsEachCommentWithItsAlert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := filterPrometheusRules(string(raw), slugsWithoutPack(scaffoldSets[mattermostGroup]))
+	kept := slices.DeleteFunc(slices.Clone(scaffoldSets[mattermostGroup]), func(slug string) bool {
+		return slug == "mattermost-websocket-drop" || slug == "mattermost-high-login-failures" || slug == "mattermost-high-error-rate"
+	})
+	out, _, err := filterPrometheusRules(string(raw), kept)
 	if err != nil {
 		t.Fatal(err)
 	}
